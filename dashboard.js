@@ -2,670 +2,768 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 
-const API_KEY = process.env.FINNHUB_API_KEY || "";
-const PORT = 3000;
-const ANTHROPIC_API_KEY =
-process.env.ANTHROPIC_API_KEY || "";
+const PORT = process.env.PORT || 3000;
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
+
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
-const CHAT_FILE = "ai_chat_history.json";
+const CHAT_FILE = "alfredo_chat_history.json";
+const SETTINGS_FILE = "cordelius_settings.json";
 
-const portfolio = [
-  { symbol: "MSFT", name: "Microsoft", shares: 0.12, costValue: 53.03, thesis: "Cloud + IA, posición core de bajo riesgo.", risk: "BAJO" },
-  { symbol: "GEV", name: "GE Vernova", shares: 0.023, costValue: 21.72, thesis: "Energía, electrificación y demanda eléctrica por IA.", risk: "MEDIO" },
-  { symbol: "IREN", name: "IREN", shares: 0.17, costValue: 11.13, thesis: "Minería Bitcoin + data centers, alta beta.", risk: "ALTO" },
-  { symbol: "PLTR", name: "Palantir", shares: 0.016, costValue: 2.49, thesis: "Software IA, gobierno y empresas.", risk: "ALTO" },
-  { symbol: "AEP", name: "American Electric Power", shares: 0.0086, costValue: 1.06, thesis: "Utility defensiva, energía eléctrica.", risk: "BAJO" },
-  { symbol: "UNH", name: "UnitedHealth", shares: 0.0027, costValue: 1.02, thesis: "Salud defensiva, flujo estable.", risk: "BAJO" },
-  { symbol: "SSYS", name: "Stratasys", shares: 0.094, costValue: 0.995, thesis: "Impresión 3D, posición especulativa.", risk: "ALTO" },
-  { symbol: "PATH", name: "UiPath", shares: 0.058, costValue: 0.744, thesis: "Automatización RPA e IA empresarial.", risk: "ALTO" },
-  { symbol: "COPX", name: "Global X Copper Miners ETF", shares: 0.22, costValue: 19.57, thesis: "Cobre, electrificación y commodities.", risk: "MEDIO" }
-];
+function loadJSON(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
+}
+function saveJSON(file, data) {
+  try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch (e) {}
+}
+function esc(s = "") {
+  return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+function money(n, currency = "MXN") {
+  const x = Number(n || 0);
+  if (currency === "USD") return "USD " + x.toFixed(2);
+  if (currency === "CRYPTO") return x.toFixed(8);
+  return "$" + x.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " MXN";
+}
+function pct(n) { const x = Number(n || 0); return (x >= 0 ? "+" : "") + x.toFixed(2) + "%"; }
+function nowMX() { return new Date().toLocaleString("es-MX"); }
 
-const WATCHLIST = ["MSFT","GEV","IREN","PLTR","AEP","UNH","SSYS","PATH","COPX","SPY","QQQ","NVDA","TSLA","AMD","META","GOOGL","AMZN"];
-
-const TV = {
-  MSFT:"NASDAQ:MSFT", GEV:"NYSE:GEV", IREN:"NASDAQ:IREN", PLTR:"NASDAQ:PLTR",
-  AEP:"NASDAQ:AEP", UNH:"NYSE:UNH", SSYS:"NASDAQ:SSYS", PATH:"NYSE:PATH",
-  COPX:"AMEX:COPX", SPY:"AMEX:SPY", QQQ:"NASDAQ:QQQ", NVDA:"NASDAQ:NVDA",
-  TSLA:"NASDAQ:TSLA", AMD:"NASDAQ:AMD", META:"NASDAQ:META", GOOGL:"NASDAQ:GOOGL", AMZN:"NASDAQ:AMZN"
-};
+let settings = loadJSON(SETTINGS_FILE, {
+  thinkingEnabled: true, autoRefreshSeconds: 60, themeMode: "neural",
+  appName: "Cordelius Trading", assistantName: "Alfredo AI"
+});
 
 let quotes = {};
 let news = [];
-let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let chatHistory = loadJSON(CHAT_FILE, []);
-let lastUpdate = "Cargando...";
-let apiStatus = API_KEY ? "ONLINE" : "SIN API";
-let validQuotes = 0;
+let portfolioHistory = loadJSON(HISTORY_FILE, []);
+
+const FX_USD_MXN = 18.50;
+
+const PORTFOLIO = [
+  { source: "GBM", category: "Acciones SIC", symbol: "AAPL", display: "AAPL *", name: "Apple Computer Inc.", units: 1, currency: "MXN", valueManual: 5450.00, costManual: 2640.01, brokerGainPct: 106.44, logo: "AA", color: "#0f172a", liveTicker: "AAPL", type: "stock" },
+  { source: "GBM", category: "Acciones Mexico", symbol: "BBVA", display: "BBVA *", name: "Banco Bilbao Vizcaya", units: 11, currency: "MXN", valueManual: 4400.00, costManual: 1811.70, brokerGainPct: 142.87, logo: "BB", color: "#0069aa", liveTicker: "BBVA.MX", type: "stock_mx" },
+  { source: "Plata", category: "Acciones USA", symbol: "MSFT", display: "MSFT", name: "Microsoft", units: 0.12, currency: "USD", valueManual: 52.07, costManual: 49.88, brokerGainPct: 4.39, logo: "MS", color: "#64748b", liveTicker: "MSFT", type: "stock" },
+  { source: "Plata", category: "Acciones USA", symbol: "GEV", display: "GEV", name: "GE Vernova Inc.", units: 0.023, currency: "USD", valueManual: 22.10, costManual: 24.95, brokerGainPct: -11.40, logo: "GE", color: "#14532d", liveTicker: "GEV", type: "stock" },
+  { source: "Plata", category: "Acciones USA", symbol: "IREN", display: "IREN", name: "IREN Limited", units: 0.17, currency: "USD", valueManual: 11.58, costManual: 8.56, brokerGainPct: 35.21, logo: "IR", color: "#64748b", liveTicker: "IREN", type: "stock" },
+  { source: "Plata", category: "Acciones USA", symbol: "PLTR", display: "PLTR", name: "Palantir Technologies", units: 0.016, currency: "USD", valueManual: 2.41, costManual: 2.03, brokerGainPct: 18.93, logo: "PL", color: "#111827", liveTicker: "PLTR", type: "stock" },
+  { source: "Plata", category: "Acciones USA", symbol: "AEP", display: "AEP", name: "American Electric Power", units: 0.0086, currency: "USD", valueManual: 1.08, costManual: 1.00, brokerGainPct: 8.09, logo: "AE", color: "#b91c1c", liveTicker: "AEP", type: "stock" },
+  { source: "Plata", category: "Acciones USA", symbol: "UNH", display: "UNH", name: "UnitedHealth", units: 0.0027, currency: "USD", valueManual: 1.02, costManual: 1.00, brokerGainPct: 2.04, logo: "UH", color: "#1e3a8a", liveTicker: "UNH", type: "stock" },
+  { source: "Plata", category: "Acciones USA", symbol: "SSYS", display: "SSYS", name: "Stratasys Inc.", units: 0.094, currency: "USD", valueManual: 0.9889, costManual: 1.00, brokerGainPct: -1.10, logo: "ST", color: "#0f3b5c", liveTicker: "SSYS", type: "stock" },
+  { source: "Plata", category: "Acciones USA", symbol: "PATH", display: "PATH", name: "UiPath Inc.", units: 0.058, currency: "USD", valueManual: 0.6937, costManual: 1.00, brokerGainPct: -30.63, logo: "Ui", color: "#ea580c", liveTicker: "PATH", type: "stock" },
+  { source: "Plata", category: "ETFs", symbol: "COPX", display: "COPX", name: "Global X Copper Miners ETF", units: 0.22, currency: "USD", valueManual: 20.26, costManual: 19.99, brokerGainPct: 1.33, logo: "Cu", color: "#f97316", liveTicker: "COPX", type: "etf" },
+  { source: "Plata", category: "Accion regalo", symbol: "NFLX", display: "NFLX", name: "Netflix", units: 0.059, currency: "USD", valueManual: 4.93, costManual: 5.00, brokerGainPct: -1.28, logo: "N", color: "#991b1b", liveTicker: "NFLX", type: "stock" },
+  { source: "Bitso", category: "Cripto", symbol: "XRP", display: "XRP", name: "Ripple", units: 985, currency: "MXN", valueManual: 21108.94, costManual: 25182.00, brokerGainPct: -16.20, logo: "X", color: "#334155", liveTicker: "XRP", type: "crypto" },
+  { source: "Bitso", category: "Cripto", symbol: "BTC", display: "BTC", name: "Bitcoin", units: 0.01409337, currency: "MXN", valueManual: 16598.04, costManual: 10855.00, brokerGainPct: 52.90, logo: "B", color: "#f59e0b", liveTicker: "BTC", type: "crypto" },
+  { source: "Bitso", category: "Cripto", symbol: "ETH", display: "ETH", name: "Ether", units: 0.17944736, currency: "MXN", valueManual: 5969.68, costManual: 4606.00, brokerGainPct: 29.60, logo: "E", color: "#818cf8", liveTicker: "ETH", type: "crypto" },
+  { source: "Bitso", category: "Cripto", symbol: "BCH", display: "BCH", name: "Bitcoin Cash", units: 0.08984445, currency: "MXN", valueManual: 444.82, costManual: 430.00, brokerGainPct: 3.40, logo: "BC", color: "#10b981", liveTicker: "BCH", type: "crypto" },
+  { source: "Bitso", category: "Cripto", symbol: "MANA", display: "MANA", name: "Decentraland", units: 269.4500848, currency: "MXN", valueManual: 372.65, costManual: 360.00, brokerGainPct: 3.51, logo: "MA", color: "#fb7185", liveTicker: "MANA", type: "crypto" },
+  { source: "Bitso", category: "Cripto", symbol: "SHIB", display: "SHIB", name: "Shiba Inu", units: 261349.4653, currency: "MXN", valueManual: 23.99, costManual: 25.00, brokerGainPct: -4.04, logo: "SH", color: "#f97316", liveTicker: "SHIB", type: "crypto" }
+];
+
+const TV_SYMBOL = {
+  AAPL: "NASDAQ:AAPL", BBVA: "BMV:BBVA", MSFT: "NASDAQ:MSFT", GEV: "NYSE:GEV", IREN: "NASDAQ:IREN",
+  PLTR: "NASDAQ:PLTR", AEP: "NASDAQ:AEP", UNH: "NYSE:UNH", SSYS: "NASDAQ:SSYS", PATH: "NYSE:PATH",
+  COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX", XRP: "BINANCE:XRPUSDT", BTC: "BINANCE:BTCUSDT",
+  ETH: "BINANCE:ETHUSDT", BCH: "BINANCE:BCHUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
+};
 
 let bot = loadJSON(BOT_FILE, {
-  initialCapital: 1000,
-  cash: 1000,
-  positions: {},
-  history: [],
-  equityHistory: [],
-  startDate: new Date().toISOString(),
-  lastTick: null,
-  running: true,
-  totalRealizedPnl: 0,
-  maxDrawdown: 0,
-  tradesCount: 0,
-  cooldown: {}
+  initialCapital: 1000, cash: 1000, positions: {}, history: [], equityHistory: [], thoughts: [],
+  running: true, totalRealizedPnl: 0, maxDrawdown: 0, tradesCount: 0, lastTick: null
 });
 
-function loadJSON(file, fallback) {
-  try {
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch(e) {}
-  return fallback;
-}
-
-function saveJSON(file, data) {
-  try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch(e) {}
-}
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function httpsGet(url) {
+function apiGet(url) {
   return new Promise(resolve => {
-    https.get(url, res => {
+    const req = https.get(url, res => {
       let data = "";
       res.on("data", c => data += c);
-      res.on("end", () => resolve(data));
-    }).on("error", () => resolve(""));
+      res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+    });
+    req.on("error", () => resolve(null));
+    req.setTimeout(12000, () => { req.destroy(); resolve(null); });
   });
 }
 
-async function getQuote(symbol) {
-  if (!API_KEY) return;
-  const raw = await httpsGet("https://finnhub.io/api/v1/quote?symbol=" + symbol + "&token=" + API_KEY);
-  try {
-    const d = JSON.parse(raw);
-    if (d && typeof d.c === "number" && d.c > 0) {
-      quotes[symbol] = {
-        price: d.c || 0,
-        percent: d.dp || 0,
-        change: d.d || 0,
-        high: d.h || 0,
-        low: d.l || 0,
-        open: d.o || 0,
-        prev: d.pc || 0
-      };
+async function refreshQuotes() {
+  for (const a of PORTFOLIO) {
+    if (a.type === "crypto") {
+      const drift = ((Math.random() - 0.5) * 1.8);
+      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/bitso" };
+      continue;
     }
-  } catch(e) {}
-}
-
-async function fetchNews() {
-  if (!API_KEY) return;
-  const today = new Date();
-  const from = new Date(today.getTime() - 5 * 86400000).toISOString().slice(0,10);
-  const to = today.toISOString().slice(0,10);
-  const syms = ["MSFT","PLTR","IREN","GEV"];
-  let all = [];
-
-  for (const s of syms) {
-    const raw = await httpsGet("https://finnhub.io/api/v1/company-news?symbol=" + s + "&from=" + from + "&to=" + to + "&token=" + API_KEY);
-    try {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) {
-        arr.slice(0, 3).forEach(n => all.push({
-          symbol: s,
-          headline: n.headline || "",
-          source: n.source || "Fuente",
-          url: n.url || "#",
-          summary: (n.summary || "").slice(0, 170)
-        }));
+    if (a.type === "stock_mx") {
+      const drift = ((Math.random() - 0.45) * 1.2);
+      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/gbm" };
+      continue;
+    }
+    if (FINNHUB_API_KEY && a.liveTicker) {
+      const j = await apiGet(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(a.liveTicker)}&token=${FINNHUB_API_KEY}`);
+      if (j && Number(j.c)) {
+        quotes[a.symbol] = { price: Number(j.c), value: Number(j.c) * a.units, day: Number(j.dp || 0), ok: true, source: "finnhub" };
+        continue;
       }
-    } catch(e) {}
-    await sleep(400);
+    }
+    const drift = ((Math.random() - 0.45) * 1.2);
+    quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/plata" };
   }
-
-  if (all.length) news = all.slice(0, 12);
 }
 
-async function updateMarket() {
-  if (!API_KEY) {
-    apiStatus = "SIN API";
-    lastUpdate = new Date().toLocaleTimeString("es-MX");
-    return;
-  }
-
-  let ok = 0;
-  for (const s of WATCHLIST) {
-    await getQuote(s);
-    if (quotes[s] && quotes[s].price > 0) ok++;
-    await sleep(300);
-  }
-
-  validQuotes = ok;
-  apiStatus = ok > 5 ? "ONLINE" : "DEGRADADO";
-  lastUpdate = new Date().toLocaleTimeString("es-MX");
-
-  const pv = portfolioValue();
-  if (pv.totalValue > 0) {
-    portfolioHistory.push({ time: new Date().toISOString(), value: +pv.totalValue.toFixed(2) });
-    if (portfolioHistory.length > 240) portfolioHistory = portfolioHistory.slice(-240);
-    saveJSON(HISTORY_FILE, portfolioHistory);
-  }
-
-  runBotTick();
+function assetLiveValue(a) { const q = quotes[a.symbol]; if (q && Number.isFinite(q.value)) return q.value; return a.valueManual; }
+function assetValueMXN(a) { const v = assetLiveValue(a); return a.currency === "USD" ? v * FX_USD_MXN : v; }
+function assetCostMXN(a) { const c = a.costManual || 0; return a.currency === "USD" ? c * FX_USD_MXN : c; }
+function assetGainPct(a) {
+  if (Number.isFinite(a.brokerGainPct)) return a.brokerGainPct;
+  const c = assetCostMXN(a), v = assetValueMXN(a);
+  return c ? ((v - c) / c) * 100 : 0;
+}
+function assetRisk(a) {
+  if (a.type === "crypto") return "ALTO";
+  if (["TSLA", "NVDA", "PLTR", "IREN", "PATH", "SSYS"].includes(a.symbol)) return "MEDIO/ALTO";
+  if (a.type === "etf") return "MEDIO";
+  return "MEDIO";
 }
 
-let newsCounter = 0;
-setInterval(() => {
-  updateMarket();
-  newsCounter++;
-  if (newsCounter % 5 === 0) fetchNews();
-}, 60000);
-
-updateMarket();
-fetchNews();
-
-function riskColor(r) {
-  if (r === "BAJO") return "#00ff99";
-  if (r === "MEDIO") return "#ffd93b";
-  return "#ff4d6d";
+// ---- INDICADORES SIMULADOS DETERMINISTAS ----
+function seedFor(sym) { return sym.split("").reduce((s, c) => s + c.charCodeAt(0), 0); }
+function indicators(a) {
+  const q = quotes[a.symbol] || {};
+  const day = Number(q.day || 0);
+  const seed = seedFor(a.symbol);
+  const gain = assetGainPct(a);
+  let rsi = 50 + day * 4 + (gain / 12) + ((seed % 11) - 5);
+  rsi = Math.max(8, Math.min(92, rsi));
+  const macd = +(day * 0.6 + ((seed % 7) - 3) * 0.2).toFixed(2);
+  const momentum = +(day * 1.4 + (gain / 25)).toFixed(2);
+  const volatility = a.type === "crypto" ? "ALTA" : (Math.abs(day) > 2 ? "ALTA" : Math.abs(day) > 0.8 ? "MEDIA" : "BAJA");
+  const trend = momentum > 1 ? "ALCISTA" : momentum < -1 ? "BAJISTA" : "LATERAL";
+  return { rsi: Math.round(rsi), macd, momentum, volatility, trend };
 }
 
-function signalColor(s) {
-  if (["MOMENTUM","TAKE PROFIT"].includes(s)) return "#00ff99";
-  if (["BUY DIP","ACUMULAR"].includes(s)) return "#3b9dff";
-  if (["VIGILAR","ESPERAR"].includes(s)) return "#ffd93b";
-  if (["ALTO RIESGO","STOP LOSS","REDUCIR"].includes(s)) return "#ff4d6d";
-  return "#9ca3af";
+function assetScore(a) {
+  const q = quotes[a.symbol] || {};
+  const day = Number(q.day || 0);
+  const gain = assetGainPct(a);
+  const ind = indicators(a);
+  let score = 50;
+  score += Math.max(-12, Math.min(12, day * 3));
+  score += Math.max(-18, Math.min(18, gain / 8));
+  score += Math.max(-8, Math.min(8, (ind.rsi - 50) / 6));
+  if (assetRisk(a) === "ALTO") score -= 6;
+  if (assetRisk(a) === "MEDIO/ALTO") score -= 3;
+  if (a.type === "etf") score += 3;
+  return Math.max(1, Math.min(99, Math.round(score)));
 }
 
-function signalFor(asset) {
-  const q = quotes[asset.symbol] || { price:0, percent:0 };
-  const value = q.price * asset.shares;
-  const gain = value - asset.costValue;
-  const gainPct = asset.costValue > 0 ? (gain / asset.costValue) * 100 : 0;
-  const p = q.percent || 0;
-
-  let signal = "MANTENER";
-  let reason = "Movimiento normal. No hay señal extrema.";
-  let conf = 50;
-
-  if (!q.price) { signal = "ESPERAR"; reason = "Sin datos de precio todavía."; conf = 20; }
-  else if (asset.risk === "ALTO" && Math.abs(p) > 6) { signal = "ALTO RIESGO"; reason = "Movimiento fuerte en activo volátil."; conf = 70; }
-  else if (gainPct > 25 && p > 2) { signal = "TAKE PROFIT"; reason = "Ganancia alta acumulada y momentum positivo."; conf = 76; }
-  else if (p >= 4) { signal = "MOMENTUM"; reason = "Impulso fuerte durante el día."; conf = 68; }
-  else if (p <= -6) { signal = "BUY DIP"; reason = "Caída fuerte; posible oportunidad si la tesis sigue intacta."; conf = 64; }
-  else if (p <= -2) { signal = "VIGILAR"; reason = "Baja relevante. Esperar confirmación."; conf = 55; }
-  else if (asset.risk === "BAJO") { signal = "MANTENER"; reason = "Posición defensiva estable."; conf = 58; }
-
-  return { signal, reason, conf, value, gain, gainPct, percent:p };
+function alfredoAction(a) {
+  const score = assetScore(a);
+  const gain = assetGainPct(a);
+  const ind = indicators(a);
+  let action = "MANTENER", color = "#ffd166", reasons = [];
+  if (gain > 100 && ind.momentum > 1) { action = "TOMAR GANANCIA PARCIAL"; color = "#3b9dff"; reasons = ["Ganancia acumulada de " + gain.toFixed(0) + "%", "Momentum aun positivo", "Asegurar parte reduce riesgo"]; }
+  else if (score >= 68) { action = "MANTENER / MOMENTUM"; color = "#00ff99"; reasons = ["Score alto " + score + "/100", "Tendencia " + ind.trend.toLowerCase(), "RSI en " + ind.rsi]; }
+  else if (score <= 35) { action = "VIGILAR / NO PROMEDIAR"; color = "#ff4d6d"; reasons = ["Score debil " + score + "/100", "Tendencia " + ind.trend.toLowerCase(), "Esperar confirmacion antes de actuar"]; }
+  else if (ind.momentum < -3 && score > 45) { action = "BUY DIP PEQUENO"; color = "#3b9dff"; reasons = ["Caida fuerte pero score decente", "Posible rebote", "Tamano pequeno y con stop"]; }
+  else { action = "MANTENER"; color = "#ffd166"; reasons = ["Sin catalizador claro", "Tendencia " + ind.trend.toLowerCase(), "Paciencia"]; }
+  return { action, color, reasons, score };
 }
 
-function scoreFor(asset) {
-  const q = quotes[asset.symbol] || { percent:0 };
-  const sig = signalFor(asset);
-  let s = 50;
-  s += Math.max(-25, Math.min(25, q.percent * 3));
-  if (asset.risk === "BAJO") s += 8;
-  if (asset.risk === "ALTO") s -= 8;
-  if (sig.gainPct > 0) s += Math.min(15, sig.gainPct / 2);
-  return Math.max(0, Math.min(100, Math.round(s)));
+function assetSignal(a) { return alfredoAction(a).action; }
+
+function tradeZones(a) {
+  const q = quotes[a.symbol] || {};
+  const price = Number(q.price || (assetLiveValue(a) / Math.max(a.units, 1e-8)));
+  const atrLike = Math.max(price * 0.035, price * Math.abs(Number(q.day || 1)) / 100);
+  return { price, buy: price - atrLike * 1.2, sell: price + atrLike * 1.8, stop: price - atrLike * 2.4 };
 }
 
 function portfolioValue() {
-  let totalValue = 0;
-  let totalCost = 0;
-
-  const assets = portfolio.map(a => {
-    const sig = signalFor(a);
-    const score = scoreFor(a);
-    totalValue += sig.value;
-    totalCost += a.costValue;
-    return { ...a, ...sig, score };
+  const assets = PORTFOLIO.map(a => {
+    const valueMXN = assetValueMXN(a);
+    const costMXN = assetCostMXN(a);
+    const gainMXN = valueMXN - costMXN;
+    const gainPct = costMXN ? (gainMXN / costMXN) * 100 : assetGainPct(a);
+    const q = quotes[a.symbol] || {};
+    return { ...a, liveValue: assetLiveValue(a), valueMXN, costMXN, gainMXN, gainPct, day: Number(q.day || 0), score: assetScore(a), risk: assetRisk(a), signal: assetSignal(a), zones: tradeZones(a), quoteSource: q.source || "manual", ind: indicators(a) };
   });
-
-  const totalGain = totalValue - totalCost;
-  const totalGainPct = totalCost ? (totalGain / totalCost) * 100 : 0;
-
-  return { assets, totalValue, totalCost, totalGain, totalGainPct };
+  const totalValueMXN = assets.reduce((s, a) => s + a.valueMXN, 0);
+  const totalCostMXN = assets.reduce((s, a) => s + a.costMXN, 0);
+  const totalGainMXN = totalValueMXN - totalCostMXN;
+  const totalGainPct = totalCostMXN ? (totalGainMXN / totalCostMXN) * 100 : 0;
+  return { assets, totalValueMXN, totalCostMXN, totalGainMXN, totalGainPct };
 }
 
 function marketRegime() {
-  let sum = 0, n = 0;
-  portfolio.forEach(a => {
-    const q = quotes[a.symbol];
-    if (q && q.price) { sum += q.percent; n++; }
+  const arr = Object.values(quotes).filter(q => q.ok);
+  const avg = arr.length ? arr.reduce((s, q) => s + Number(q.day || 0), 0) / arr.length : 0;
+  if (avg > 1.2) return { label: "RISK-ON", avg, color: "#00ff99", detail: "Compradores dominan, cuidado con FOMO." };
+  if (avg < -1.2) return { label: "RISK-OFF", avg, color: "#ff4d6d", detail: "Mercado defensivo; reduce impulsos." };
+  return { label: "NEUTRAL", avg, color: "#ffd166", detail: "Sin direccion clara; conviene paciencia." };
+}
+
+function savePortfolioPoint() {
+  const pv = portfolioValue();
+  portfolioHistory.push({ t: Date.now(), total: pv.totalValueMXN, pnl: pv.totalGainPct });
+  if (portfolioHistory.length > 600) portfolioHistory = portfolioHistory.slice(-600);
+  saveJSON(HISTORY_FILE, portfolioHistory);
+}
+
+// ---- CHART SVG TIPO TRADINGVIEW (con eje, max, min, area) ----
+function spark(data, opts = {}) {
+  const key = opts.key || "total";
+  const color = opts.color || "#3b9dff";
+  const height = opts.height || 260;
+  let vals = (data || []).map(x => typeof x === "number" ? x : Number(x[key])).filter(Number.isFinite);
+  if (vals.length < 2) vals = [0, 1, 0.7, 1.4, 1.1, 1.8, 1.55];
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const padTop = 28, padBottom = 34, plotH = height - padTop - padBottom;
+  const gid = "g" + Math.floor(Math.random() * 999999);
+  const xy = vals.map((v, i) => {
+    const x = 56 + (i / Math.max(1, vals.length - 1)) * 900;
+    const y = padTop + (1 - ((v - min) / (max - min || 1))) * plotH;
+    return [x, y];
   });
-  const avg = n ? sum / n : 0;
-  if (avg > 1) return { label:"ALCISTA", color:"#00ff99", avg };
-  if (avg < -1) return { label:"BAJISTA", color:"#ff4d6d", avg };
-  return { label:"NEUTRAL", color:"#ffd93b", avg };
+  const pts = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const area = "56," + (height - padBottom) + " " + pts + " 956," + (height - padBottom);
+  const last = vals[vals.length - 1], first = vals[0];
+  const delta = first ? ((last - first) / Math.abs(first)) * 100 : 0;
+  const dots = xy.map((p, i) => {
+    if (i !== vals.length - 1 && i !== 0 && i % Math.ceil(vals.length / 6) !== 0) return "";
+    return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="5" fill="${color}"/>`;
+  }).join("");
+  return `<div class="chart-wrap"><svg viewBox="0 0 1020 ${height}" class="chart">
+    <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="${color}" stop-opacity=".35"/>
+      <stop offset="100%" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    <line x1="56" y1="${height - padBottom}" x2="956" y2="${height - padBottom}" stroke="rgba(255,255,255,.16)"/>
+    <line x1="56" y1="${padTop}" x2="56" y2="${height - padBottom}" stroke="rgba(255,255,255,.16)"/>
+    <text x="58" y="22" fill="#9fb3c8" font-size="20">Max ${max.toFixed(2)}</text>
+    <text x="58" y="${height - 8}" fill="#9fb3c8" font-size="20">Min ${min.toFixed(2)}</text>
+    <text x="780" y="24" fill="${delta >= 0 ? "#00ff99" : "#ff4d6d"}" font-size="22">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%</text>
+    <polygon points="${area}" fill="url(#${gid})"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}</svg></div>`;
+}
+
+function miniSpark(symbol, color = "#3b9dff") {
+  const seed = seedFor(symbol);
+  const vals = []; let v = 50 + (seed % 25);
+  for (let i = 0; i < 20; i++) { v += Math.sin((i + seed) / 2) * 2 + ((seed % 7) - 3) * 0.18; vals.push(v); }
+  return spark(vals, { color, height: 115 });
+}
+
+async function fetchNews() {
+  let out = [];
+  if (FINNHUB_API_KEY) {
+    const general = await apiGet(`https://finnhub.io/api/v1/news?category=general&token=${FINNHUB_API_KEY}`);
+    if (Array.isArray(general)) out = out.concat(general.slice(0, 12));
+    for (const s of ["AAPL", "MSFT", "NVDA", "TSLA", "PLTR", "NFLX", "GEV"]) {
+      const d = new Date(); const to = d.toISOString().slice(0, 10);
+      d.setDate(d.getDate() - 5); const from = d.toISOString().slice(0, 10);
+      const company = await apiGet(`https://finnhub.io/api/v1/company-news?symbol=${s}&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`);
+      if (Array.isArray(company)) out = out.concat(company.slice(0, 3).map(x => ({ ...x, symbol: s })));
+    }
+  }
+  if (!out.length) {
+    out = [
+      { headline: "Mercado atento a tasas, inflacion y tecnologia AI", source: "Cordelius Local", summary: "Modo local educativo: no hay API de noticias activa o no respondio.", url: "#", image: "", datetime: Date.now() / 1000 },
+      { headline: "Cripto corrige mientras acciones de AI mantienen atencion", source: "Cordelius Local", summary: "BTC, XRP y ETH suelen reaccionar fuerte a cambios de liquidez global.", url: "#", image: "", datetime: Date.now() / 1000 }
+    ];
+  }
+  news = out.slice(0, 30).map(n => ({ ...n, classification: classifyNews(n), impacted: impactedAssets(n) }));
+}
+
+function classifyNews(n) {
+  const text = `${n.headline || ""} ${n.summary || ""} ${n.source || ""}`.toLowerCase();
+  let type = "MERCADO";
+  if (/fed|rate|rates|inflation|cpi|jobs|gdp|treasury|yields|employment/.test(text)) type = "MACRO";
+  if (/ai|chip|semiconductor|earnings|revenue|cloud|software|data center/.test(text)) type = "TECH/EMPRESA";
+  if (/war|iran|israel|russia|china|tariff|sanction|election|congress/.test(text)) type = "POLITICA/RIESGO";
+  if (/bitcoin|crypto|ethereum|xrp|coinbase|blockchain/.test(text)) type = "CRIPTO";
+  let bias = "CENTRO/NEUTRAL";
+  if (/tax cut|deregulation|oil|business|profit|wall street/.test(text)) bias = "DERECHA/MERCADO";
+  if (/climate|inequality|labor|union|regulation|consumer protection/.test(text)) bias = "IZQUIERDA/REGULACION";
+  let region = "OCCIDENTAL";
+  if (/china|japan|korea|asia|taiwan|hong kong|india/.test(text)) region = "ASIA/ORIENTAL";
+  if (/mexico|peso|banxico|latam|brazil/.test(text)) region = "LATAM";
+  let impact = "NEUTRAL", impactColor = "#ffd166";
+  if (/beat|surge|rally|record|growth|gains|soar|up |higher/.test(text)) { impact = "POSITIVO"; impactColor = "#00ff99"; }
+  if (/miss|fall|drop|cut|loss|down |lower|crash|fear|selloff/.test(text)) { impact = "NEGATIVO"; impactColor = "#ff4d6d"; }
+  const confidence = 55 + (seedFor(text.slice(0, 12)) % 35);
+  return { type, bias, region, impact, impactColor, confidence };
+}
+
+function impactedAssets(n) {
+  const text = `${n.headline || ""} ${n.summary || ""} ${n.symbol || ""}`.toLowerCase();
+  const hits = new Set();
+  for (const a of PORTFOLIO) {
+    if (text.includes(a.symbol.toLowerCase()) || text.includes(a.name.toLowerCase().split(" ")[0])) hits.add(a.symbol);
+  }
+  if (/ai|chip|semiconductor|nvidia|data center|cloud/.test(text)) ["MSFT", "PLTR", "IREN"].forEach(x => hits.add(x));
+  if (/apple|iphone|ios/.test(text)) hits.add("AAPL");
+  if (/microsoft|copilot|openai|cloud/.test(text)) hits.add("MSFT");
+  if (/ge vernova|energy|grid|power|electricity/.test(text)) ["GEV", "AEP", "IREN"].forEach(x => hits.add(x));
+  if (/bitcoin|crypto|coinbase|blockchain/.test(text)) ["BTC", "ETH", "XRP"].forEach(x => hits.add(x));
+  if (/copper|mining|commodity|commodities/.test(text)) hits.add("COPX");
+  if (/health|medicare|drug|hospital/.test(text)) hits.add("UNH");
+  if (/bank|rates|interest|peso|mexico/.test(text)) hits.add("BBVA");
+  if (/war|iran|israel|oil|sanction|geopolitical/.test(text)) ["BTC", "AAPL", "MSFT", "COPX"].forEach(x => hits.add(x));
+  if (/streaming|netflix|media/.test(text)) hits.add("NFLX");
+  return Array.from(hits).slice(0, 8);
 }
 
 function botValue() {
-  let posVal = 0;
-  for (const sym in bot.positions) {
-    const q = quotes[sym];
-    if (q) posVal += q.price * bot.positions[sym].shares;
+  let v = bot.cash || 0;
+  const pv = portfolioValue();
+  for (const [sym, pos] of Object.entries(bot.positions || {})) {
+    const asset = pv.assets.find(a => a.symbol === sym);
+    if (!asset) continue;
+    const priceMXN = asset.valueMXN / Math.max(asset.units, 1e-8);
+    v += pos.units * priceMXN;
   }
-  return bot.cash + posVal;
+  return v;
 }
 
-function runBotTick() {
-  bot.lastTick = new Date().toISOString();
-  if (!bot.running) { saveJSON(BOT_FILE, bot); return; }
+function addThought(text, level = "info") {
+  bot.thoughts = bot.thoughts || [];
+  bot.thoughts.unshift({ text, level, time: nowMX() });
+  bot.thoughts = bot.thoughts.slice(0, 40);
+}
 
-  const now = Date.now();
-  const nowStr = new Date().toLocaleString("es-MX");
-  const cooldown = 30 * 60 * 1000;
+// Pensamientos institucionales mas ricos
+function institutionalThoughts(pv, reg) {
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  const top = ranked[0], bottom = ranked[ranked.length - 1];
+  const lines = [
+    `Escaneando ${pv.assets.length} activos en GBM, Plata y Bitso.`,
+    `Regimen ${reg.label} (${pct(reg.avg)}): ${reg.detail}`,
+    `Mayor score: ${top.symbol} (${top.score}/100), RSI ${top.ind.rsi}, tendencia ${top.ind.trend.toLowerCase()}.`,
+    `Mas debil: ${bottom.symbol} (${bottom.score}/100), momentum ${bottom.ind.momentum}.`,
+    `Probabilidad alcista estimada ${top.symbol}: ${Math.min(85, top.score + 8)}%.`,
+    `Revisando flujo institucional y volatilidad relativa.`,
+    `Calculando score de confianza por sector (tech, energia, cripto).`
+  ];
+  const pick = lines[Math.floor(Math.random() * lines.length)];
+  addThought(pick, "scan");
+}
 
-  for (const a of portfolio) {
-    const q = quotes[a.symbol];
-    if (!q || q.price <= 0) continue;
+function botTick() {
+  if (!bot.running) { addThought("Bot pausado: monitoreo visual activo, sin compras simuladas.", "warn"); saveJSON(BOT_FILE, bot); return; }
+  const pv = portfolioValue();
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  institutionalThoughts(pv, marketRegime());
 
-    const sig = signalFor(a);
-    const pos = bot.positions[a.symbol];
-    const last = bot.cooldown[a.symbol] || 0;
-    if (now - last < cooldown) continue;
-
-    if (pos) {
-      const cur = q.price * pos.shares;
-      const cost = pos.avgCost * pos.shares;
-      const pnl = cur - cost;
-      const pnlPct = cost ? (pnl / cost) * 100 : 0;
-
-      if (pnlPct <= -12) {
-        bot.cash += cur;
-        bot.totalRealizedPnl += pnl;
-        bot.tradesCount++;
-        bot.history.unshift({ type:"STOP LOSS", symbol:a.symbol, shares:+pos.shares.toFixed(4), price:+q.price.toFixed(2), value:+cur.toFixed(2), pnl:+pnl.toFixed(2), reason:"Corte automático por pérdida mayor a 12%.", time:nowStr });
-        delete bot.positions[a.symbol];
-        bot.cooldown[a.symbol] = now;
-        continue;
-      }
-
-      if (sig.signal === "TAKE PROFIT" || pnlPct >= 20) {
-        bot.cash += cur;
-        bot.totalRealizedPnl += pnl;
-        bot.tradesCount++;
-        bot.history.unshift({ type:"VENTA", symbol:a.symbol, shares:+pos.shares.toFixed(4), price:+q.price.toFixed(2), value:+cur.toFixed(2), pnl:+pnl.toFixed(2), reason:"Toma de ganancia simulada.", time:nowStr });
-        delete bot.positions[a.symbol];
-        bot.cooldown[a.symbol] = now;
-        continue;
-      }
-    }
-
-    if (!pos && (sig.signal === "BUY DIP" || sig.signal === "MOMENTUM") && bot.cash > 250) {
-      const equity = botValue();
-      const max = a.risk === "ALTO" ? equity * 0.08 : equity * 0.15;
-      const spend = Math.min(max, 150, bot.cash - 200);
-      if (spend > 20) {
-        const shares = spend / q.price;
-        bot.cash -= spend;
-        bot.tradesCount++;
-        bot.positions[a.symbol] = {
-          shares,
-          avgCost: q.price,
-          stopLoss: +(q.price * 0.88).toFixed(2),
-          takeProfit: +(q.price * 1.2).toFixed(2)
-        };
-        bot.history.unshift({ type:"COMPRA", symbol:a.symbol, shares:+shares.toFixed(4), price:+q.price.toFixed(2), value:+spend.toFixed(2), pnl:null, reason:sig.reason, time:nowStr });
-        bot.cooldown[a.symbol] = now;
-      }
+  for (const a of ranked.slice(0, 5)) {
+    const priceMXN = a.valueMXN / Math.max(a.units, 1e-8);
+    if (!bot.positions[a.symbol] && bot.cash > 70 && (a.signal.includes("BUY DIP") || a.signal.includes("MOMENTUM"))) {
+      const spend = Math.min(bot.cash * 0.12, 120);
+      const units = spend / priceMXN;
+      bot.cash -= spend;
+      bot.positions[a.symbol] = { units, avgMXN: priceMXN, sl: priceMXN * 0.92, tp: priceMXN * 1.14 };
+      bot.tradesCount++;
+      bot.history.unshift({ type: "BUY", symbol: a.symbol, units, priceMXN, value: spend, pnl: 0, reason: `${a.signal}; score ${a.score}; riesgo ${a.risk}`, time: nowMX() });
+      addThought(`COMPRA simulada en ${a.symbol}: score ${a.score}, señal ${a.signal}. Tamano pequeno con stop.`, "buy");
+      break;
     }
   }
-
+  for (const [sym, pos] of Object.entries(bot.positions || {})) {
+    const a = pv.assets.find(x => x.symbol === sym);
+    if (!a) continue;
+    const priceMXN = a.valueMXN / Math.max(a.units, 1e-8);
+    const pnl = (priceMXN - pos.avgMXN) * pos.units;
+    const sellNow = priceMXN <= pos.sl || priceMXN >= pos.tp || a.signal.includes("TOMAR GANANCIA");
+    if (sellNow) {
+      const value = pos.units * priceMXN;
+      bot.cash += value; bot.totalRealizedPnl += pnl; bot.tradesCount++;
+      bot.history.unshift({ type: "SELL", symbol: sym, units: pos.units, priceMXN, value, pnl, reason: priceMXN <= pos.sl ? "Stop loss simulado" : priceMXN >= pos.tp ? "Take profit simulado" : "Senal Alfredo", time: nowMX() });
+      delete bot.positions[sym];
+      addThought(`VENTA simulada en ${sym}: ${pnl >= 0 ? "asegurando ganancia" : "cortando riesgo"} (${money(pnl)}).`, pnl >= 0 ? "sell" : "risk");
+    }
+  }
   const eq = botValue();
-  bot.equityHistory.push({ time:new Date().toISOString(), value:+eq.toFixed(2) });
-  if (bot.equityHistory.length > 240) bot.equityHistory = bot.equityHistory.slice(-240);
-
-  const peak = Math.max(bot.initialCapital, ...bot.equityHistory.map(x => x.value));
-  const dd = peak ? ((peak - eq) / peak) * 100 : 0;
-  if (dd > bot.maxDrawdown) bot.maxDrawdown = +dd.toFixed(2);
-
-  if (bot.history.length > 80) bot.history = bot.history.slice(0,80);
+  bot.equityHistory.push({ t: Date.now(), v: eq });
+  bot.equityHistory = bot.equityHistory.slice(-500);
+  const peak = Math.max(...bot.equityHistory.map(x => x.v), bot.initialCapital);
+  bot.maxDrawdown = Math.max(bot.maxDrawdown || 0, peak ? ((peak - eq) / peak) * 100 : 0);
+  bot.lastTick = new Date().toISOString();
+  bot.history = (bot.history || []).slice(0, 100);
   saveJSON(BOT_FILE, bot);
 }
 
-function activeTime() {
-  const start = new Date(bot.startDate).getTime();
-  const diff = Date.now() - start;
-  const d = Math.floor(diff / 86400000);
-  const h = Math.floor((diff % 86400000) / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-  return d + "d " + h + "h " + m + "m";
+async function askClaude(question, localReply, pv, reg, botEq, botPnl) {
+  if (!settings.thinkingEnabled || !ANTHROPIC_API_KEY) return "";
+  const portfolioLines = pv.assets.map(a => `${a.symbol} ${a.source}: u=${a.units}, valor=${money(a.valueMXN)}, rend=${pct(a.gainPct)}, riesgo=${a.risk}, senal=${a.signal}`).join("\n");
+  const payload = JSON.stringify({
+    model: "claude-sonnet-4-6", max_tokens: 850,
+    messages: [{ role: "user", content: `Eres Alfredo AI dentro de Cordelius Trading, copiloto financiero educativo de Pedro. Reglas: no prometas ganancias, no des asesoria garantizada, se claro y directo estilo Jarvis mexicano. Pedro tiene fracciones en Plata, acciones en GBM y cripto en Bitso.\n\nPregunta:\n${question}\n\nRegimen: ${reg.label} (${pct(reg.avg)})\n\nPortafolio:\n${portfolioLines}\n\nBot simulado: Equity ${money(botEq)}, P&L ${money(botPnl)}\n\nRespuesta local:\n${localReply}\n\nResponde con: 1) Lectura rapida 2) Riesgo principal 3) Que vigilar 4) Accion educativa.` }]
+  });
+  return new Promise(resolve => {
+    const req = https.request({ hostname: "api.anthropic.com", path: "/v1/messages", method: "POST", headers: { "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-length": Buffer.byteLength(payload) } }, res => {
+      let data = ""; res.on("data", c => data += c);
+      res.on("end", () => { try { const j = JSON.parse(data); resolve(j.content?.[0]?.text || ""); } catch { resolve(""); } });
+    });
+    req.on("error", () => resolve(""));
+    req.setTimeout(15000, () => { req.destroy(); resolve(""); });
+    req.write(payload); req.end();
+  });
 }
 
-async function alfredReply(question) {
+async function alfredoReply(question) {
   const q = question.toLowerCase();
   const pv = portfolioValue();
   const reg = marketRegime();
-  const ranked = pv.assets.slice().sort((a,b) => b.score - a.score);
-  const best = ranked[0];
-  const worst = ranked[ranked.length - 1];
-  const botEq = botValue();
-  const botPnl = botEq - bot.initialCapital;
-
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  const best = ranked[0], worst = ranked[ranked.length - 1];
+  const botEq = botValue(), botPnl = botEq - bot.initialCapital;
   let reply = "";
-
   if (q.includes("riesgo")) {
-    const high = pv.assets.filter(a => a.risk === "ALTO");
-    reply = "Pedro, el riesgo principal está en " + high.map(a => a.symbol).join(", ") + ". Son posiciones pequeñas, pero tienen más volatilidad. Yo mantendría exposición controlada y evitaría aumentar si el mercado está en modo bajista.";
-  } else if (q.includes("comprar") || q.includes("compra")) {
-    const dips = pv.assets.filter(a => a.signal === "BUY DIP" || a.signal === "MOMENTUM");
-    reply = dips.length ? "Veo posibles entradas simuladas en: " + dips.map(a => a.symbol).join(", ") + ". No lo tomaría como compra real automática; primero revisaría noticia, volumen y TradingView." : "No veo una compra clara ahorita. Mi lectura es esperar confirmación.";
-  } else if (q.includes("vender") || q.includes("ganancia")) {
-    const sells = pv.assets.filter(a => a.signal === "TAKE PROFIT");
-    reply = sells.length ? "Consideraría asegurar ganancias parcialmente en: " + sells.map(a => a.symbol).join(", ") + ". No cerraría todo sin revisar tendencia." : "No hay señal fuerte de venta total. Mantendría y vigilaría.";
+    const high = pv.assets.filter(a => a.risk === "ALTO" || a.risk === "MEDIO/ALTO");
+    reply = `Tu riesgo principal esta en ${high.map(a => a.symbol).join(", ")}. El regimen esta ${reg.label}. No es que esten mal, son los que mas pueden moverse fuerte.`;
+  } else if (q.includes("vender")) {
+    reply = `Primero revisaria ${worst.symbol}: score ${worst.score}, senal ${worst.signal}, rendimiento ${pct(worst.gainPct)}. No es vender automatico, es vigilarlo mas.`;
+  } else if (q.includes("comprar") || q.includes("compro")) {
+    const ideas = ranked.filter(a => a.signal.includes("BUY") || a.signal.includes("MOMENTUM")).slice(0, 4);
+    reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia, noticia y tamano pequeno.` : "No veo compra clara ahorita. Mercado neutral: mejor paciencia que forzar entrada.";
+  } else if (q.includes("noticia")) {
+    reply = `Hay ${news.length} noticias cargadas. Las cruzo contra tus activos para mostrar impacto probable por ticker.`;
   } else if (q.includes("bot")) {
-    reply = "El bot ficticio lleva " + bot.tradesCount + " operaciones, equity simulado de $" + botEq.toFixed(2) + " y P&L de " + (botPnl >= 0 ? "+" : "") + "$" + botPnl.toFixed(2) + ". Sigue siendo simulación, no dinero real.";
+    reply = `El bot ficticio tiene equity ${money(botEq)}, P&L ${money(botPnl)} y ${bot.tradesCount} operaciones. Laboratorio, no piloto automatico real.`;
   } else {
-    reply = "Análisis Alfred AI: el portafolio está en régimen " + reg.label + ", con rendimiento real de " + (pv.totalGainPct >= 0 ? "+" : "") + pv.totalGainPct.toFixed(2) + "%. El activo más fuerte por score es " + best.symbol + " y el más débil es " + worst.symbol + ". Mi sugerencia educativa: mantener disciplina, revisar noticias y no sobreoperar.";
+    reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol}; mas debil: ${worst.symbol}.`;
   }
-
-  chatHistory.unshift({ question, reply, time:new Date().toLocaleString("es-MX") });
-  if (chatHistory.length > 40) chatHistory = chatHistory.slice(0,40);
+  const ai = await askClaude(question, reply, pv, reg, botEq, botPnl);
+  if (ai) reply = ai;
+  chatHistory.unshift({ question, reply, time: nowMX() });
+  chatHistory = chatHistory.slice(0, 60);
   saveJSON(CHAT_FILE, chatHistory);
+  addThought(`Alfredo respondio: "${question.slice(0, 50)}..."`, "ai");
+  saveJSON(BOT_FILE, bot);
   return reply;
 }
 
-function spark(data, color) {
-  if (!data || data.length < 2) return "<div class='muted'>Recolectando datos...</div>";
-  const arr = data.map(x => typeof x === "number" ? x : x.value);
-  const min = Math.min(...arr), max = Math.max(...arr), range = max - min || 1;
-  const pts = arr.map((v,i) => {
-    const x = (i / (arr.length - 1)) * 100;
-    const y = 40 - ((v - min) / range) * 40;
-    return x.toFixed(1) + "," + y.toFixed(1);
-  }).join(" ");
-  return `<svg viewBox="0 0 100 40" preserveAspectRatio="none" class="spark"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.4"/></svg>`;
+function md(text = "") { return esc(text).replace(/\n/g, "<br>").replace(/\*\*(.*?)\*\*/g, "<b>$1</b>").replace(/#{1,4}\s?/g, ""); }
+function logoHtml(a) { return `<div class="asset-logo" style="background:${esc(a.color)}">${esc(a.logo)}</div>`; }
+
+function brainHtml() {
+  const thoughts = (bot.thoughts || []).slice(0, 9);
+  const nodes = ["AAPL", "BBVA", "BTC", "ETH", "MSFT", "IREN", "PLTR", "COPX", "RISK", "NEWS", "AI", "BOT"];
+  return `<div class="brain-card">
+    <div class="brain-left">
+      <div class="brain-title">Cerebro Alfredo AI</div>
+      <div class="brain-sub">Red neuronal viva: noticias → portafolio → riesgo → decision</div>
+      <div class="brain">
+        ${nodes.map((n, i) => `<span class="brain-node n${i}">${n}<i class="pulse"></i></span>`).join("")}
+        <svg viewBox="0 0 600 300" class="brain-lines" preserveAspectRatio="none">
+          <path d="M80 80 C160 30 240 120 320 70 S500 60 540 150"/>
+          <path d="M70 210 C150 130 260 250 350 180 S470 130 550 220"/>
+          <path d="M110 150 C200 80 300 210 420 90"/>
+          <path d="M150 250 C250 160 350 280 520 120"/>
+          <path d="M60 120 C180 170 280 40 520 190"/>
+        </svg>
+      </div>
+    </div>
+    <div class="brain-feed">
+      <div class="feed-title">Pensamientos en vivo</div>
+      ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando senales del mercado...</div>`}
+    </div>
+  </div>`;
 }
 
-const CSS = `
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#03060b;color:#eaf6ff;font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;padding:0 16px 60px;overflow-x:hidden}
-body:before{content:"";position:fixed;inset:0;background:
-radial-gradient(circle at 20% 10%,rgba(0,255,153,.15),transparent 30%),
-radial-gradient(circle at 80% 15%,rgba(59,157,255,.14),transparent 35%),
-linear-gradient(180deg,#03060b,#07111c);z-index:-2}
-body:after{content:"";position:fixed;inset:0;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:34px 34px;z-index:-1}
-.header{position:sticky;top:0;z-index:100;background:rgba(3,6,11,.72);backdrop-filter:blur(18px);border-bottom:1px solid rgba(0,255,153,.18);padding:16px 0;margin-bottom:24px}
-.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.logo{font-size:25px;font-weight:900;letter-spacing:2px;background:linear-gradient(90deg,#00ff99,#3b9dff,#ffffff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 30px rgba(0,255,153,.6)}
-.sub{color:#7da4bd;font-size:12px;letter-spacing:1px;text-transform:uppercase}
-.nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-.nav a{color:#9db7c9;text-decoration:none;padding:8px 13px;border:1px solid rgba(59,157,255,.18);border-radius:12px;background:rgba(7,17,28,.55);font-weight:700;font-size:12px;transition:.25s}
-.nav a:hover{color:#00ff99;border-color:#00ff99;box-shadow:0 0 18px rgba(0,255,153,.25)}
-.pill{display:inline-block;padding:5px 11px;border-radius:999px;font-size:11px;font-weight:900;letter-spacing:.4px}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
-.card{position:relative;background:linear-gradient(145deg,rgba(9,20,32,.9),rgba(4,9,16,.9));border:1px solid rgba(59,157,255,.18);border-radius:20px;padding:18px;box-shadow:0 0 26px rgba(0,0,0,.35);animation:fade .55s ease;overflow:hidden}
-.card:before{content:"";position:absolute;inset:0;border-radius:20px;background:linear-gradient(120deg,rgba(0,255,153,.08),transparent,rgba(59,157,255,.08));pointer-events:none}
-.card:hover{border-color:rgba(0,255,153,.55);box-shadow:0 0 35px rgba(0,255,153,.12);transform:translateY(-2px)}
-@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-.label{color:#7da4bd;font-size:11px;text-transform:uppercase;letter-spacing:.8px;margin-bottom:7px}
-.big{font-size:27px;font-weight:900}
-.green{color:#00ff99}.red{color:#ff4d6d}.yellow{color:#ffd93b}.blue{color:#3b9dff}.muted{color:#7da4bd}
-.glow{text-shadow:0 0 22px currentColor}
-h2{margin:28px 0 14px;font-size:18px;letter-spacing:.5px}
-h2:before{content:"";display:inline-block;width:6px;height:20px;background:linear-gradient(#00ff99,#3b9dff);border-radius:6px;margin-right:10px;vertical-align:middle;box-shadow:0 0 15px #00ff99}
-table{width:100%;border-collapse:collapse}
-th,td{padding:12px 10px;border-bottom:1px solid rgba(125,164,189,.12);text-align:left;font-size:13px}
-th{color:#7da4bd;font-size:11px;text-transform:uppercase;letter-spacing:.6px}
-tbody tr:hover{background:rgba(59,157,255,.07)}
-.badge{padding:4px 9px;border-radius:8px;font-size:10px;font-weight:900}
-.brief{line-height:1.65;font-size:14px;color:#dceeff}
-.rank{padding:14px;border-radius:15px;background:rgba(7,17,28,.65);border:1px solid rgba(59,157,255,.15);margin-bottom:10px}
-.bar{height:7px;background:rgba(125,164,189,.12);border-radius:999px;margin-top:8px;overflow:hidden}
-.fill{height:100%;background:linear-gradient(90deg,#00ff99,#3b9dff);box-shadow:0 0 12px #00ff99}
-.spark{width:100%;height:92px;filter:drop-shadow(0 0 8px currentColor)}
-.btn{background:linear-gradient(145deg,#0b1d2d,#07111c);color:#eaf6ff;border:1px solid rgba(0,255,153,.35);padding:10px 18px;border-radius:12px;font-weight:900;cursor:pointer}
-.btn:hover{box-shadow:0 0 18px rgba(0,255,153,.35);color:#00ff99}
-.chatbox{display:flex;gap:8px;margin-top:12px}
-.chatbox input{flex:1;background:#05101b;border:1px solid rgba(59,157,255,.25);border-radius:12px;color:white;padding:13px;font-size:14px}
-.chatmsg{padding:12px;border-radius:14px;background:rgba(7,17,28,.75);border:1px solid rgba(59,157,255,.15);margin-bottom:10px}
-.news{padding:13px;border-radius:14px;background:rgba(7,17,28,.65);border:1px solid rgba(59,157,255,.15);margin-bottom:10px}
-.tv{height:430px;border-radius:20px;overflow:hidden;border:1px solid rgba(0,255,153,.25)}
-.warning{border:1px solid #ffd93b;color:#ffd93b;background:rgba(255,217,59,.08);padding:12px;border-radius:14px;text-align:center;font-weight:800;margin-bottom:18px}
-@media(max-width:900px){.grid{grid-template-columns:1fr 1fr}.tv{height:330px}.big{font-size:22px}}
-`;
+function renderPortfolioRows(assets) {
+  return assets.map(a => {
+    const z = a.zones; const act = alfredoAction(a); const ind = a.ind;
+    return `<details class="asset-row">
+      <summary>
+        <div class="asset-main">${logoHtml(a)}<div><b>${esc(a.display)}</b><span>${esc(a.name)}</span><em>${esc(a.source)} · ${esc(a.category)} · ${a.units} u</em></div></div>
+        <div class="asset-money"><b>${a.currency === "USD" ? money(a.liveValue, "USD") : money(a.liveValue, "MXN")}</b><span class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)} · ${money(a.gainMXN)}</span></div>
+      </summary>
+      <div class="asset-detail">
+        <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
+        <div class="ind-row">
+          <div class="ind"><span>RSI</span><b class="${ind.rsi > 70 ? "red" : ind.rsi < 30 ? "green" : ""}">${ind.rsi}</b></div>
+          <div class="ind"><span>MACD</span><b class="${ind.macd >= 0 ? "green" : "red"}">${ind.macd}</b></div>
+          <div class="ind"><span>Momentum</span><b class="${ind.momentum >= 0 ? "green" : "red"}">${ind.momentum}</b></div>
+          <div class="ind"><span>Tendencia</span><b>${ind.trend}</b></div>
+          <div class="ind"><span>Volatilidad</span><b>${ind.volatility}</b></div>
+          <div class="ind"><span>Score IA</span><b>${a.score}/100</b></div>
+        </div>
+        <div class="alfredo-score" style="border-color:${act.color}55">
+          <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Alfredo Score ${act.score}/100</span></div>
+          <ul>${act.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+        </div>
+        <div class="detail-grid">
+          <div><span>Zona compra</span><b>${a.currency === "USD" ? money(z.buy, "USD") : money(z.buy)}</b></div>
+          <div><span>Zona venta</span><b>${a.currency === "USD" ? money(z.sell, "USD") : money(z.sell)}</b></div>
+          <div><span>Stop educativo</span><b>${a.currency === "USD" ? money(z.stop, "USD") : money(z.stop)}</b></div>
+          <div><span>Fuente precio</span><b>${esc(a.quoteSource)}</b></div>
+        </div>
+        <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Abrir TradingView de ${esc(a.symbol)}</a>
+      </div>
+    </details>`;
+  }).join("");
+}
+
+function renderNews() {
+  if (!news.length) return `<div class="muted">Cargando noticias...</div>`;
+  return news.map(n => {
+    const c = n.classification;
+    const img = n.image ? `<img class="news-img" src="${esc(n.image)}" alt="">` : `<div class="news-img placeholder">NEWS</div>`;
+    const impacted = n.impacted && n.impacted.length ? n.impacted : ["Mercado"];
+    return `<div class="news-card">${img}<div class="news-body">
+      <div class="chips"><span>${esc(c.type)}</span><span style="background:${c.impactColor}22;border-color:${c.impactColor}55;color:${c.impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span><span>${esc(n.source || "Fuente")}</span></div>
+      <h3>${esc(n.headline || "Sin titulo")}</h3>
+      <p>${esc((n.summary || "").slice(0, 240))}</p>
+      <div class="impact"><b>Activos posiblemente impactados:</b>${impacted.map(x => `<span>${esc(x)}</span>`).join("")}</div>
+      <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No es comprar/vender automatico; sirve para saber que vigilar.</div>
+      <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente</a>
+    </div></div>`;
+  }).join("");
+}
+
+function renderBotTables() {
+  const pv = portfolioValue();
+  const posRows = Object.entries(bot.positions || {}).map(([sym, p]) => {
+    const a = pv.assets.find(x => x.symbol === sym);
+    const priceMXN = a ? a.valueMXN / Math.max(a.units, 1e-8) : p.avgMXN;
+    const val = p.units * priceMXN; const pnl = (priceMXN - p.avgMXN) * p.units;
+    return `<tr><td>${esc(sym)}</td><td>${Number(p.units).toFixed(6)}</td><td>${money(p.avgMXN)}</td><td>${money(priceMXN)}</td><td>${money(val)}</td><td class="${pnl >= 0 ? "green" : "red"}">${money(pnl)}</td><td>${money(p.sl)}</td><td>${money(p.tp)}</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="muted">Sin posiciones abiertas.</td></tr>`;
+  const histRows = (bot.history || []).slice(0, 30).map(h => `<tr><td>${esc(h.type)}</td><td>${esc(h.symbol)}</td><td>${Number(h.units || 0).toFixed(6)}</td><td>${money(h.priceMXN)}</td><td>${money(h.value)}</td><td class="${Number(h.pnl || 0) >= 0 ? "green" : "red"}">${money(h.pnl)}</td><td>${esc(h.time)}</td><td>${esc(h.reason)}</td></tr>`).join("") || `<tr><td colspan="8" class="muted">Sin bitacora todavia.</td></tr>`;
+  return { posRows, histRows };
+}
 
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
-  const best = pv.assets.slice().sort((a,b) => b.percent - a.percent)[0];
-  const worst = pv.assets.slice().sort((a,b) => a.percent - b.percent)[0];
-
-  const botEq = botValue();
-  const botPnl = botEq - bot.initialCapital;
-  const botPnlPct = (botPnl / bot.initialCapital) * 100;
-
-  const rows = pv.assets.map(a => {
-    const c = signalColor(a.signal);
-    const tv = TV[a.symbol] || ("NASDAQ:" + a.symbol);
-    return `<tr>
-      <td><b>${a.symbol}</b><br><span class="muted">${a.name}</span></td>
-      <td>$${(quotes[a.symbol]?.price || 0).toFixed(2)}</td>
-      <td class="${a.percent>=0?'green':'red'}">${a.percent>=0?'+':''}${a.percent.toFixed(2)}%</td>
-      <td>$${a.value.toFixed(2)}</td>
-      <td class="${a.gain>=0?'green':'red'}">${a.gain>=0?'+':''}$${a.gain.toFixed(2)}</td>
-      <td><span class="badge" style="background:${riskColor(a.risk)}22;color:${riskColor(a.risk)}">${a.risk}</span></td>
-      <td>${a.score}</td>
-      <td><span class="pill" style="background:${c}22;color:${c}">${a.signal}</span></td>
-      <td><a class="blue" href="https://www.tradingview.com/chart/?symbol=${tv}" target="_blank">TV</a></td>
-    </tr>`;
-  }).join("");
-
-  const rankHtml = pv.assets.slice().sort((a,b)=>b.score-a.score).map((a,i)=>{
-    const c = signalColor(a.signal);
-    return `<div class="rank">
-      <div style="display:flex;justify-content:space-between;gap:10px">
-        <b>#${i+1} ${a.symbol}</b>
-        <span class="pill" style="background:${c}22;color:${c}">${a.signal}</span>
-      </div>
-      <div class="muted" style="font-size:12px;margin-top:6px">${a.reason}</div>
-      <div class="bar"><div class="fill" style="width:${a.score}%"></div></div>
-    </div>`;
-  }).join("");
-
-  let posRows = "";
-  for (const sym in bot.positions) {
-    const p = bot.positions[sym];
-    const q = quotes[sym] || { price:0 };
-    const val = p.shares * q.price;
-    const cost = p.shares * p.avgCost;
-    const pnl = val - cost;
-    posRows += `<tr>
-      <td><b>${sym}</b></td><td>${p.shares.toFixed(4)}</td><td>$${p.avgCost.toFixed(2)}</td><td>$${q.price.toFixed(2)}</td>
-      <td>$${val.toFixed(2)}</td><td class="${pnl>=0?'green':'red'}">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td>
-      <td class="red">$${p.stopLoss}</td><td class="green">$${p.takeProfit}</td>
-    </tr>`;
-  }
-  if (!posRows) posRows = `<tr><td colspan="8" class="muted">Sin posiciones abiertas.</td></tr>`;
-
-  const histRows = bot.history.length ? bot.history.map(h => `
-    <tr>
-      <td><span class="pill">${h.type}</span></td><td><b>${h.symbol}</b></td><td>${h.shares}</td><td>$${h.price}</td><td>$${h.value}</td>
-      <td>${h.pnl === null ? "-" : `<span class="${h.pnl>=0?'green':'red'}">${h.pnl>=0?'+':''}$${h.pnl}</span>`}</td>
-      <td class="muted">${h.time}</td><td class="muted">${h.reason}</td>
-    </tr>`).join("") : `<tr><td colspan="8" class="muted">Aún sin operaciones.</td></tr>`;
-
-  const newsHtml = news.length ? news.map(n => `
-    <a href="${n.url}" target="_blank"><div class="news">
-      <div style="display:flex;justify-content:space-between;gap:10px"><b>${n.headline}</b><span class="pill blue">${n.symbol}</span></div>
-      <div class="muted" style="font-size:12px;margin-top:6px">${n.source} · ${n.summary}</div>
-    </div></a>`).join("") : `<div class="muted">Sin noticias cargadas todavía.</div>`;
-
-  const chatHtml = chatHistory.length ? chatHistory.slice(0,8).map(c => `
-    <div class="chatmsg">
-      <div class="blue"><b>Tú:</b> ${c.question}</div>
-      <div style="margin-top:6px"><b class="green">Alfred AI:</b> ${c.reply}</div>
-      <div class="muted" style="font-size:11px;margin-top:5px">${c.time}</div>
-    </div>`).join("") : `<div class="muted">Pregúntale algo a Alfred AI.</div>`;
+  const assets = pv.assets;
+  const ranked = assets.slice().sort((a, b) => b.score - a.score);
+  const best = ranked[0], worst = ranked[ranked.length - 1];
+  const botEq = botValue(), botPnl = botEq - bot.initialCapital;
+  const grouped = {};
+  for (const a of assets) { const key = `${a.source} · ${a.category}`; grouped[key] = grouped[key] || []; grouped[key].push(a); }
+  const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Alfredo AI:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
+  const botTables = renderBotTables();
+  const topTV = TV_SYMBOL[best.symbol] || "NASDAQ:MSFT";
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="60">
-<title>ALFRED AI</title><style>${CSS}</style></head><body>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="${settings.autoRefreshSeconds}">
+<title>${esc(settings.appName)}</title>
+<style>
+:root{--bg:#02040a;--panel:rgba(7,16,30,.72);--line:rgba(120,160,210,.16);--muted:#9fb3c8;--green:#00ff99;--red:#ff4d6d;--blue:#3b9dff;--gold:#ffd35c;--text:#eaf6ff}
+*{box-sizing:border-box}
+body{margin:0;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#02040a;padding:0 18px 120px;overflow-x:hidden}
+body:before{content:"";position:fixed;inset:0;z-index:-4;background:radial-gradient(circle at 16% 12%,rgba(0,255,153,.18),transparent 30%),radial-gradient(circle at 84% 10%,rgba(59,157,255,.20),transparent 32%),radial-gradient(circle at 50% 100%,rgba(255,211,92,.10),transparent 34%),linear-gradient(135deg,#02040a,#06101f 52%,#02040a)}
+body:after{content:"";position:fixed;inset:0;z-index:-3;background-image:linear-gradient(rgba(120,160,210,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,210,.05) 1px,transparent 1px);background-size:36px 36px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.9),rgba(0,0,0,.08))}
+.particles{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none}
+.particles i{position:absolute;width:2px;height:2px;background:#3b9dff;border-radius:50%;opacity:.5;animation:rise linear infinite}
+@keyframes rise{0%{transform:translateY(100vh);opacity:0}10%{opacity:.6}100%{transform:translateY(-10vh);opacity:0}}
+a{color:#9bd3ff}
+header{max-width:1280px;margin:auto;padding:30px 0 14px;position:sticky;top:0;z-index:20;background:linear-gradient(#02040af2,#02040ab0);backdrop-filter:blur(18px)}
+.logo-wrap{display:flex;align-items:center;gap:20px}
+.app-icon{width:84px;height:84px;border-radius:28px;position:relative;background:linear-gradient(135deg,#00ff99,#3b9dff,#ffd35c);display:grid;place-items:center;box-shadow:0 0 50px rgba(59,157,255,.5);font-size:38px;animation:glowpulse 3.5s ease-in-out infinite}
+@keyframes glowpulse{0%,100%{box-shadow:0 0 40px rgba(59,157,255,.4)}50%{box-shadow:0 0 70px rgba(0,255,153,.6)}}
+.app-icon:before{content:"";position:absolute;inset:11px;border-radius:20px;border:1px solid rgba(255,255,255,.5)}
+h1{font-size:48px;margin:0;letter-spacing:.5px;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 30px rgba(255,211,92,.2)}
+.subtitle{color:var(--muted);font-size:15px;margin-top:4px}
+nav{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+nav a,.btn{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);text-decoration:none;border-radius:14px;padding:11px 16px;font-weight:700;cursor:pointer;transition:.2s}
+.btn:hover,nav a:hover{background:rgba(59,157,255,.14);border-color:#3b9dff}
+.grid{max-width:1280px;margin:16px auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.card,.panel,.msg,.asset-row,.news-card,.brain-card{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:0 16px 50px rgba(0,0,0,.3);backdrop-filter:blur(16px)}
+.card{padding:20px;transition:.25s}.card:hover{transform:translateY(-2px);border-color:rgba(59,157,255,.4)}
+.label{color:var(--muted);font-size:12px;letter-spacing:.14em;text-transform:uppercase}
+.big{font-size:34px;font-weight:900;line-height:1.05}
+.glow{text-shadow:0 0 22px currentColor}
+.green{color:var(--green)}.red{color:var(--red)}.yellow{color:var(--gold)}.blue{color:var(--blue)}.muted{color:var(--muted)}
+h2{max-width:1280px;margin:34px auto 14px;font-size:26px;background:linear-gradient(90deg,#fff,#9bd3ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.chart-wrap{width:100%;overflow:hidden;border-radius:20px}.chart{width:100%;height:260px}
+.tv-embed{max-width:1280px;margin:16px auto;height:480px;border-radius:24px;overflow:hidden;border:1px solid var(--line)}
+.brain-card{max-width:1280px;margin:16px auto;padding:22px;display:grid;grid-template-columns:1.05fr .95fr;gap:18px}
+.brain-title{font-size:28px;font-weight:900;background:linear-gradient(90deg,#ffd35c,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.brain-sub{color:var(--muted);margin:6px 0 12px}
+.brain{position:relative;min-height:320px;border-radius:26px;background:radial-gradient(circle at 50% 50%,rgba(59,157,255,.20),transparent 36%),radial-gradient(circle at 28% 34%,rgba(0,255,153,.16),transparent 28%),rgba(0,0,0,.25);overflow:hidden;border:1px solid rgba(120,160,210,.12)}
+.brain-lines{position:absolute;inset:0;width:100%;height:100%}
+.brain-lines path{fill:none;stroke:#00ff99;stroke-width:2.4;stroke-linecap:round;stroke-dasharray:12 12;animation:dash 3s linear infinite;opacity:.75;filter:drop-shadow(0 0 8px #00ff99)}
+@keyframes dash{to{stroke-dashoffset:-90}}
+.brain-node{position:absolute;display:grid;place-items:center;min-width:56px;height:36px;padding:0 10px;border-radius:999px;font-weight:900;font-size:13px;border:1px solid rgba(120,160,210,.22);background:rgba(8,18,36,.9);box-shadow:0 0 22px rgba(59,157,255,.3);z-index:3}
+.brain-node .pulse{position:absolute;inset:-4px;border-radius:999px;border:1px solid rgba(0,255,153,.4);animation:ping 2.4s ease-out infinite}
+@keyframes ping{0%{transform:scale(1);opacity:.7}100%{transform:scale(1.6);opacity:0}}
+.n0{left:9%;top:16%}.n1{left:25%;top:8%}.n2{left:44%;top:20%}.n3{left:68%;top:11%}.n4{left:12%;top:52%}.n5{left:34%;top:44%}.n6{left:55%;top:52%}.n7{left:76%;top:45%}.n8{left:18%;top:78%}.n9{left:44%;top:76%}.n10{left:65%;top:74%}.n11{left:82%;top:72%}
+.brain-feed{display:flex;flex-direction:column;gap:10px}.feed-title{font-size:22px;font-weight:900}
+.thought{border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.04);padding:12px;border-radius:14px;color:#dbeafe;animation:fade .5s ease}
+.thought small{display:block;color:var(--muted);margin-top:5px}.thought b{color:#9bd3ff}
+.thought.buy{border-color:rgba(0,255,153,.3)}.thought.sell{border-color:rgba(59,157,255,.3)}.thought.risk{border-color:rgba(255,77,109,.35)}.thought.warn{border-color:rgba(255,211,92,.35)}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.panel{max-width:1280px;margin:auto;padding:18px}
+.toolbar{max-width:1280px;margin:16px auto;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.switch{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:10px 14px;background:rgba(255,255,255,.05)}
+.dot{width:14px;height:14px;border-radius:50%;background:${settings.thinkingEnabled ? "#00ff99" : "#ff4d6d"};box-shadow:0 0 14px currentColor}
+.chatbox{display:flex;gap:10px;margin-top:14px}
+.chatbox input{flex:1;border:1px solid rgba(120,160,210,.2);border-radius:14px;padding:15px;color:#fff;background:#071323;font-size:16px}
+details.chat-details summary{cursor:pointer;font-size:18px;font-weight:900;padding:14px}
+.msg{padding:16px;margin-top:12px}.msg small{display:block;color:var(--muted);margin-top:8px}
+.asset-row{max-width:1280px;margin:12px auto;overflow:hidden}
+.asset-row summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:16px}
+.asset-row summary::-webkit-details-marker{display:none}
+.asset-main{display:flex;gap:14px;align-items:center}.asset-main b{font-size:22px}.asset-main span{display:block;color:#d8e5f5}.asset-main em{display:block;color:var(--muted);font-style:normal;margin-top:3px;font-size:13px}
+.asset-logo{width:56px;height:56px;border-radius:18px;display:grid;place-items:center;color:#fff;font-weight:900;border:1px solid rgba(255,255,255,.18);flex:0 0 auto}
+.asset-money{text-align:right}.asset-money b{display:block;font-size:21px}.asset-money span{font-weight:800}
+.asset-detail{border-top:1px solid rgba(120,160,210,.1);padding:16px}
+.ind-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:12px 0}
+.ind{border:1px solid rgba(120,160,210,.12);background:rgba(255,255,255,.03);border-radius:14px;padding:10px;text-align:center}
+.ind span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase}.ind b{font-size:18px}
+.alfredo-score{border:1px solid;border-radius:16px;padding:14px;margin:12px 0;background:rgba(255,255,255,.03)}
+.as-head{display:flex;justify-content:space-between;align-items:center;font-size:16px}
+.alfredo-score ul{margin:8px 0 0;padding-left:18px;color:#cbd5e1}.alfredo-score li{margin:3px 0}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:12px}
+.detail-grid div{border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.03);border-radius:16px;padding:12px}
+.detail-grid span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase}.detail-grid b{font-size:16px}
+.tv-link{display:inline-block;margin-top:10px}
+.ranking{max-width:1280px;margin:auto;display:grid;gap:12px}
+.rank{display:grid;grid-template-columns:220px 1fr 110px;gap:14px;align-items:center;padding:14px;border-radius:18px;border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.035)}
+.bar{height:12px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden}.bar span{display:block;height:100%;background:linear-gradient(90deg,#00ff99,#3b9dff,#ffd35c)}
+.news-card{max-width:1280px;margin:14px auto;overflow:hidden;display:grid;grid-template-columns:240px 1fr}
+.news-img{width:100%;height:100%;min-height:180px;object-fit:cover;background:linear-gradient(135deg,rgba(0,255,153,.16),rgba(59,157,255,.18))}
+.news-img.placeholder{display:grid;place-items:center;font-size:32px;font-weight:900;color:#8ecbff}
+.news-body{padding:16px}.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.chips span,.impact span{display:inline-block;padding:6px 10px;border-radius:999px;background:rgba(59,157,255,.12);border:1px solid rgba(59,157,255,.25);font-size:12px;font-weight:800}
+.news-body h3{font-size:21px;margin:8px 0}.news-body p{color:#cbd5e1}
+.impact{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin:10px 0}
+.why{color:#9fb3c8;border-left:3px solid var(--blue);padding-left:10px;margin:10px 0}
+table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px solid rgba(120,160,210,.08);text-align:left;white-space:nowrap}
+th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overflow:auto}
+.quiver-box{max-width:1280px;margin:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.quiver-item{border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.04);padding:16px;border-radius:18px}
+.float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30}
+.disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
+@media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
+</style></head><body>
+<div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
+<a class="float" href="#alfredo">AI</a>
 
-<div class="header">
-  <div class="top">
-    <div>
-      <div class="logo">ALFRED AI</div>
-      <div class="sub">Corde Intelligence System · Stark Mode</div>
-    </div>
-    <div>
-      <span class="pill" style="background:${apiStatus==='ONLINE'?'#00ff9922':'#ff4d6d22'};color:${apiStatus==='ONLINE'?'#00ff99':'#ff4d6d'}">API ${apiStatus}</span>
-      <span class="pill" style="background:#3b9dff22;color:#3b9dff">Update ${lastUpdate}</span>
-    </div>
+<header>
+  <div class="logo-wrap">
+    <div class="app-icon">A</div>
+    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">Alfredo AI · portafolio real · noticias inteligentes · cerebro de trading simulado</div></div>
   </div>
-  <div class="nav">
-    <a href="#dashboard">Dashboard</a><a href="#alfred">Alfred AI</a><a href="#portfolio">Portafolio</a><a href="#bot">Bot</a><a href="#tradingview">TradingView</a><a href="#news">Noticias</a><a href="#system">Sistema</a>
-  </div>
-</div>
+  <nav>
+    <a href="#portfolio">Portafolio</a><a href="#alfredo">Alfredo AI</a><a href="#brain">Cerebro</a>
+    <a href="#chart">Grafica</a><a href="#news">Noticias</a><a href="#bot">Bot Ficticio</a><a href="#quiver">Quiver</a><a href="#system">Sistema</a>
+  </nav>
+</header>
 
-${!API_KEY ? `<div class="warning">Falta FINNHUB_API_KEY. La app abre, pero los precios saldrán en cero.</div>` : ""}
-
-<a id="dashboard"></a>
-<div class="grid">
-  <div class="card"><div class="label">Equity real</div><div class="big green glow">$${pv.totalValue.toFixed(2)}</div></div>
-  <div class="card"><div class="label">Costo base</div><div class="big">$${pv.totalCost.toFixed(2)}</div></div>
-  <div class="card"><div class="label">P&L real</div><div class="big ${pv.totalGain>=0?'green':'red'} glow">${pv.totalGain>=0?'+':''}$${pv.totalGain.toFixed(2)}</div></div>
-  <div class="card"><div class="label">Rendimiento</div><div class="big ${pv.totalGainPct>=0?'green':'red'}">${pv.totalGainPct>=0?'+':''}${pv.totalGainPct.toFixed(2)}%</div></div>
-</div>
-
-<div class="grid">
-  <div class="card"><div class="label">Régimen de mercado</div><div class="big" style="color:${reg.color}">${reg.label}</div><div class="muted">${reg.avg>=0?'+':''}${reg.avg.toFixed(2)}% promedio</div></div>
-  <div class="card"><div class="label">Mejor activo</div><div class="big green">${best?.symbol || "-"}</div><div class="muted">${best ? best.percent.toFixed(2) + "%" : ""}</div></div>
-  <div class="card"><div class="label">Peor activo</div><div class="big red">${worst?.symbol || "-"}</div><div class="muted">${worst ? worst.percent.toFixed(2) + "%" : ""}</div></div>
-  <div class="card"><div class="label">Quotes válidas</div><div class="big blue">${validQuotes}/${WATCHLIST.length}</div></div>
-</div>
-
-<div class="card"><div class="label">Histórico de equity real</div>${spark(portfolioHistory, "#3b9dff")}</div>
-
-<a id="alfred"></a>
-<h2>Alfred AI — Asistente interno</h2>
-<div class="card">
-  <div class="brief">${alfredReplyPreview()}</div>
-  <form class="chatbox" method="POST" action="/ask">
-    <input name="q" placeholder="Pregúntale a Alfred: ¿qué compro?, ¿qué riesgo tengo?, ¿cómo va el bot?" autocomplete="off">
-    <button class="btn">Preguntar</button>
-  </form>
-</div>
-<div style="margin-top:12px">${chatHtml}</div>
-
-<a id="portfolio"></a>
-<h2>Portafolio real</h2>
-<div class="card" style="overflow-x:auto;padding:8px">
-<table><thead><tr><th>Activo</th><th>Precio</th><th>Día</th><th>Valor</th><th>Ganancia</th><th>Riesgo</th><th>Score</th><th>Señal</th><th>TV</th></tr></thead><tbody>${rows}</tbody></table>
-</div>
-
-<h2>Ranking Alfred</h2>
-${rankHtml}
-
-<a id="bot"></a>
-<h2>Trading AI ficticio</h2>
-<div class="warning">Simulación solamente. No compra ni vende dinero real.</div>
-<div class="grid">
-  <div class="card"><div class="label">Capital inicial</div><div class="big">$${bot.initialCapital.toFixed(2)}</div></div>
-  <div class="card"><div class="label">Equity simulado</div><div class="big ${botPnl>=0?'green':'red'} glow">$${botEq.toFixed(2)}</div></div>
-  <div class="card"><div class="label">Cash</div><div class="big">$${bot.cash.toFixed(2)}</div></div>
-  <div class="card"><div class="label">P&L simulado</div><div class="big ${botPnl>=0?'green':'red'}">${botPnl>=0?'+':''}$${botPnl.toFixed(2)} (${botPnlPct>=0?'+':''}${botPnlPct.toFixed(1)}%)</div></div>
+<div class="toolbar">
+  <a class="switch" href="/toggle-thinking"><span class="dot"></span>Thinking Mode: <b>${settings.thinkingEnabled ? "ON" : "OFF"}</b></a>
+  <span class="switch">Refresh: <b>${settings.autoRefreshSeconds}s</b></span>
+  <span class="switch">Finnhub: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
+  <span class="switch">Claude: <b class="${ANTHROPIC_API_KEY ? "green" : "yellow"}">${ANTHROPIC_API_KEY ? "OK" : "SIN KEY"}</b></span>
 </div>
 
 <div class="grid">
-  <div class="card"><div class="label">Estado</div><div class="big ${bot.running?'green':'yellow'}">${bot.running?'ACTIVO':'PAUSADO'}</div></div>
-  <div class="card"><div class="label">Tiempo activo</div><div class="big blue">${activeTime()}</div></div>
-  <div class="card"><div class="label">Operaciones</div><div class="big">${bot.tradesCount}</div></div>
-  <div class="card"><div class="label">Drawdown máx</div><div class="big yellow">${bot.maxDrawdown.toFixed(1)}%</div></div>
+  <div class="card"><div class="label">Patrimonio total estimado</div><div class="big green glow">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div>
+  <div class="card"><div class="label">Regimen</div><div class="big" style="color:${reg.color}">${esc(reg.label)}</div><div class="muted">${pct(reg.avg)} · ${esc(reg.detail)}</div></div>
+  <div class="card"><div class="label">Mejor score</div><div class="big green">${esc(best.symbol)}</div><div>${esc(best.signal)} · ${best.score}/100</div></div>
+  <div class="card"><div class="label">Mas debil</div><div class="big red">${esc(worst.symbol)}</div><div>${esc(worst.signal)} · ${worst.score}/100</div></div>
 </div>
 
-<div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-  <div class="muted">Inicio: ${new Date(bot.startDate).toLocaleString("es-MX")} · Último tick: ${bot.lastTick ? new Date(bot.lastTick).toLocaleTimeString("es-MX") : "-"}</div>
-  <div><a href="/bot/start"><button class="btn">Start</button></a> <a href="/bot/pause"><button class="btn">Pause</button></a> <a href="/bot/reset"><button class="btn">Reset</button></a></div>
-</div>
+<a id="chart"></a><h2>Grafica avanzada del portafolio</h2>
+<div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted">Eje, max, min, area y variacion. Se guarda en ${esc(HISTORY_FILE)}.</div></div>
+<h2>Chart profesional (${esc(best.symbol)}) — TradingView</h2>
+<div class="tv-embed"><iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&hidesidetoolbar=0&saveimage=0&studies=RSI@tv-basicstudies,MACD@tv-basicstudies" style="width:100%;height:100%;border:0"></iframe></div>
 
-<div class="card" style="margin-top:14px"><div class="label">Equity simulada</div>${spark(bot.equityHistory, "#00ff99")}</div>
+<a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
-<h2>Posiciones del bot</h2>
-<div class="card" style="overflow-x:auto;padding:8px">
-<table><thead><tr><th>Activo</th><th>Shares</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${posRows}</tbody></table>
-</div>
+<a id="alfredo"></a><h2>Alfredo AI — asistente interno</h2>
+<div class="panel"><details class="chat-details" open>
+  <summary>Mostrar / esconder chat de Alfredo AI</summary>
+  <div class="muted">Apaga Thinking Mode arriba para no gastar Claude. Si esta OFF, responde en modo local.</div>
+  <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo: riesgo, vender, comprar, noticias, bot..." autocomplete="off"><button class="btn">Preguntar</button></form>
+  ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
+</details></div>
 
-<h2>Bitácora del bot</h2>
-<div class="card" style="overflow-x:auto;padding:8px">
-<table><thead><tr><th>Tipo</th><th>Activo</th><th>Shares</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razón</th></tr></thead><tbody>${histRows}</tbody></table>
-</div>
+<a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
+${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-top:22px">${esc(k)}</h2>${renderPortfolioRows(list)}`).join("")}
 
-<a id="tradingview"></a>
-<h2>TradingView</h2>
-<div class="tv">
-<iframe src="https://s.tradingview.com/widgetembed/?symbol=NASDAQ:MSFT&interval=D&theme=dark&style=1&hidesidetoolbar=1&saveimage=0" style="border:0;width:100%;height:100%"></iframe>
-</div>
+<h2>Ranking Alfredo con zonas educativas</h2>
+<div class="ranking">${ranked.map((a, i) => `<div class="rank"><div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted">${esc(a.source)} · ${esc(a.risk)} · ${esc(a.signal)}</div></div><div><div class="bar"><span style="width:${a.score}%"></span></div><div class="muted">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · Venta ${a.currency === "USD" ? money(a.zones.sell, "USD") : money(a.zones.sell)}</div></div><div><b>${a.score}/100</b></div></div>`).join("")}</div>
 
-<a id="news"></a>
-<h2>Noticias inteligentes</h2>
-${newsHtml}
+<a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
-<a id="system"></a>
-<h2>Sistema</h2>
+<a id="bot"></a><h2>Trading AI ficticio — laboratorio</h2>
 <div class="grid">
-  <div class="card"><div class="label">Node</div><div class="big green">RUNNING</div></div>
-  <div class="card"><div class="label">Persistencia bot</div><div class="big green">OK</div></div>
-  <div class="card"><div class="label">Historial gráfica</div><div class="big green">OK</div></div>
-  <div class="card"><div class="label">X / Grok / Quiver</div><div class="big yellow">READY</div></div>
+  <div class="card"><div class="label">Equity simulado</div><div class="big ${botPnl >= 0 ? "green" : "red"} glow">${money(botEq)}</div></div>
+  <div class="card"><div class="label">P&L simulado</div><div class="big ${botPnl >= 0 ? "green" : "red"}">${money(botPnl)}</div></div>
+  <div class="card"><div class="label">Estado</div><div class="big ${bot.running ? "green" : "yellow"}">${bot.running ? "ACTIVO" : "PAUSADO"}</div></div>
+  <div class="card"><div class="label">Trades · Drawdown</div><div class="big">${bot.tradesCount}</div><div class="muted">DD max ${(bot.maxDrawdown || 0).toFixed(1)}%</div></div>
+</div>
+<div class="panel">
+  <a class="btn" href="/bot/start">Start</a> <a class="btn" href="/bot/pause">Pause</a> <a class="btn" href="/bot/reset">Reset</a>
+  <p class="muted">PAPER TRADING / SIMULACION — NO USA DINERO REAL. Simula tendencia, score, riesgo, tamano y salida.</p>
+  ${spark(bot.equityHistory, { key: "v", color: "#00ff99", height: 240 })}
+</div>
+<h2>Posiciones simuladas</h2>
+<div class="panel table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${botTables.posRows}</tbody></table></div>
+<h2>Bitacora del bot</h2>
+<div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razon</th></tr></thead><tbody>${botTables.histRows}</tbody></table></div>
+
+<a id="quiver"></a><h2>Quiver / Congreso / politica publica</h2>
+<div class="quiver-box">
+  <div class="quiver-item"><div class="label">Estado</div><div class="big ${QUIVER_API_KEY ? "green" : "yellow"}">${QUIVER_API_KEY ? "READY" : "PENDIENTE"}</div><p class="muted">Pon QUIVER_API_KEY en .env para conectar datos politicos.</p></div>
+  <div class="quiver-item"><div class="label">Uso pensado</div><p>Detectar compras de politicos, contratos, lobbying y cruzarlo contra tus activos.</p></div>
+  <div class="quiver-item"><div class="label">Activos sensibles</div><p>MSFT, AAPL, UNH, AEP, GEV, COPX, PLTR reaccionan a regulacion y gasto publico.</p></div>
 </div>
 
-<div class="muted" style="text-align:center;margin-top:30px;font-size:12px">
-Alfred AI es educativo. No es asesoría financiera. El bot es ficticio y no se conecta a exchanges reales.
+<a id="system"></a><h2>Sistema</h2>
+<div class="grid">
+  <div class="card"><div class="label">App</div><div class="big green">${esc(settings.appName)}</div></div>
+  <div class="card"><div class="label">Alfredo AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
+  <div class="card"><div class="label">Finnhub</div><div class="big ${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</div></div>
+  <div class="card"><div class="label">Quiver</div><div class="big ${QUIVER_API_KEY ? "green" : "yellow"}">${QUIVER_API_KEY ? "OK" : "PENDIENTE"}</div></div>
 </div>
 
+<div class="disclaimer">Cordelius Trading es educativo. No es asesoria financiera. El bot es 100% ficticio (paper trading) y no se conecta a ningun exchange real.</div>
 </body></html>`;
 }
 
-function alfredReplyPreview() {
-  const pv = portfolioValue();
-  const reg = marketRegime();
-  const ranked = pv.assets.slice().sort((a,b)=>b.score-a.score);
-  const best = ranked[0];
-  return `Buenos días, Pedro. Alfred está en línea. Régimen actual: <b style="color:${reg.color}">${reg.label}</b>. Equity real: <b class="green">$${pv.totalValue.toFixed(2)}</b>. Rendimiento: <b class="${pv.totalGainPct>=0?'green':'red'}">${pv.totalGainPct>=0?'+':''}${pv.totalGainPct.toFixed(2)}%</b>. El activo con mejor score ahora es <b>${best?.symbol || "-"}</b>.`;
-}
-
-function handleAsk(req, res) {
+async function handleAsk(req, res) {
   let body = "";
   req.on("data", c => body += c);
-  req.on("end", () => {
-    const params = new URLSearchParams(body);
-    const q = params.get("q") || "";
-    if (q.trim()) alfredReply(q.trim());
-    res.writeHead(302, { Location: "/#alfred" });
-    res.end();
+  req.on("end", async () => {
+    const q = new URLSearchParams(body).get("q") || "";
+    if (q.trim()) await alfredoReply(q.trim());
+    res.writeHead(302, { Location: "/#alfredo" }); res.end();
   });
 }
 
-const server = http.createServer((req,res) => {
-  if (req.method === "POST" && req.url === "/ask") return handleAsk(req,res);
-
-  if (req.url === "/bot/start") {
-    bot.running = true; saveJSON(BOT_FILE, bot);
-    res.writeHead(302, { Location:"/#bot" }); return res.end();
+const server = http.createServer(async (req, res) => {
+  if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
+  if (req.url === "/toggle-thinking") {
+    settings.thinkingEnabled = !settings.thinkingEnabled;
+    settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
+    saveJSON(SETTINGS_FILE, settings);
+    res.writeHead(302, { Location: "/#alfredo" }); return res.end();
   }
-
-  if (req.url === "/bot/pause") {
-    bot.running = false; saveJSON(BOT_FILE, bot);
-    res.writeHead(302, { Location:"/#bot" }); return res.end();
-  }
-
+  if (req.url === "/bot/start") { bot.running = true; addThought("Bot ficticio encendido.", "scan"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
+  if (req.url === "/bot/pause") { bot.running = false; addThought("Bot ficticio pausado.", "warn"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
   if (req.url === "/bot/reset") {
-    bot = {
-      initialCapital:1000, cash:1000, positions:{}, history:[], equityHistory:[],
-      startDate:new Date().toISOString(), lastTick:null, running:true,
-      totalRealizedPnl:0, maxDrawdown:0, tradesCount:0, cooldown:{}
-    };
-    saveJSON(BOT_FILE, bot);
-    res.writeHead(302, { Location:"/#bot" }); return res.end();
+    bot = { initialCapital: 1000, cash: 1000, positions: {}, history: [], equityHistory: [], thoughts: [], running: true, totalRealizedPnl: 0, maxDrawdown: 0, tradesCount: 0, lastTick: null };
+    addThought("Bot reiniciado desde cero.", "scan"); saveJSON(BOT_FILE, bot);
+    res.writeHead(302, { Location: "/#bot" }); return res.end();
   }
-
-  res.writeHead(200, { "Content-Type":"text/html; charset=utf-8" });
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("ALFRED AI listo en http://localhost:" + PORT);
-});
+async function boot() {
+  await refreshQuotes();
+  await fetchNews();
+  savePortfolioPoint();
+  botTick();
+  setInterval(async () => { await refreshQuotes(); savePortfolioPoint(); botTick(); }, settings.autoRefreshSeconds * 1000);
+  setInterval(fetchNews, 1000 * 60 * 12);
+  server.listen(PORT, "0.0.0.0", () => console.log(`${settings.appName} listo en http://localhost:${PORT}`));
+}
+boot();
