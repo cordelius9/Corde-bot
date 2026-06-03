@@ -49,3 +49,24 @@ patch_*.js
 insertar
 reemplazar
 5
+
+# Cordelius runtime / secretos / backups
+.env
+*.env
+*API_KEY*
+corde.log
+cloudflared.log
+*.log
+ai_chat_history.json
+alfredo_chat_history.json
+cordelius_settings.json
+cordelius_intel.json
+bot_state.json
+portfolio_history.json
+dashboard_backup_*.js
+dashboard_FINAL_*.js
+dashboard_OK_*.js
+dashboard_broken_*.js
+patch_*.js
+local_backups/
+node_modules/
