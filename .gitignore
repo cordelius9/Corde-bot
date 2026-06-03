@@ -1,6 +1,51 @@
-dashboard_backup.js
-corde.log
-dashboard_before*.js
 .env
 *.log
-dashboard_backup*.js
+node_modules/
+backups/
+runtime/
+cloudflared.log
+
+# Cordelius runtime / secrets / local state
+.env
+*.log
+cloudflared.log
+corde.log
+bot_state.json
+portfolio_history.json
+cordelius_settings.json
+ai_chat_history.json
+alfredo_chat_history.json
+cordelius_intel.json
+
+# Backups y parches locales
+dashboard_backup_*.js
+dashboard_FINAL_ESTABLE_*.js
+dashboard_OK_PUBLICO_*.js
+dashboard_broken_before_recovery_*.js
+patch_*.js
+insertar
+reemplazar
+5
+
+# Cordelius local runtime / secrets / state
+.env
+*.log
+corde.log
+cloudflared.log
+corde-supervisor.log
+bot_state.json
+portfolio_history.json
+cordelius_settings.json
+ai_chat_history.json
+alfredo_chat_history.json
+cordelius_intel.json
+
+# Local backups / patches
+dashboard_backup_*.js
+dashboard_FINAL_ESTABLE_*.js
+dashboard_OK_PUBLICO_*.js
+dashboard_broken_before_recovery_*.js
+patch_*.js
+insertar
+reemplazar
+5

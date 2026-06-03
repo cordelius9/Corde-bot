@@ -11,6 +11,7 @@ const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
 const CHAT_FILE = "alfredo_chat_history.json";
 const SETTINGS_FILE = "cordelius_settings.json";
+const INTEL_FILE = "cordelius_intel.json";
 
 function loadJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
@@ -25,7 +26,7 @@ function money(n, currency = "MXN") {
   const x = Number(n || 0);
   if (currency === "USD") return "USD " + x.toFixed(2);
   if (currency === "CRYPTO") return x.toFixed(8);
-  return "$" + x.toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " MXN";
+  var _d = Math.abs(x) >= 1 ? 2 : (Math.abs(x) >= 0.01 ? 4 : 8); return "$" + x.toLocaleString("es-MX", { minimumFractionDigits: _d, maximumFractionDigits: _d }) + " MXN";
 }
 function pct(n) { const x = Number(n || 0); return (x >= 0 ? "+" : "") + x.toFixed(2) + "%"; }
 function nowMX() { return new Date().toLocaleString("es-MX"); }
@@ -39,8 +40,9 @@ let quotes = {};
 let news = [];
 let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
+let intelItems = loadJSON(INTEL_FILE, []);
 
-const FX_USD_MXN = 18.50;
+const FX_USD_MXN = Number(process.env.USD_MXN) || 18.50;
 
 const PORTFOLIO = [
   { source: "GBM", category: "Acciones SIC", symbol: "AAPL", display: "AAPL *", name: "Apple Computer Inc.", units: 1, currency: "MXN", valueManual: 5450.00, costManual: 2640.01, brokerGainPct: 106.44, logo: "AA", color: "#0f172a", liveTicker: "AAPL", type: "stock" },
@@ -94,7 +96,7 @@ async function refreshQuotes() {
       quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/bitso" };
       continue;
     }
-    if (a.type === "stock_mx") {
+    if (a.source === "GBM" || a.type === "stock_mx") {
       const drift = ((Math.random() - 0.45) * 1.2);
       quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/gbm" };
       continue;
@@ -111,7 +113,7 @@ async function refreshQuotes() {
   }
 }
 
-function assetLiveValue(a) { const q = quotes[a.symbol]; if (q && Number.isFinite(q.value)) return q.value; return a.valueManual; }
+function assetLiveValue(a) { if (a.source === "GBM" || a.source === "Bitso" || a.currency === "MXN") return a.valueManual; const q = quotes[a.symbol]; if (q && Number.isFinite(q.value)) return q.value; return a.valueManual; }
 function assetValueMXN(a) { const v = assetLiveValue(a); return a.currency === "USD" ? v * FX_USD_MXN : v; }
 function assetCostMXN(a) { const c = a.costManual || 0; return a.currency === "USD" ? c * FX_USD_MXN : c; }
 function assetGainPct(a) {
@@ -392,21 +394,143 @@ function botTick() {
   saveJSON(BOT_FILE, bot);
 }
 
+
 async function askClaude(question, localReply, pv, reg, botEq, botPnl) {
   if (!settings.thinkingEnabled || !ANTHROPIC_API_KEY) return "";
-  const portfolioLines = pv.assets.map(a => `${a.symbol} ${a.source}: u=${a.units}, valor=${money(a.valueMXN)}, rend=${pct(a.gainPct)}, riesgo=${a.risk}, senal=${a.signal}`).join("\n");
+
+  const assetsContext = (pv.assets || []).map(a => ({
+    symbol: a.symbol,
+    broker: a.source,
+    category: a.category,
+    name: a.name,
+    units: a.units,
+    currency: a.currency,
+    originalCost: a.costManual,
+    currentValueManual: a.valueManual,
+    currentLiveValue: a.liveValue,
+    valueMXN: a.valueMXN,
+    costMXN: a.costMXN,
+    gainMXN: a.gainMXN,
+    gainPct: a.gainPct,
+    dayPct: a.day,
+    score: a.score,
+    risk: a.risk,
+    signal: a.signal,
+    buyZone: a.zones && a.zones.buy,
+    sellZone: a.zones && a.zones.sell,
+    stopZone: a.zones && a.zones.stop,
+    quoteSource: a.quoteSource
+  }));
+
+  const intelContext = (typeof intelItems !== "undefined" && Array.isArray(intelItems))
+    ? intelItems.slice(0, 5).map(x => ({
+        mood: x.mood,
+        affected: x.affected,
+        tags: x.tags,
+        time: x.time,
+        text: String(x.text || "").slice(0, 900)
+      }))
+    : [];
+
+  const botContext = {
+    equityMXN: botEq,
+    pnlMXN: botPnl,
+    running: bot.running,
+    cashMXN: bot.cash,
+    tradesCount: bot.tradesCount,
+    maxDrawdown: bot.maxDrawdown,
+    positions: bot.positions,
+    lastHistory: (bot.history || []).slice(0, 8)
+  };
+
+  const prompt = `
+Eres Alfredo AI dentro de Cordelius Trading. Responde en español mexicano, claro, directo y útil.
+No eres asesor financiero. Da análisis educativo, no órdenes definitivas.
+Usa SIEMPRE los costos originales y valores reales del portafolio cuando hables de rendimiento.
+
+PREGUNTA DEL USUARIO:
+${question}
+
+RESPUESTA LOCAL BASE:
+${localReply}
+
+RESUMEN PORTAFOLIO:
+- Patrimonio total MXN: ${pv.totalValueMXN}
+- Costo total MXN: ${pv.totalCostMXN}
+- Ganancia total MXN: ${pv.totalGainMXN}
+- Ganancia total %: ${pv.totalGainPct}
+- Régimen mercado: ${reg.label} / ${reg.detail}
+- Tipo cambio usado USD/MXN: ${FX_USD_MXN}
+
+ACTIVOS CON COSTO ORIGINAL, VALOR ACTUAL Y RIESGO:
+${JSON.stringify(assetsContext, null, 2)}
+
+INTEL MANUAL PEGADA EN CORDelius:
+${JSON.stringify(intelContext, null, 2)}
+
+BOT FICTICIO:
+${JSON.stringify(botContext, null, 2)}
+
+REGLAS DE RESPUESTA:
+1. Si mencionas Apple/AAPL, recuerda que costo original fue aprox. 2640 MXN y valor manual aprox. 5450 MXN.
+2. Distingue broker: GBM, Plata, Bitso.
+3. Para activos en USD, explica si estás hablando en USD o equivalente MXN.
+4. Si el usuario pregunta comprar/vender, responde con escenarios: mantener, tomar ganancia parcial, esperar, reducir riesgo.
+5. Prioriza riesgo de concentración: Bitso/cripto es gran parte del portafolio.
+6. No inventes precios de mercado si no vienen en el contexto.
+7. Termina con una acción práctica concreta para revisar dentro del dashboard.
+`;
+
   const payload = JSON.stringify({
-    model: "claude-sonnet-4-6", max_tokens: 850,
-    messages: [{ role: "user", content: `Eres Alfredo AI dentro de Cordelius Trading, copiloto financiero educativo de Pedro. Reglas: no prometas ganancias, no des asesoria garantizada, se claro y directo estilo Jarvis mexicano. Pedro tiene fracciones en Plata, acciones en GBM y cripto en Bitso.\n\nPregunta:\n${question}\n\nRegimen: ${reg.label} (${pct(reg.avg)})\n\nPortafolio:\n${portfolioLines}\n\nBot simulado: Equity ${money(botEq)}, P&L ${money(botPnl)}\n\nRespuesta local:\n${localReply}\n\nResponde con: 1) Lectura rapida 2) Riesgo principal 3) Que vigilar 4) Accion educativa.` }]
+    model: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
+    max_tokens: 900,
+    temperature: 0.35,
+    system: "Eres Alfredo AI, copiloto educativo de trading y portafolio. No das asesoría financiera; ayudas a entender riesgo, costos, exposición y escenarios.",
+    messages: [{ role: "user", content: prompt }]
   });
-  return new Promise(resolve => {
-    const req = https.request({ hostname: "api.anthropic.com", path: "/v1/messages", method: "POST", headers: { "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-length": Buffer.byteLength(payload) } }, res => {
-      let data = ""; res.on("data", c => data += c);
-      res.on("end", () => { try { const j = JSON.parse(data); resolve(j.content?.[0]?.text || ""); } catch { resolve(""); } });
+
+  return await new Promise(resolve => {
+    const req = https.request({
+      hostname: "api.anthropic.com",
+      path: "/v1/messages",
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-length": Buffer.byteLength(payload)
+      },
+      timeout: 25000
+    }, res => {
+      let data = "";
+      res.on("data", d => data += d);
+      res.on("end", () => {
+        try {
+          const j = JSON.parse(data);
+          const txt = j && j.content && j.content[0] && j.content[0].text;
+          if (txt) return resolve(txt);
+          console.log("Claude sin texto:", data.slice(0, 500));
+          return resolve("");
+        } catch (e) {
+          console.log("Claude parse error:", e.message);
+          return resolve("");
+        }
+      });
     });
-    req.on("error", () => resolve(""));
-    req.setTimeout(15000, () => { req.destroy(); resolve(""); });
-    req.write(payload); req.end();
+
+    req.on("timeout", () => {
+      console.log("Claude timeout");
+      req.destroy();
+      resolve("");
+    });
+
+    req.on("error", e => {
+      console.log("Claude error:", e.message);
+      resolve("");
+    });
+
+    req.write(payload);
+    req.end();
   });
 }
 
@@ -477,7 +601,7 @@ function renderPortfolioRows(assets) {
     return `<details class="asset-row">
       <summary>
         <div class="asset-main">${logoHtml(a)}<div><b>${esc(a.display)}</b><span>${esc(a.name)}</span><em>${esc(a.source)} · ${esc(a.category)} · ${a.units} u</em></div></div>
-        <div class="asset-money"><b>${a.currency === "USD" ? money(a.liveValue, "USD") : money(a.liveValue, "MXN")}</b><span class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)} · ${money(a.gainMXN)}</span></div>
+        <div class="asset-money"><b>${a.currency === "USD" ? money(a.liveValue, "USD") : money(a.liveValue, "MXN")}</b>${a.currency === "USD" ? `<div class="muted" style="font-size:12px">~ ${money(a.valueMXN)}</div>` : ""}<span class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)} · ${money(a.gainMXN)}</span></div>
       </summary>
       <div class="asset-detail">
         <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
@@ -505,6 +629,65 @@ function renderPortfolioRows(assets) {
   }).join("");
 }
 
+
+function analyzeIntelText(text) {
+  const raw = String(text || "");
+  const lower = raw.toLowerCase();
+
+  const affected = PORTFOLIO
+    .filter(a => lower.includes(String(a.symbol).toLowerCase()) || lower.includes(String(a.name || "").toLowerCase()))
+    .map(a => a.symbol);
+
+  const positiveWords = ["bullish", "sube", "subir", "compra", "buy", "crecimiento", "ai", "ia", "contrato", "earnings", "beneficio", "aprobado"];
+  const negativeWords = ["bearish", "baja", "cae", "caida", "venta", "sell", "riesgo", "demanda", "regulacion", "hack", "multa", "recesion"];
+
+  const pos = positiveWords.filter(w => lower.includes(w)).length;
+  const neg = negativeWords.filter(w => lower.includes(w)).length;
+
+  let mood = "NEUTRAL";
+  if (pos > neg) mood = "POSITIVO";
+  if (neg > pos) mood = "NEGATIVO";
+
+  const tags = [];
+  if (lower.includes("china") || lower.includes("asia")) tags.push("Asia/China");
+  if (lower.includes("ai") || lower.includes("ia") || lower.includes("chips")) tags.push("IA/Tech");
+  if (lower.includes("cobre") || lower.includes("copper")) tags.push("Cobre");
+  if (lower.includes("crypto") || lower.includes("bitcoin") || lower.includes("btc")) tags.push("Cripto");
+  if (lower.includes("congreso") || lower.includes("senado") || lower.includes("regulacion")) tags.push("Politica/Regulacion");
+
+  return {
+    text: raw.slice(0, 3000),
+    affected,
+    mood,
+    tags,
+    time: nowMX()
+  };
+}
+
+function renderIntelPanel() {
+  const rows = (intelItems || []).slice(0, 10).map(function(x) {
+    const moodClass = x.mood === "POSITIVO" ? "green" : (x.mood === "NEGATIVO" ? "red" : "yellow");
+    const affected = (x.affected && x.affected.length) ? x.affected.join(", ") : "Sin activo directo";
+    const tags = (x.tags && x.tags.length) ? x.tags.join(" · ") : "General";
+
+    return '<div class="news-card">'
+      + '<div><b class="' + moodClass + '">' + esc(x.mood) + '</b><div class="muted">' + esc(x.time) + '</div></div>'
+      + '<div><div><b>Activos afectados:</b> ' + esc(affected) + '</div>'
+      + '<div class="muted">' + esc(tags) + '</div>'
+      + '<p>' + esc(x.text).slice(0, 700) + '</p></div>'
+      + '</div>';
+  }).join("") || '<div class="msg muted">Todavia no hay analisis pegado. Pega texto de Grok, X o noticias.</div>';
+
+  return '<div class="panel">'
+    + '<form method="POST" action="/intel">'
+    + '<textarea name="intel" style="width:100%;min-height:150px;border-radius:18px;background:#07111f;color:#e5f2ff;border:1px solid rgba(120,160,210,.25);padding:14px;font-size:15px" placeholder="Pega aqui analisis de Grok, X, noticias, China, IA, cripto, cobre, politica, etc..."></textarea>'
+    + '<div style="margin-top:12px"><button class="btn">Guardar analisis</button></div>'
+    + '</form>'
+    + '<p class="muted">Modo manual: pega texto externo y Cordelius lo cruza contra tus activos. No opera dinero real.</p>'
+    + '</div>'
+    + '<div class="panel">' + rows + '</div>';
+}
+
 function renderNews() {
   if (!news.length) return `<div class="muted">Cargando noticias...</div>`;
   return news.map(n => {
@@ -520,6 +703,70 @@ function renderNews() {
       <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente</a>
     </div></div>`;
   }).join("");
+}
+
+
+function botMetrics() {
+  const positions = bot.positions || {};
+  const history = bot.history || [];
+  const sells = history.filter(h => h.type === "SELL");
+  const wins = sells.filter(h => Number(h.pnl || 0) > 0);
+  const losses = sells.filter(h => Number(h.pnl || 0) < 0);
+
+  let openValueMXN = 0;
+  let openCostMXN = 0;
+
+  for (const [sym, p] of Object.entries(positions)) {
+    const a = PORTFOLIO.find(x => x.symbol === sym);
+    const units = Number(p.units || 0);
+    const avg = Number(p.avgMXN || 0);
+    const priceMXN = a ? assetValueMXN(a) / Math.max(a.units, 1e-8) : avg;
+    openValueMXN += units * priceMXN;
+    openCostMXN += units * avg;
+  }
+
+  const cashMXN = Number(bot.cash || 0);
+  const equityMXN = cashMXN + openValueMXN;
+  const initialMXN = Number(bot.initialCapital || 1000);
+  const unrealizedPnlMXN = openValueMXN - openCostMXN;
+  const realizedPnlMXN = Number(bot.totalRealizedPnl || sells.reduce((s,h)=>s+Number(h.pnl||0),0));
+  const totalPnlMXN = equityMXN - initialMXN;
+  const closedTrades = sells.length;
+  const winRate = closedTrades ? (wins.length / closedTrades) * 100 : 0;
+  const grossWin = wins.reduce((s,h)=>s+Number(h.pnl||0),0);
+  const grossLoss = Math.abs(losses.reduce((s,h)=>s+Number(h.pnl||0),0));
+  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0);
+  const openExposurePct = equityMXN ? (openValueMXN / equityMXN) * 100 : 0;
+  const maxDD = Number(bot.maxDrawdown || 0);
+
+  let riskLabel = "CONTROLADO";
+  if (maxDD > 5 || openExposurePct > 60) riskLabel = "ALTO";
+  else if (maxDD > 2 || openExposurePct > 35) riskLabel = "MEDIO";
+
+  return {
+    cashMXN, openValueMXN, equityMXN, initialMXN,
+    unrealizedPnlMXN, realizedPnlMXN, totalPnlMXN,
+    closedTrades, wins: wins.length, losses: losses.length,
+    winRate, profitFactor, openExposurePct, maxDD, riskLabel
+  };
+}
+
+function renderBotMetricCards() {
+  const m = botMetrics();
+  const pnlClass = m.totalPnlMXN >= 0 ? "green" : "red";
+  const unrealClass = m.unrealizedPnlMXN >= 0 ? "green" : "red";
+  const realClass = m.realizedPnlMXN >= 0 ? "green" : "red";
+  const pfText = !Number.isFinite(m.profitFactor) ? "∞" : m.profitFactor.toFixed(2);
+  const wrText = m.closedTrades ? m.winRate.toFixed(0) + "%" : "n/a";
+  const riskClass = m.riskLabel === "ALTO" ? "red" : (m.riskLabel === "MEDIO" ? "yellow" : "green");
+
+  return ''
+    + '<div class="card"><div class="label">Equity simulado</div><div class="big '+pnlClass+' glow">'+money(m.equityMXN)+'</div><div class="muted">Cash '+money(m.cashMXN)+' · Abierto '+money(m.openValueMXN)+'</div></div>'
+    + '<div class="card"><div class="label">P&L total simulado</div><div class="big '+pnlClass+'">'+money(m.totalPnlMXN)+'</div><div class="muted">Desde capital inicial '+money(m.initialMXN)+'</div></div>'
+    + '<div class="card"><div class="label">P&L realizado</div><div class="big '+realClass+'">'+money(m.realizedPnlMXN)+'</div><div class="muted">Cerradas '+m.closedTrades+' · Ganadas '+m.wins+' · Perdidas '+m.losses+'</div></div>'
+    + '<div class="card"><div class="label">P&L no realizado</div><div class="big '+unrealClass+'">'+money(m.unrealizedPnlMXN)+'</div><div class="muted">Posiciones abiertas</div></div>'
+    + '<div class="card"><div class="label">Win rate</div><div class="big">'+wrText+'</div><div class="muted">Profit factor '+pfText+'</div></div>'
+    + '<div class="card"><div class="label">Riesgo del bot</div><div class="big '+riskClass+'">'+m.riskLabel+'</div><div class="muted">DD max '+m.maxDD.toFixed(1)+'% · Exposición '+m.openExposurePct.toFixed(0)+'%</div></div>';
 }
 
 function renderBotTables() {
@@ -663,7 +910,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </div>
 
 <div class="grid">
-  <div class="card"><div class="label">Patrimonio total estimado</div><div class="big green glow">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div>
+  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;var estado=cp>45?"AGRESIVO":(cp<20?"DEFENSIVO":"NEUTRAL");var ec=estado==="AGRESIVO"?"#ff4d6d":(estado==="DEFENSIVO"?"#00ff99":"#ffd35c");function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card"><div class="label">Estado general</div><div class="big" style="color:${ec}">${estado}</div><div class="muted">Cripto ${cp.toFixed(0)}% · educativo, no asesoria</div></div><div class="card"><div class="label">Exposicion por plataforma</div><div>GBM ${pp(gbm)}</div><div>Plata ${pp(plata)}</div><div>Bitso ${pp(bitso)}</div></div><div class="card"><div class="label">Exposicion por divisa</div><div>USD ${pp(plata)}</div><div>MXN ${pp(gbm+bitso)}</div><div>Cripto ${pp(bitso)}</div></div><div class="card"><div class="label">Tipo de cambio</div><div class="big">$${FX_USD_MXN.toFixed(2)}</div><div class="muted">USD a MXN · .env USD_MXN o fallback · ${nowMX()}</div></div>`;})()}<div class="card"><div class="label">Patrimonio total estimado</div><div class="big green glow">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div>
   <div class="card"><div class="label">Regimen</div><div class="big" style="color:${reg.color}">${esc(reg.label)}</div><div class="muted">${pct(reg.avg)} · ${esc(reg.detail)}</div></div>
   <div class="card"><div class="label">Mejor score</div><div class="big green">${esc(best.symbol)}</div><div>${esc(best.signal)} · ${best.score}/100</div></div>
   <div class="card"><div class="label">Mas debil</div><div class="big red">${esc(worst.symbol)}</div><div>${esc(worst.signal)} · ${worst.score}/100</div></div>
@@ -694,10 +941,7 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
 
 <a id="bot"></a><h2>Trading AI ficticio — laboratorio</h2>
 <div class="grid">
-  <div class="card"><div class="label">Equity simulado</div><div class="big ${botPnl >= 0 ? "green" : "red"} glow">${money(botEq)}</div></div>
-  <div class="card"><div class="label">P&L simulado</div><div class="big ${botPnl >= 0 ? "green" : "red"}">${money(botPnl)}</div></div>
-  <div class="card"><div class="label">Estado</div><div class="big ${bot.running ? "green" : "yellow"}">${bot.running ? "ACTIVO" : "PAUSADO"}</div></div>
-  <div class="card"><div class="label">Trades · Drawdown</div><div class="big">${bot.tradesCount}</div><div class="muted">DD max ${(bot.maxDrawdown || 0).toFixed(1)}%</div></div>
+  ${renderBotMetricCards()}
 </div>
 <div class="panel">
   <a class="btn" href="/bot/start">Start</a> <a class="btn" href="/bot/pause">Pause</a> <a class="btn" href="/bot/reset">Reset</a>
@@ -716,7 +960,9 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
   <div class="quiver-item"><div class="label">Activos sensibles</div><p>MSFT, AAPL, UNH, AEP, GEV, COPX, PLTR reaccionan a regulacion y gasto publico.</p></div>
 </div>
 
-<a id="system"></a><h2>Sistema</h2>
+<a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual</h2>${renderIntelPanel()}
+
+<a id="modulos"></a><h2>Modulos Cordelius (proximamente)</h2><div class="grid"><div class="card"><div class="label">Cordelius Health</div><div class="big" style="color:#818cf8">Proximamente</div><div class="muted">WHOOP API: sueno, HRV, recuperacion, habitos (pendiente)</div></div><div class="card"><div class="label">Cordelius Law</div><div class="big" style="color:#ffd35c">Proximamente</div><div class="muted">Cuaderno juridico, apuntes, casos (pendiente)</div></div><div class="card"><div class="label">Cordelius Intelligence</div><div class="big" style="color:#3b9dff">Grok / X manual</div><div class="muted">Pegar analisis de X o Grok (pendiente P2)</div></div><div class="card"><div class="label">Asia / China Tech</div><div class="big" style="color:#00ff99">Radar</div><div class="muted">Chips, cobre, IA, energia (pendiente, sin fuente)</div></div><div class="card"><div class="label">Alpaca</div><div class="big" style="color:#ffd35c">Pendiente</div><div class="muted">Solo paper trading futuro, sin ordenes reales</div></div></div><a id="system"></a><h2>Sistema</h2>
 <div class="grid">
   <div class="card"><div class="label">App</div><div class="big green">${esc(settings.appName)}</div></div>
   <div class="card"><div class="label">Alfredo AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
@@ -738,8 +984,26 @@ async function handleAsk(req, res) {
   });
 }
 
+
+async function handleIntel(req, res) {
+  let body = "";
+  req.on("data", c => body += c);
+  req.on("end", async () => {
+    const text = new URLSearchParams(body).get("intel") || "";
+    if (text.trim()) {
+      intelItems.unshift(analyzeIntelText(text.trim()));
+      intelItems = intelItems.slice(0, 30);
+      saveJSON(INTEL_FILE, intelItems);
+      addThought("Nuevo analisis manual agregado a Cordelius Intelligence.", "scan");
+    }
+    res.writeHead(302, { Location: "/#intel" });
+    res.end();
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
+  if (req.method === "POST" && req.url === "/intel") return handleIntel(req, res);
   if (req.url === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
@@ -758,12 +1022,65 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function boot() {
-  await refreshQuotes();
-  await fetchNews();
-  savePortfolioPoint();
-  botTick();
-  setInterval(async () => { await refreshQuotes(); savePortfolioPoint(); botTick(); }, settings.autoRefreshSeconds * 1000);
-  setInterval(fetchNews, 1000 * 60 * 12);
-  server.listen(PORT, "0.0.0.0", () => console.log(`${settings.appName} listo en http://localhost:${PORT}`));
+  // CORDELIUS_BOOT_LISTEN_FIRST_FIX
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`${settings.appName} listo en http://localhost:${PORT}`);
+  });
+
+  setTimeout(async () => {
+    try {
+      await Promise.race([
+        refreshQuotes(),
+        new Promise(resolve => setTimeout(resolve, 8000))
+      ]);
+    } catch (e) {
+      console.log("refreshQuotes background omitido:", e.message);
+    }
+
+    try {
+      await Promise.race([
+        fetchNews(),
+        new Promise(resolve => setTimeout(resolve, 8000))
+      ]);
+    } catch (e) {
+      console.log("fetchNews background omitido:", e.message);
+    }
+
+    try { savePortfolioPoint(); } catch (e) { console.log("savePortfolioPoint omitido:", e.message); }
+    try { botTick(); } catch (e) { console.log("botTick omitido:", e.message); }
+
+    setInterval(async () => {
+      try {
+        await Promise.race([
+          refreshQuotes(),
+          new Promise(resolve => setTimeout(resolve, 8000))
+        ]);
+      } catch (e) {
+        console.log("refreshQuotes interval omitido:", e.message);
+      }
+
+      try { savePortfolioPoint(); } catch (e) {}
+      try { botTick(); } catch (e) {}
+    }, settings.autoRefreshSeconds * 1000);
+
+    setInterval(async () => {
+      try {
+        await Promise.race([
+          fetchNews(),
+          new Promise(resolve => setTimeout(resolve, 8000))
+        ]);
+      } catch (e) {
+        console.log("fetchNews interval omitido:", e.message);
+      }
+    }, 1000 * 60 * 12);
+  }, 500);
 }
 boot();
+
+/* CORDELIUS_P1_APPLIED */
+
+/* CORDELIUS_P1C_SEGURO_APPLIED */
+
+/* CORDELIUS_P2_INTEL_APPLIED */
+
+/* CORDELIUS_CLAUDE_SMART_APPLIED */
