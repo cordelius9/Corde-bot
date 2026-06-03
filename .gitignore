@@ -70,3 +70,29 @@ dashboard_broken_*.js
 patch_*.js
 local_backups/
 node_modules/
+
+# Cordelius runtime state
+bot_state.json
+portfolio_history.json
+cordelius_settings.json
+ai_chat_history.json
+alfredo_chat_history.json
+cordelius_intel.json
+
+# Secrets
+.env
+*.env
+*.log
+corde.log
+cloudflared.log
+
+# Backups / patches locales
+local_backups/
+dashboard_backup_*.js
+dashboard_FINAL_*.js
+dashboard_OK_*.js
+dashboard_broken_*.js
+patch_*.js
+insertar
+reemplazar
+5

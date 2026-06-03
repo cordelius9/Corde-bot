@@ -1,7 +1,8 @@
+require("dotenv").config();
 const TelegramBot = require('node-telegram-bot-api');
 const Anthropic = require("@anthropic-ai/sdk");
 
-const token = "8815936402:AAF7Gl0dIrSEq1jZBaBdj4MpArrzmGqh3pY";
+const token = process.env.TELEGRAM_BOT_TOKEN || "";
 const bot = new TelegramBot(token, { polling: true });
 
 const anthropic = new Anthropic({
