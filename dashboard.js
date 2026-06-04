@@ -675,9 +675,13 @@ function analyzeIntelText(text) {
 }
 
 function renderIntelPanel() {
-  const count = (intelItems || []).length;
+  const items = intelItems || [];
+  const count = items.length;
+  const posCount = items.filter(x => x.mood === "POSITIVO").length;
+  const negCount = items.filter(x => x.mood === "NEGATIVO").length;
+  const neuCount = items.filter(x => x.mood === "NEUTRAL").length;
 
-  const rows = (intelItems || []).slice(0, 20).map(function(x) {
+  const rows = items.slice(0, 20).map(function(x) {
     const moodClass = x.mood === "POSITIVO" ? "green" : (x.mood === "NEGATIVO" ? "red" : "yellow");
     const moodKey = x.mood === "POSITIVO" ? "POS" : (x.mood === "NEGATIVO" ? "NEG" : "NEU");
     const affected = (x.affected && x.affected.length) ? x.affected.join(", ") : "Sin activo directo";
@@ -689,7 +693,7 @@ function renderIntelPanel() {
       + '<div><b class="' + moodClass + '">' + esc(x.mood) + '</b><div class="muted" style="font-size:12px">' + esc(x.time) + '</div></div>'
       + (hashVal ? '<form method="POST" action="/intel/delete" style="margin:0">'
         + '<input type="hidden" name="id" value="' + hashVal + '">'
-        + '<button type="submit" style="background:rgba(255,77,109,.15);border:1px solid rgba(255,77,109,.35);color:#ff4d6d;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:12px" title="Borrar este analisis">✕</button>'
+        + '<button type="submit" style="background:rgba(255,77,109,.15);border:1px solid rgba(255,77,109,.35);color:#ff4d6d;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:12px" title="Borrar este analisis">&#x2715;</button>'
         + '</form>' : '')
       + '</div>'
       + '<div><div><b>Activos afectados:</b> ' + esc(affected) + '</div>'
@@ -698,18 +702,25 @@ function renderIntelPanel() {
       + '</div>';
   }).join("") || '<div class="msg muted">Todavia no hay analisis pegado. Pega texto de Grok, X o noticias.</div>';
 
-  const filterBar = '<div id="intel-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">'
-    + '<button class="intel-chip active" onclick="intelFilter(this,\'ALL\')" style="background:rgba(59,157,255,.2);border:1px solid rgba(59,157,255,.5);color:#3b9dff;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">Todos <b>' + count + '</b></button>'
-    + '<button class="intel-chip" onclick="intelFilter(this,\'POS\')" style="background:rgba(0,255,153,.08);border:1px solid rgba(0,255,153,.3);color:#00ff99;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">POSITIVO</button>'
-    + '<button class="intel-chip" onclick="intelFilter(this,\'NEG\')" style="background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.3);color:#ff4d6d;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEGATIVO</button>'
-    + '<button class="intel-chip" onclick="intelFilter(this,\'NEU\')" style="background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);color:#ffd166;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEUTRAL</button>'
+  const clearBtn = count > 0
+    ? '<form method="POST" action="/intel/clear" onsubmit="return confirm(\'Borrar todos los analisis Intel? Esta accion no se puede deshacer.\')" style="margin:0">'
+      + '<button type="submit" style="background:rgba(255,77,109,.12);border:1px solid rgba(255,77,109,.3);color:#ff4d6d;border-radius:8px;padding:5px 14px;cursor:pointer;font-size:13px">Limpiar todo</button>'
+      + '</form>'
+    : '';
+
+  const filterBar = '<div id="intel-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'ALL\')" style="background:rgba(59,157,255,.2);border:1px solid rgba(59,157,255,.5);color:#3b9dff;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px;font-weight:bold">Todos <b>' + count + '</b></button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'POS\')" style="background:rgba(0,255,153,.08);border:1px solid rgba(0,255,153,.3);color:#00ff99;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">POSITIVO <b>' + posCount + '</b></button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'NEG\')" style="background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.3);color:#ff4d6d;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEGATIVO <b>' + negCount + '</b></button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'NEU\')" style="background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);color:#ffd166;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEUTRAL <b>' + neuCount + '</b></button>'
+    + '<div style="margin-left:auto">' + clearBtn + '</div>'
     + '</div>'
     + '<script>function intelFilter(btn,type){'
     + 'document.querySelectorAll(".intel-item").forEach(function(el){'
     + 'el.style.display=(type==="ALL"||el.dataset.mood===type)?"":"none";});'
     + 'document.querySelectorAll(".intel-chip").forEach(function(b){'
     + 'b.style.fontWeight=b===btn?"bold":"normal";'
-    + 'b.style.opacity=b===btn?"1":"0.6";});}'
+    + 'b.style.opacity=b===btn?"1":"0.65";});}'
     + '</script>';
 
   return '<div class="panel">'
@@ -719,7 +730,63 @@ function renderIntelPanel() {
     + '</form>'
     + '<p class="muted">Modo manual: pega texto externo y Cordelius lo cruza contra tus activos. No opera dinero real.</p>'
     + '</div>'
-    + '<div class="panel">' + filterBar + rows + '</div>';
+    + '<div class="panel">' + filterBar + rows + '</div>'
+    + renderIntelByAsset();
+}
+
+function renderIntelByAsset() {
+  const items = intelItems || [];
+  if (!items.length) return "";
+
+  const byAsset = {};
+  for (const item of items) {
+    for (const sym of (item.affected || [])) {
+      if (!byAsset[sym]) byAsset[sym] = [];
+      byAsset[sym].push(item);
+    }
+  }
+
+  const symbols = Object.keys(byAsset)
+    .filter(sym => PORTFOLIO.some(a => a.symbol === sym))
+    .sort();
+
+  if (!symbols.length) return "";
+
+  const cards = symbols.map(function(sym) {
+    const asset = PORTFOLIO.find(a => a.symbol === sym);
+    const symItems = byAsset[sym];
+    const pos = symItems.filter(x => x.mood === "POSITIVO").length;
+    const neg = symItems.filter(x => x.mood === "NEGATIVO").length;
+    const neu = symItems.filter(x => x.mood === "NEUTRAL").length;
+    const net = pos > neg ? "POSITIVO" : neg > pos ? "NEGATIVO" : "NEUTRAL";
+    const netClass = net === "POSITIVO" ? "green" : net === "NEGATIVO" ? "red" : "yellow";
+    const logo = asset ? '<div class="asset-logo" style="background:' + esc(asset.color) + ';width:30px;height:30px;min-width:30px;font-size:11px;border-radius:8px;display:flex;align-items:center;justify-content:center">' + esc(asset.logo) + '</div>' : "";
+    const snippets = symItems.slice(0, 2).map(function(x) {
+      return '<div class="muted" style="font-size:12px;margin-top:5px;padding-top:5px;border-top:1px solid rgba(255,255,255,.06)">'
+        + esc(x.time) + ' &mdash; ' + esc(x.text.slice(0, 110)) + (x.text.length > 110 ? '&hellip;' : '')
+        + '</div>';
+    }).join("");
+
+    return '<div class="news-card" style="padding:14px 16px">'
+      + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'
+      + logo
+      + '<b style="font-size:15px">' + esc(sym) + '</b>'
+      + '<span class="' + netClass + '" style="font-size:12px;font-weight:bold">' + esc(net) + '</span>'
+      + '<span class="muted" style="font-size:12px">' + symItems.length + ' menci' + (symItems.length === 1 ? "on" : "ones") + '</span>'
+      + '<span style="font-size:11px;margin-left:4px;opacity:.7">'
+      + (pos ? '<span style="color:#00ff99">+' + pos + '</span> ' : '')
+      + (neg ? '<span style="color:#ff4d6d">-' + neg + '</span> ' : '')
+      + (neu ? '<span style="color:#ffd166">=' + neu + '</span>' : '')
+      + '</span>'
+      + '</div>'
+      + snippets
+      + '</div>';
+  }).join("");
+
+  return '<h3 style="margin:24px 0 10px;font-size:16px;color:#9fb3c8">Intel relacionado con mis activos</h3>'
+    + '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">'
+    + cards
+    + '</div>';
 }
 
 function renderNews() {
@@ -1053,10 +1120,19 @@ function handleIntelDelete(req, res) {
   });
 }
 
+function handleIntelClear(req, res) {
+  intelItems = [];
+  saveJSON(INTEL_FILE, intelItems);
+  addThought("Intel limpiado: todos los analisis borrados.", "warn");
+  res.writeHead(302, { Location: "/#intel" });
+  res.end();
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && req.url === "/intel") return handleIntel(req, res);
   if (req.method === "POST" && req.url === "/intel/delete") return handleIntelDelete(req, res);
+  if (req.method === "POST" && req.url === "/intel/clear") return handleIntelClear(req, res);
   if (req.url === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
