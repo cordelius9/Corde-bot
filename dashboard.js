@@ -630,6 +630,15 @@ function renderPortfolioRows(assets) {
 }
 
 
+function intelMatchWord(text, word) {
+  return new RegExp("(^|[\\s,;:.!?¿¡\"'(\\[{])(" + word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")($|[\\s,;:.!?¿¡\"')\\]}])", "i").test(text);
+}
+
+function intelHash(text) {
+  const s = String(text).trim().slice(0, 300);
+  return s.split("").reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0).toString(36).replace("-", "n");
+}
+
 function analyzeIntelText(text) {
   const raw = String(text || "");
   const lower = raw.toLowerCase();
@@ -638,11 +647,11 @@ function analyzeIntelText(text) {
     .filter(a => lower.includes(String(a.symbol).toLowerCase()) || lower.includes(String(a.name || "").toLowerCase()))
     .map(a => a.symbol);
 
-  const positiveWords = ["bullish", "sube", "subir", "compra", "buy", "crecimiento", "ai", "ia", "contrato", "earnings", "beneficio", "aprobado"];
+  const positiveWords = ["bullish", "sube", "subir", "compra", "buy", "crecimiento", "artificial intelligence", "inteligencia artificial", "contrato", "earnings", "beneficio", "aprobado"];
   const negativeWords = ["bearish", "baja", "cae", "caida", "venta", "sell", "riesgo", "demanda", "regulacion", "hack", "multa", "recesion"];
 
-  const pos = positiveWords.filter(w => lower.includes(w)).length;
-  const neg = negativeWords.filter(w => lower.includes(w)).length;
+  const pos = positiveWords.filter(w => intelMatchWord(lower, w)).length;
+  const neg = negativeWords.filter(w => intelMatchWord(lower, w)).length;
 
   let mood = "NEUTRAL";
   if (pos > neg) mood = "POSITIVO";
@@ -650,13 +659,14 @@ function analyzeIntelText(text) {
 
   const tags = [];
   if (lower.includes("china") || lower.includes("asia")) tags.push("Asia/China");
-  if (lower.includes("ai") || lower.includes("ia") || lower.includes("chips")) tags.push("IA/Tech");
+  if (/\bai\b/.test(lower) || intelMatchWord(lower, "ia") || lower.includes("chips") || lower.includes("inteligencia artificial")) tags.push("IA/Tech");
   if (lower.includes("cobre") || lower.includes("copper")) tags.push("Cobre");
   if (lower.includes("crypto") || lower.includes("bitcoin") || lower.includes("btc")) tags.push("Cripto");
   if (lower.includes("congreso") || lower.includes("senado") || lower.includes("regulacion")) tags.push("Politica/Regulacion");
 
   return {
     text: raw.slice(0, 3000),
+    hash: intelHash(raw),
     affected,
     mood,
     tags,
