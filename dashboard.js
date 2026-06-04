@@ -1193,7 +1193,105 @@ function matchQuiverToPortfolio(quiverPayload) {
   };
 }
 
+
+async function computeDailyScanSafe() {
+  const myPortfolio =
+    (typeof portfolio !== "undefined" && Array.isArray(portfolio)) ? portfolio :
+    (typeof PORTFOLIO !== "undefined" && Array.isArray(PORTFOLIO)) ? PORTFOLIO :
+    (typeof ASSETS !== "undefined" && Array.isArray(ASSETS)) ? ASSETS :
+    (typeof assets !== "undefined" && Array.isArray(assets)) ? assets :
+    [];
+
+  const fx =
+    (typeof FX_USD_MXN !== "undefined" && Number.isFinite(FX_USD_MXN)) ? FX_USD_MXN :
+    18.5;
+
+  const enriched = myPortfolio.map(a => {
+    const valueMXN = a.currency === "USD"
+      ? Number(a.valueManual || 0) * fx
+      : Number(a.valueManual || 0);
+
+    const costMXN = a.currency === "USD"
+      ? Number(a.costManual || 0) * fx
+      : Number(a.costManual || 0);
+
+    const gainMXN = valueMXN - costMXN;
+    const gainPct = costMXN ? (gainMXN / costMXN) * 100 : Number(a.brokerGainPct || 0);
+
+    const isCrypto = String(a.source || "").toLowerCase().includes("bitso") || String(a.type || "").toLowerCase().includes("crypto");
+    const concentrationScore = valueMXN;
+    const lossScore = gainPct < 0 ? Math.abs(gainPct) * 200 : 0;
+    const cryptoScore = isCrypto ? valueMXN * 0.35 : 0;
+
+    return {
+      symbol: a.symbol,
+      name: a.name,
+      source: a.source,
+      category: a.category,
+      valueMXN,
+      costMXN,
+      gainMXN,
+      gainPct,
+      riskScore: concentrationScore + lossScore + cryptoScore
+    };
+  });
+
+  const totalValue = enriched.reduce((sum, a) => sum + (a.valueMXN || 0), 0);
+  const totalCost = enriched.reduce((sum, a) => sum + (a.costMXN || 0), 0);
+  const totalGainPct = totalCost ? ((totalValue - totalCost) / totalCost) * 100 : 0;
+
+  let quiver = { count: 0, items: [] };
+  let matches = { count: 0, tickers: [], items: [] };
+
+  try {
+    if (typeof fetchQuiverDataReal === "function") {
+      quiver = await fetchQuiverDataReal();
+    }
+    if (typeof matchQuiverToPortfolio === "function") {
+      matches = matchQuiverToPortfolio(quiver);
+    }
+  } catch (e) {
+    matches = { count: 0, tickers: [], items: [], error: e.message };
+  }
+
+  const sortedRisk = [...enriched].sort((a, b) => b.riskScore - a.riskScore);
+  const sortedOpportunity = [...enriched].sort((a, b) => b.gainPct - a.gainPct);
+
+  return {
+    ok: true,
+    date: new Date().toISOString().slice(0, 10),
+    ts: Date.now(),
+    portfolioValue: totalValue,
+    portfolioCost: totalCost,
+    portfolioGainPct: totalGainPct,
+    assets: enriched.length,
+    quiverMatches: {
+      count: matches.count || 0,
+      tickers: matches.tickers || [],
+      items: matches.items || []
+    },
+    topRisk: sortedRisk[0] || null,
+    topOpportunity: sortedOpportunity[0] || null,
+    summary: {
+      status: "Cordelius Daily Scan activo",
+      note: "Educativo: combina portafolio, concentración, rendimiento y Quiver."
+    }
+  };
+}
+
 const server = http.createServer(async (req, res) => {
+
+  if (req.url === "/api/daily-scan") {
+    try {
+      const payload = await computeDailyScanSafe();
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify(payload));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && req.url === "/intel") return handleIntel(req, res);
   if (req.url === "/toggle-thinking") {
