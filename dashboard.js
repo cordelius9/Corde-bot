@@ -1280,6 +1280,11 @@ async function computeDailyScanSafe() {
 }
 
 const server = http.createServer(async (req, res) => {
+  req.originalUrl = req.url;
+  req.url = (req.url || "").split("?")[0];
+  const reqPath = req.url;
+
+  
 
   if (req.url === "/api/daily-scan") {
     try {
