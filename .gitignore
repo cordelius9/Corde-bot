@@ -1,100 +1,36 @@
+# Secrets
 .env
-*.log
-node_modules/
-backups/
-runtime/
-cloudflared.log
+*.env
+*API_KEY*
 
-# Cordelius runtime / secrets / local state
-.env
-*.log
-cloudflared.log
-corde.log
-bot_state.json
-portfolio_history.json
-cordelius_settings.json
-ai_chat_history.json
-alfredo_chat_history.json
-cordelius_intel.json
-
-# Backups y parches locales
-*_backup_*.js
-bot_backup_*.js
-dashboard_backup_*.js
-dashboard_FINAL_ESTABLE_*.js
-dashboard_OK_PUBLICO_*.js
-dashboard_broken_before_recovery_*.js
-patch_*.js
-insertar
-reemplazar
-5
-
-# Cordelius local runtime / secrets / state
-.env
+# Logs
 *.log
 corde.log
 cloudflared.log
 corde-supervisor.log
+watchdog.log
+
+# Runtime state (generado en ejecución — nunca en git)
 bot_state.json
 portfolio_history.json
 cordelius_settings.json
 ai_chat_history.json
 alfredo_chat_history.json
 cordelius_intel.json
+cordelius_alerts.json
 
-# Local backups / patches
-dashboard_backup_*.js
-dashboard_FINAL_ESTABLE_*.js
-dashboard_OK_PUBLICO_*.js
-dashboard_broken_before_recovery_*.js
-patch_*.js
-insertar
-reemplazar
-5
-
-# Cordelius runtime / secretos / backups
-.env
-*.env
-*API_KEY*
-corde.log
-cloudflared.log
-*.log
-ai_chat_history.json
-alfredo_chat_history.json
-cordelius_settings.json
-cordelius_intel.json
-bot_state.json
-portfolio_history.json
+# Backups y parches locales
 dashboard_backup_*.js
 dashboard_FINAL_*.js
 dashboard_OK_*.js
 dashboard_broken_*.js
+bot_backup_*.js
 patch_*.js
 local_backups/
+backups/
+
+# Dependencias
 node_modules/
 
-# Cordelius runtime state
-bot_state.json
-portfolio_history.json
-cordelius_settings.json
-ai_chat_history.json
-alfredo_chat_history.json
-cordelius_intel.json
-
-# Secrets
-.env
-*.env
-*.log
-corde.log
-cloudflared.log
-
-# Backups / patches locales
-local_backups/
-dashboard_backup_*.js
-dashboard_FINAL_*.js
-dashboard_OK_*.js
-dashboard_broken_*.js
-patch_*.js
-insertar
-reemplazar
-5
+# Directorios de runtime
+runtime/

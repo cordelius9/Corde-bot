@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
-let quiverCache = { data: null, ts: 0, TTL_MS: 2 * 60 * 60 * 1000 };
+const QUIVER_CACHE_MS = 2 * 60 * 60 * 1000;
 
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
@@ -42,6 +42,8 @@ let news = [];
 let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
+let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
+let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
 const FX_USD_MXN = Number(process.env.USD_MXN) || 18.50;
 
@@ -72,6 +74,8 @@ const TV_SYMBOL = {
   COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX", XRP: "BINANCE:XRPUSDT", BTC: "BINANCE:BTCUSDT",
   ETH: "BINANCE:ETHUSDT", BCH: "BINANCE:BCHUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
 };
+
+const MARKET_WATCHLIST = ["NVDA","TSLA","AMD","META","GOOGL","AMZN","AAPL","MSFT","PLTR","NFLX","SMCI","COIN","MSTR","SOFI","HOOD","RIVN","NIO","BABA","UNH","LLY","AVGO","QQQ","SPY"];
 
 let bot = loadJSON(BOT_FILE, {
   initialCapital: 1000, cash: 1000, positions: {}, history: [], equityHistory: [], thoughts: [],
@@ -213,48 +217,90 @@ function savePortfolioPoint() {
   saveJSON(HISTORY_FILE, portfolioHistory);
 }
 
-// ---- CHART SVG TIPO TRADINGVIEW (con eje, max, min, area) ----
+// ---- CHART SVG — ejes visibles, tooltips, tabla de datos ----
 function spark(data, opts = {}) {
   const key = opts.key || "total";
   const color = opts.color || "#3b9dff";
   const height = opts.height || 260;
-  let vals = (data || []).map(x => typeof x === "number" ? x : Number(x[key])).filter(Number.isFinite);
-  if (vals.length < 2) vals = [0, 1, 0.7, 1.4, 1.1, 1.8, 1.55];
+  const showTable = opts.showTable !== false; // default true for big charts
+  let rawData = (data || []).map(x => typeof x === "number" ? { v: x, t: null } : { v: Number(x[key]), t: x.t || null }).filter(d => Number.isFinite(d.v));
+  if (rawData.length < 2) rawData = [0.92, 0.96, 0.87, 1.05, 1.0, 1.1, 1.06, 1.18, 1.14, 1.22].map(v => ({ v, t: null }));
+  const vals = rawData.map(d => d.v);
   const min = Math.min(...vals), max = Math.max(...vals);
-  const padTop = 28, padBottom = 34, plotH = height - padTop - padBottom;
-  const gid = "g" + Math.floor(Math.random() * 999999);
-  const xy = vals.map((v, i) => {
-    const x = 56 + (i / Math.max(1, vals.length - 1)) * 900;
-    const y = padTop + (1 - ((v - min) / (max - min || 1))) * plotH;
-    return [x, y];
-  });
-  const pts = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
-  const area = "56," + (height - padBottom) + " " + pts + " 956," + (height - padBottom);
+  const range = max - min || 1;
+  const padTop = 28, padBottom = 40, padLeft = 72, plotH = height - padTop - padBottom;
+  const plotW = 940;
+  const gid = "g" + Math.floor(Math.random() * 9999999);
+  const xy = rawData.map((d, i) => ({
+    x: padLeft + (i / Math.max(1, rawData.length - 1)) * plotW,
+    y: padTop + (1 - ((d.v - min) / range)) * plotH,
+    v: d.v, t: d.t
+  }));
+  const pts = xy.map(p => p.x.toFixed(1) + "," + p.y.toFixed(1)).join(" ");
+  const area = padLeft + "," + (height - padBottom) + " " + pts + " " + (padLeft + plotW) + "," + (height - padBottom);
   const last = vals[vals.length - 1], first = vals[0];
   const delta = first ? ((last - first) / Math.abs(first)) * 100 : 0;
+  const fmtV = v => v >= 10000 ? "$" + (v / 1000).toFixed(1) + "k" : v >= 100 ? v.toFixed(0) : v.toFixed(2);
+
+  // Y-axis: 5 horizontal gridlines with labels
+  const yTicks = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = min + (i / 4) * range;
+    const y = padTop + (1 - (i / 4)) * plotH;
+    yTicks.push(`<line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${padLeft + plotW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.07)"/>`);
+    yTicks.push(`<text x="${padLeft - 5}" y="${(y + 5).toFixed(1)}" fill="#9fb3c8" font-size="15" text-anchor="end">${fmtV(v)}</text>`);
+  }
+
+  // X-axis: up to 7 date labels
+  const xTicks = [];
+  const xStep = Math.ceil(rawData.length / 6);
+  rawData.forEach((d, i) => {
+    if (i % xStep !== 0 && i !== rawData.length - 1) return;
+    const p = xy[i];
+    const label = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric" }) : String(i + 1);
+    xTicks.push(`<text x="${p.x.toFixed(1)}" y="${height - 6}" fill="#9fb3c8" font-size="13" text-anchor="middle">${label}</text>`);
+  });
+
+  // Dots with SVG <title> tooltips
   const dots = xy.map((p, i) => {
-    if (i !== vals.length - 1 && i !== 0 && i % Math.ceil(vals.length / 6) !== 0) return "";
-    return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="5" fill="${color}"/>`;
+    if (i !== 0 && i !== rawData.length - 1 && i % Math.ceil(rawData.length / 8) !== 0) return "";
+    const tooltip = (p.t ? new Date(p.t).toLocaleDateString("es-MX") + " · " : "") + fmtV(p.v).replace("$", "$");
+    return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${color}" stroke="#02040a" stroke-width="2"><title>${tooltip}</title></circle>`;
   }).join("");
-  return `<div class="chart-wrap"><svg viewBox="0 0 1020 ${height}" class="chart">
-    <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
-      <stop offset="0%" stop-color="${color}" stop-opacity=".35"/>
-      <stop offset="100%" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
-    <line x1="56" y1="${height - padBottom}" x2="956" y2="${height - padBottom}" stroke="rgba(255,255,255,.16)"/>
-    <line x1="56" y1="${padTop}" x2="56" y2="${height - padBottom}" stroke="rgba(255,255,255,.16)"/>
-    <text x="58" y="22" fill="#9fb3c8" font-size="20">Max ${max.toFixed(2)}</text>
-    <text x="58" y="${height - 8}" fill="#9fb3c8" font-size="20">Min ${min.toFixed(2)}</text>
-    <text x="780" y="24" fill="${delta >= 0 ? "#00ff99" : "#ff4d6d"}" font-size="22">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%</text>
-    <polygon points="${area}" fill="url(#${gid})"/>
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-    ${dots}</svg></div>`;
+
+  // Recent values table (last 6 points)
+  let tableHtml = "";
+  if (showTable && rawData.some(d => d.t != null) && rawData.length >= 3) {
+    const recent = rawData.slice(-6);
+    const rows = recent.map(d => {
+      const dateStr = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+      return `<tr><td style="color:var(--muted);font-size:11px;padding:4px 8px">${dateStr}</td><td style="font-weight:700;text-align:right;padding:4px 8px">${fmtV(d.v)}</td></tr>`;
+    }).join("");
+    tableHtml = `<div style="overflow-x:auto;margin-top:6px"><table style="width:auto;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table></div>`;
+  }
+
+  return `<div class="chart-wrap">
+<svg viewBox="0 0 ${padLeft + plotW + 20} ${height}" class="chart" style="overflow:visible">
+  <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
+    <stop offset="0%" stop-color="${color}" stop-opacity=".32"/>
+    <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+  </linearGradient></defs>
+  <line x1="${padLeft}" y1="${height - padBottom}" x2="${padLeft + plotW}" y2="${height - padBottom}" stroke="rgba(255,255,255,.18)"/>
+  <line x1="${padLeft}" y1="${padTop}" x2="${padLeft}" y2="${height - padBottom}" stroke="rgba(255,255,255,.18)"/>
+  ${yTicks.join("")}
+  ${xTicks.join("")}
+  <text x="${padLeft + plotW / 2}" y="22" fill="${delta >= 0 ? "#00ff99" : "#ff4d6d"}" font-size="17" text-anchor="middle" font-weight="bold">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%</text>
+  <polygon points="${area}" fill="url(#${gid})"/>
+  <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  ${dots}
+</svg>${tableHtml}</div>`;
 }
 
 function miniSpark(symbol, color = "#3b9dff") {
   const seed = seedFor(symbol);
   const vals = []; let v = 50 + (seed % 25);
   for (let i = 0; i < 20; i++) { v += Math.sin((i + seed) / 2) * 2 + ((seed % 7) - 3) * 0.18; vals.push(v); }
-  return spark(vals, { color, height: 115 });
+  return spark(vals, { color, height: 115, showTable: false });
 }
 
 async function fetchNews() {
@@ -276,6 +322,362 @@ async function fetchNews() {
     ];
   }
   news = out.slice(0, 30).map(n => ({ ...n, classification: classifyNews(n), impacted: impactedAssets(n) }));
+}
+
+// ---- QUIVER QUANT — datos institucionales (F3a.1) ----
+async function fetchQuiverData() {
+  if (!QUIVER_API_KEY) { quiverData.configured = false; return; }
+  if (Date.now() - quiverData.lastFetch < QUIVER_CACHE_MS) return;
+  quiverData.configured = true;
+  quiverData.error = null;
+
+  function quiverGet(path) {
+    return new Promise(resolve => {
+      const r = https.request({
+        hostname: "api.quiverquant.com", path, method: "GET",
+        headers: { "Authorization": "Token " + QUIVER_API_KEY, "Accept": "application/json" },
+        timeout: 12000
+      }, res => {
+        if (res.statusCode === 429) { quiverData.error = "Rate limit (429)"; return resolve(null); }
+        if (res.statusCode === 401) { quiverData.error = "API key invalida (401)"; return resolve(null); }
+        let d = "";
+        res.on("data", c => d += c);
+        res.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+      });
+      r.on("error", () => resolve(null));
+      r.on("timeout", () => { r.destroy(); resolve(null); });
+      r.end();
+    });
+  }
+
+  try {
+    const [cong, ins, gov] = await Promise.allSettled([
+      quiverGet("/beta/live/congresstrading"),
+      quiverGet("/beta/live/insiders"),
+      quiverGet("/beta/live/govcontracts")
+    ]);
+
+    const ts = Date.now();
+    function filterByPortfolio(arr, tickerField) {
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .filter(x => PORTFOLIO.some(a => a.symbol === (x[tickerField] || "").toUpperCase()))
+        .map(x => ({
+          ...x,
+          symbol: (x[tickerField] || "").toUpperCase(),
+          inPortfolio: true,
+          daysAgo: x.Date ? Math.floor((ts - new Date(x.Date).getTime()) / 86400000) : null
+        }))
+        .slice(0, 50);
+    }
+
+    quiverData.congressional = filterByPortfolio(cong.status === "fulfilled" ? cong.value : null, "Ticker");
+    quiverData.insider = filterByPortfolio(ins.status === "fulfilled" ? ins.value : null, "Ticker");
+    quiverData.contracts = filterByPortfolio(gov.status === "fulfilled" ? gov.value : null, "Ticker");
+    // Save full unfiltered data for external radar (capped at 300/dataset for memory)
+    function normalizeFull(arr, tickerField) {
+      if (!Array.isArray(arr)) return [];
+      return arr.slice(0, 300).map(x => ({
+        ...x, symbol: (x[tickerField] || "").toUpperCase(),
+        daysAgo: x.Date ? Math.floor((ts - new Date(x.Date).getTime()) / 86400000) : null
+      })).filter(x => x.symbol);
+    }
+    quiverDataFull.congressional = normalizeFull(cong.status === "fulfilled" ? cong.value : null, "Ticker");
+    quiverDataFull.insider = normalizeFull(ins.status === "fulfilled" ? ins.value : null, "Ticker");
+    quiverDataFull.contracts = normalizeFull(gov.status === "fulfilled" ? gov.value : null, "Ticker");
+    quiverData.lastFetch = ts;
+    console.log("Quiver OK:", quiverData.congressional.length, "congreso,", quiverData.insider.length, "insiders,", quiverData.contracts.length, "contratos (full:", quiverDataFull.congressional.length, "cong)");
+  } catch (e) {
+    quiverData.error = e.message;
+    console.log("Quiver error:", e.message);
+  }
+}
+
+// ---- SCAN DIARIO — lógica pura (reutilizada por /api/daily-scan y renderDailyScanCard) ----
+function computeDailyScan() {
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  const totalMXN = pv.totalValueMXN || 1;
+
+  const bitsoMXN = pv.assets.filter(a => a.source === "Bitso").reduce((s, a) => s + a.valueMXN, 0);
+  const plataMXN = pv.assets.filter(a => a.source === "Plata").reduce((s, a) => s + a.valueMXN, 0);
+  const gbmMXN   = pv.assets.filter(a => a.source === "GBM").reduce((s, a) => s + a.valueMXN, 0);
+  const bitsoPct = (bitsoMXN / totalMXN) * 100;
+
+  const portfolioSummary = {
+    totalMXN: +pv.totalValueMXN.toFixed(2), gainPct: +pv.totalGainPct.toFixed(2),
+    gainMXN: +pv.totalGainMXN.toFixed(2), assets: pv.assets.length,
+    regime: reg.label, regimeDetail: reg.detail,
+    concentration: {
+      bitso_pct: +bitsoPct.toFixed(1),
+      plata_pct: +(plataMXN / totalMXN * 100).toFixed(1),
+      gbm_pct:   +(gbmMXN   / totalMXN * 100).toFixed(1),
+      alert: bitsoPct > 45
+    }
+  };
+
+  const allQuiverMatches = [
+    ...quiverData.congressional.map(x => ({ ...x, dataset: "congressional" })),
+    ...quiverData.insider.map(x => ({ ...x, dataset: "insider" })),
+    ...quiverData.contracts.map(x => ({ ...x, dataset: "contracts" }))
+  ];
+
+  const quiverByTicker = {};
+  for (const m of allQuiverMatches) {
+    const sym = m.symbol || "";
+    if (!sym) continue;
+    if (!quiverByTicker[sym]) quiverByTicker[sym] = { congressional: 0, insider: 0, contracts: 0, total: 0, recentDays: null };
+    quiverByTicker[sym][m.dataset] = (quiverByTicker[sym][m.dataset] || 0) + 1;
+    quiverByTicker[sym].total++;
+    if (m.daysAgo != null && (quiverByTicker[sym].recentDays === null || m.daysAgo < quiverByTicker[sym].recentDays)) {
+      quiverByTicker[sym].recentDays = m.daysAgo;
+    }
+  }
+  const topQuiverTickers = Object.entries(quiverByTicker)
+    .sort((a, b) => b[1].total - a[1].total).slice(0, 10)
+    .map(([sym, data]) => ({ symbol: sym, ...data }));
+
+  const quiverSummary = {
+    configured: quiverData.configured, total: allQuiverMatches.length,
+    congressional: quiverData.congressional.length, insider: quiverData.insider.length,
+    contracts: quiverData.contracts.length, topTickers: topQuiverTickers,
+    lastFetch: quiverData.lastFetch
+  };
+
+  const cryptoSyms  = pv.assets.filter(a => a.type === "crypto").map(a => a.symbol);
+  const techSyms    = ["MSFT","AAPL","PLTR","IREN","SSYS","PATH","NFLX"];
+  const energySyms  = ["GEV","AEP","COPX"];
+  const healthSyms  = ["UNH"];
+  const techMatches   = allQuiverMatches.filter(x => techSyms.includes(x.symbol)).length;
+  const energyMatches = allQuiverMatches.filter(x => energySyms.includes(x.symbol)).length;
+  const healthMatches = allQuiverMatches.filter(x => healthSyms.includes(x.symbol)).length;
+
+  const marketThemes = [];
+  if (techMatches > 3)   marketThemes.push({ theme: "Tech / AI Infrastructure",   strength: techMatches > 12   ? "FUERTE" : "MODERADO",   quiverSignals: techMatches,   tickers: techSyms.filter(s => pv.assets.find(a => a.symbol === s)) });
+  if (energyMatches > 1) marketThemes.push({ theme: "Energia / Grid / Cobre",      strength: energyMatches > 6  ? "FUERTE" : "MODERADO",   quiverSignals: energyMatches, tickers: energySyms });
+  if (healthMatches > 0) marketThemes.push({ theme: "Healthcare / Regulacion",     strength: healthMatches > 4  ? "FUERTE" : "BAJO",       quiverSignals: healthMatches, tickers: healthSyms });
+  if (bitsoPct > 40)     marketThemes.push({ theme: "Cripto concentrado",          strength: "ALTO RIESGO",    quiverSignals: 0,            tickers: cryptoSyms, alert: true });
+  if (!marketThemes.length) marketThemes.push({ theme: "Sin temas dominantes",     strength: "NEUTRAL",        quiverSignals: 0,            tickers: [] });
+
+  const tickerHighlights = ranked.map(a => {
+    const qm = allQuiverMatches.filter(x => x.symbol === a.symbol);
+    return { symbol: a.symbol, score: a.score, signal: a.signal, gainPct: +a.gainPct.toFixed(2), risk: a.risk,
+      quiverMatches: qm.length, quiverDatasets: [...new Set(qm.map(x => x.dataset))],
+      ind: { rsi: a.ind.rsi, trend: a.ind.trend, momentum: +a.ind.momentum } };
+  });
+
+  const riskAlerts = [];
+  if (bitsoPct > 45) riskAlerts.push({ level: "ALTO", type: "CONCENTRACION", message: "Cripto/Bitso " + bitsoPct.toFixed(0) + "% del portafolio — riesgo alto", tickers: cryptoSyms });
+  for (const a of pv.assets) {
+    if (a.gainPct < -15 && a.risk === "ALTO") riskAlerts.push({ level: "ALTO", type: "DRAWDOWN", message: a.symbol + " perdida " + a.gainPct.toFixed(1) + "% con riesgo alto", tickers: [a.symbol] });
+    if (a.score < 30) riskAlerts.push({ level: "CRITICO", type: "SCORE_CRITICO", message: a.symbol + " score " + a.score + "/100 — revisar", tickers: [a.symbol] });
+    if (a.gainPct > 80 && a.ind.momentum > 0) riskAlerts.push({ level: "OPORTUNIDAD", type: "TOMA_GANANCIA", message: a.symbol + " +" + a.gainPct.toFixed(0) + "% acumulado — posible toma parcial educativa", tickers: [a.symbol] });
+  }
+  const insiderSales = quiverData.insider.filter(x => (x.TransactionType || x.transaction || "").toLowerCase().includes("sale"));
+  if (insiderSales.length > 0) riskAlerts.push({ level: "ATENCION", type: "INSIDER_SALE", message: insiderSales.length + " ventas de insiders en tus activos (Quiver)", tickers: [...new Set(insiderSales.map(x => x.symbol))] });
+
+  const educationalActions = [];
+  for (const a of pv.assets.filter(a => a.score < 40 || a.gainPct < -12).slice(0, 3)) {
+    educationalActions.push({ priority: "VIGILAR", symbol: a.symbol, action: "Revisar tesis: " + a.signal + " · ganancia " + a.gainPct.toFixed(1) + "%", score: a.score, gainPct: +a.gainPct.toFixed(2) });
+  }
+  for (const a of pv.assets.filter(a => a.gainPct > 50 && a.score > 55).slice(0, 2)) {
+    educationalActions.push({ priority: "CONSIDERAR", symbol: a.symbol, action: "Ganancia +" + a.gainPct.toFixed(0) + "% — evaluar toma parcial educativa", score: a.score, gainPct: +a.gainPct.toFixed(2) });
+  }
+  if (bitsoPct > 45) educationalActions.push({ priority: "RIESGO", symbol: "PORTAFOLIO", action: "Bitso " + bitsoPct.toFixed(0) + "% — concentracion alta; considerar rebalanceo gradual", score: null, gainPct: null });
+  if (!educationalActions.length) educationalActions.push({ priority: "OK", symbol: "PORTAFOLIO", action: "Sin alertas criticas. Regimen " + reg.label + ". Mantener y monitorear.", score: null, gainPct: null });
+
+  const summaryLines = [];
+  if (bitsoPct > 60) summaryLines.push("Concentracion cripto muy alta (" + bitsoPct.toFixed(0) + "%). Bitso domina el portafolio — revisa exposicion.");
+  else if (bitsoPct > 45) summaryLines.push("Cripto/Bitso sobre 45% (" + bitsoPct.toFixed(0) + "%) — vigilar correlacion en caidas.");
+  if (allQuiverMatches.length > 0) summaryLines.push(allQuiverMatches.length + " senales institucionales en tus activos (Quiver: congreso, insiders, contratos).");
+  const topAsset = ranked[0], bottomAsset = ranked[ranked.length - 1];
+  summaryLines.push("Mejor posicion: " + topAsset.symbol + " (score " + topAsset.score + "/100, " + (topAsset.gainPct >= 0 ? "+" : "") + topAsset.gainPct.toFixed(0) + "%).");
+  summaryLines.push("Activo a vigilar: " + bottomAsset.symbol + " (score " + bottomAsset.score + "/100, " + bottomAsset.gainPct.toFixed(1) + "%).");
+  summaryLines.push("Regimen: " + reg.label + ". " + reg.detail);
+  summaryLines.push("EDUCATIVO: no es asesoria financiera.");
+  const educationalSummary = summaryLines.join(" ");
+
+  return {
+    ok: true, ts: Date.now(), date: new Date().toLocaleDateString("es-MX"),
+    portfolioSummary, quiverSummary, marketThemes, tickerHighlights,
+    riskAlerts: riskAlerts.slice(0, 10),
+    educationalActions: educationalActions.slice(0, 6),
+    educationalSummary,
+    rawMatchesLimited: allQuiverMatches.slice(0, 20),
+    intel: { count: intelItems.length, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
+  };
+}
+
+function computeQuiverTrending() {
+  // Use full unfiltered data if available, else fall back to portfolio-filtered data
+  const srcCong = quiverDataFull.congressional.length > 0 ? quiverDataFull.congressional : quiverData.congressional;
+  const srcIns  = quiverDataFull.insider.length > 0 ? quiverDataFull.insider : quiverData.insider;
+  const srcCon  = quiverDataFull.contracts.length > 0 ? quiverDataFull.contracts : quiverData.contracts;
+  const all = [
+    ...srcCong.map(x => ({ ...x, _ds: "congressional" })),
+    ...srcIns.map(x => ({ ...x, _ds: "insider" })),
+    ...srcCon.map(x => ({ ...x, _ds: "contracts" }))
+  ];
+  const byTicker = {};
+  for (const m of all) {
+    const sym = (m.symbol || m.Ticker || "").toUpperCase();
+    if (!sym) continue;
+    if (!byTicker[sym]) byTicker[sym] = { symbol: sym, total: 0, buys: 0, sales: 0, others: 0, amount: 0, politicians: new Set(), latestDate: null };
+    byTicker[sym].total++;
+    const tx = (m.Transaction || m.TransactionType || m.transaction || "").toLowerCase();
+    if (/buy|purchase|bought/.test(tx)) byTicker[sym].buys++;
+    else if (/sale|sell|sold/.test(tx)) byTicker[sym].sales++;
+    else byTicker[sym].others++;
+    const amt = parseFloat(m.Amount || m.amount || m.Value || 0) || 0;
+    byTicker[sym].amount += amt;
+    const who = m.Representative || m.Name || m.name || m.Politician || "";
+    if (who) byTicker[sym].politicians.add(who);
+    if (m.Date && (!byTicker[sym].latestDate || m.Date > byTicker[sym].latestDate)) byTicker[sym].latestDate = m.Date;
+  }
+
+  const tickers = Object.values(byTicker).map(t => ({
+    symbol: t.symbol,
+    total: t.total, buys: t.buys, sales: t.sales, others: t.others,
+    totalAmount: +t.amount.toFixed(2),
+    politicianCount: t.politicians.size,
+    latestDate: t.latestDate,
+    inPortfolio: PORTFOLIO.some(a => a.symbol === t.symbol)
+  })).sort((a, b) => b.total - a.total);
+
+  const politicianMap = {};
+  for (const m of quiverData.congressional) {
+    const who = m.Representative || m.Politician || m.Name || "";
+    if (!who) continue;
+    if (!politicianMap[who]) politicianMap[who] = { name: who, party: m.Party || "", trades: 0, tickers: new Set() };
+    politicianMap[who].trades++;
+    const sym = (m.symbol || m.Ticker || "").toUpperCase();
+    if (sym) politicianMap[who].tickers.add(sym);
+  }
+  const mostActivePoliticians = Object.values(politicianMap)
+    .map(p => ({ name: p.name, party: p.party, trades: p.trades, tickers: [...p.tickers] }))
+    .sort((a, b) => b.trades - a.trades).slice(0, 10);
+
+  const latestTrades = all.slice().sort((a, b) => {
+    const da = a.Date || ""; const db = b.Date || "";
+    return da < db ? 1 : da > db ? -1 : 0;
+  }).slice(0, 20).map(m => ({
+    symbol: (m.symbol || m.Ticker || "").toUpperCase(),
+    dataset: m._ds,
+    transaction: m.Transaction || m.TransactionType || m.transaction || "",
+    who: m.Representative || m.Name || m.name || m.Politician || "",
+    party: m.Party || "",
+    amount: m.Amount || m.amount || m.Value || "",
+    date: m.Date || ""
+  }));
+
+  return {
+    ok: true, ts: Date.now(),
+    configured: quiverData.configured,
+    quiverCount: all.length,
+    topTickers: tickers.slice(0, 20),
+    topBuys: tickers.filter(t => t.buys > 0).sort((a, b) => b.buys - a.buys).slice(0, 10),
+    topSales: tickers.filter(t => t.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 10),
+    topByAmount: tickers.filter(t => t.totalAmount > 0).sort((a, b) => b.totalAmount - a.totalAmount).slice(0, 10),
+    mostActivePoliticians,
+    latestTrades
+  };
+}
+
+function computeMarketRadar() {
+  const pv = portfolioValue();
+  const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
+  const quiverTickers = new Set([
+    ...quiverData.congressional.map(x => (x.symbol || x.Ticker || "").toUpperCase()),
+    ...quiverData.insider.map(x => (x.symbol || x.Ticker || "").toUpperCase()),
+    ...quiverData.contracts.map(x => (x.symbol || x.Ticker || "").toUpperCase())
+  ].filter(Boolean));
+
+  const watchlist = MARKET_WATCHLIST.map(sym => {
+    const inPort = portfolioSymbols.has(sym);
+    const portAsset = inPort ? pv.assets.find(a => a.symbol === sym) : null;
+    const qCount = [
+      ...quiverData.congressional.filter(x => (x.symbol || x.Ticker || "").toUpperCase() === sym),
+      ...quiverData.insider.filter(x => (x.symbol || x.Ticker || "").toUpperCase() === sym),
+      ...quiverData.contracts.filter(x => (x.symbol || x.Ticker || "").toUpperCase() === sym)
+    ].length;
+    return {
+      symbol: sym,
+      inPortfolio: inPort,
+      score: portAsset ? portAsset.score : null,
+      signal: portAsset ? portAsset.signal : null,
+      gainPct: portAsset ? +portAsset.gainPct.toFixed(2) : null,
+      quiverSignals: qCount,
+      inQuiver: quiverTickers.has(sym)
+    };
+  });
+
+  const hotTickers = watchlist.filter(t => t.quiverSignals > 0 || (t.score != null && t.score > 65))
+    .sort((a, b) => (b.quiverSignals + (b.score || 0) / 10) - (a.quiverSignals + (a.score || 0) / 10));
+
+  const portfolioOverlap = watchlist.filter(t => t.inPortfolio);
+
+  const summaryLines = [];
+  summaryLines.push(`Radar de ${MARKET_WATCHLIST.length} activos del mercado.`);
+  if (hotTickers.length > 0) summaryLines.push(`${hotTickers.length} activo(s) con señales Quiver o score alto: ${hotTickers.slice(0, 5).map(t => t.symbol).join(", ")}.`);
+  summaryLines.push(`${portfolioOverlap.length} activos del radar están en tu portafolio.`);
+  summaryLines.push("EDUCATIVO: no es asesoría de inversión.");
+
+  return {
+    ok: true, ts: Date.now(),
+    watchlist,
+    hotTickers: hotTickers.slice(0, 10),
+    internetMentionsProxy: hotTickers.slice(0, 8).map(t => ({ symbol: t.symbol, score: t.quiverSignals * 2 + (t.score || 0) })),
+    quiverTrending: hotTickers.filter(t => t.quiverSignals > 0).slice(0, 10),
+    portfolioOverlap,
+    educationalSummary: summaryLines.join(" ")
+  };
+}
+
+function computeIntelligence() {
+  const pv = portfolioValue();
+  const radar = computeMarketRadar();
+  const trending = computeQuiverTrending();
+
+  const topics = intelItems.slice(0, 10).map(x => ({
+    text: String(x.text || "").slice(0, 200),
+    mood: x.mood,
+    affected: x.affected || [],
+    time: x.time
+  }));
+
+  const impactedTickers = [...new Set(intelItems.flatMap(x => x.affected || []))].map(sym => {
+    const asset = pv.assets.find(a => a.symbol === sym);
+    const intelCount = intelItems.filter(x => (x.affected || []).includes(sym)).length;
+    const moods = intelItems.filter(x => (x.affected || []).includes(sym)).map(x => x.mood);
+    const sentiment = moods.filter(m => m === "POSITIVO").length > moods.filter(m => m === "NEGATIVO").length ? "POSITIVO" : "NEGATIVO";
+    return { symbol: sym, intelCount, sentiment, score: asset ? asset.score : null, inPortfolio: !!asset };
+  }).sort((a, b) => b.intelCount - a.intelCount);
+
+  const portfolioImpacts = pv.assets.map(a => {
+    const myIntel = intelItems.filter(x => (x.affected || []).includes(a.symbol));
+    return {
+      symbol: a.symbol, score: a.score, signal: a.signal, gainPct: +a.gainPct.toFixed(2),
+      intelCount: myIntel.length,
+      intelMoods: myIntel.map(x => x.mood),
+      quiverSignals: trending.topTickers.find(t => t.symbol === a.symbol)?.total || 0
+    };
+  }).filter(x => x.intelCount > 0 || x.quiverSignals > 0);
+
+  const summaryLines = [`${intelItems.length} items de inteligencia manual.`];
+  if (trending.quiverCount > 0) summaryLines.push(`${trending.quiverCount} registros Quiver: congreso, insiders, contratos.`);
+  if (impactedTickers.length > 0) summaryLines.push(`Tickers más mencionados: ${impactedTickers.slice(0, 4).map(t => t.symbol).join(", ")}.`);
+  summaryLines.push("EDUCATIVO.");
+
+  return {
+    ok: true, ts: Date.now(),
+    topics,
+    impactedTickers: impactedTickers.slice(0, 15),
+    politicalTrading: trending.latestTrades.slice(0, 10),
+    marketRadar: radar.hotTickers.slice(0, 10),
+    portfolioImpacts,
+    educationalSummary: summaryLines.join(" ")
+  };
 }
 
 function classifyNews(n) {
@@ -335,28 +737,40 @@ function addThought(text, level = "info") {
   bot.thoughts = bot.thoughts.slice(0, 40);
 }
 
-// Pensamientos institucionales mas ricos
-function institutionalThoughts(pv, reg) {
+function generateLiveThought(pv, reg) {
   const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
   const top = ranked[0], bottom = ranked[ranked.length - 1];
-  const lines = [
-    `Escaneando ${pv.assets.length} activos en GBM, Plata y Bitso.`,
-    `Regimen ${reg.label} (${pct(reg.avg)}): ${reg.detail}`,
-    `Mayor score: ${top.symbol} (${top.score}/100), RSI ${top.ind.rsi}, tendencia ${top.ind.trend.toLowerCase()}.`,
-    `Mas debil: ${bottom.symbol} (${bottom.score}/100), momentum ${bottom.ind.momentum}.`,
-    `Probabilidad alcista estimada ${top.symbol}: ${Math.min(85, top.score + 8)}%.`,
-    `Revisando flujo institucional y volatilidad relativa.`,
-    `Calculando score de confianza por sector (tech, energia, cripto).`
-  ];
-  const pick = lines[Math.floor(Math.random() * lines.length)];
-  addThought(pick, "scan");
+  const totalMXN = pv.totalValueMXN || 1;
+  const cryptoPct = (pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0) / totalMXN * 100).toFixed(0);
+  const losers = pv.assets.filter(a => a.gainPct < -10);
+  const winners = pv.assets.filter(a => a.gainPct > 50);
+  const highScore = pv.assets.filter(a => a.score >= 70);
+  const qCount = quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length;
+
+  const pool = [
+    { text: `Portafolio ${money(pv.totalValueMXN)} · rendimiento ${pct(pv.totalGainPct)} · regimen ${reg.label}.`, level: "scan" },
+    { text: `Mejor score hoy: ${top.symbol} (${top.score}/100) · RSI ${top.ind.rsi} · señal ${top.signal}.`, level: "scan" },
+    { text: `Activo mas debil: ${bottom.symbol} (score ${bottom.score}/100, ${pct(bottom.gainPct)}) · tendencia ${bottom.ind.trend.toLowerCase()}.`, level: "risk" },
+    { text: `Cripto representa ${cryptoPct}% del portafolio · ${cryptoPct > 45 ? "RIESGO ALTO — concentracion elevada" : "dentro de rango aceptable"}.`, level: cryptoPct > 45 ? "risk" : "scan" },
+    { text: `Regimen ${reg.label}: ${reg.detail} · promedio ${pct(reg.avg)}.`, level: "scan" },
+    losers.length ? { text: `${losers.length} activo(s) en drawdown mayor -10%: ${losers.map(a => a.symbol).join(", ")}.`, level: "risk" } : null,
+    winners.length ? { text: `${winners.map(a => a.symbol).join(", ")} acumula(n) +50% o mas · evaluar toma parcial educativa.`, level: "sell" } : null,
+    highScore.length ? { text: `Señales positivas: ${highScore.map(a => a.symbol + " " + a.score + "/100").join(", ")}.`, level: "buy" } : null,
+    qCount > 0 ? { text: `Quiver: ${qCount} registros institucionales en activos del portafolio · congreso, insiders, contratos.`, level: "scan" } : null,
+    { text: `Momentum dominante del portafolio: ${reg.avg >= 0 ? "positivo" : "negativo"} · ${pv.assets.filter(a => a.ind.momentum > 0).length}/${pv.assets.length} activos con momentum alcista.`, level: reg.avg >= 0 ? "buy" : "risk" },
+    { text: `${pv.assets.filter(a => a.signal.includes("BUY")).length} señales BUY activas · ${pv.assets.filter(a => a.signal.includes("TOMAR")).length} señales de toma de ganancia.`, level: "scan" },
+    intelItems.length > 0 ? { text: `${intelItems.length} items en Cordelius Intelligence · ${intelItems.filter(x => x.mood === "POSITIVO").length} positivos, ${intelItems.filter(x => x.mood === "NEGATIVO").length} negativos.`, level: "scan" } : null,
+  ].filter(Boolean);
+
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  addThought(pick.text, pick.level);
 }
 
 function botTick() {
   if (!bot.running) { addThought("Bot pausado: monitoreo visual activo, sin compras simuladas.", "warn"); saveJSON(BOT_FILE, bot); return; }
   const pv = portfolioValue();
   const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
-  institutionalThoughts(pv, marketRegime());
+  generateLiveThought(pv, marketRegime());
 
   for (const a of ranked.slice(0, 5)) {
     const priceMXN = a.valueMXN / Math.max(a.units, 1e-8);
@@ -472,9 +886,6 @@ ${JSON.stringify(intelContext, null, 2)}
 BOT FICTICIO:
 ${JSON.stringify(botContext, null, 2)}
 
-DAILY SCAN (resumen automatico de hoy):
-${(function(){try{const qcM=quiverCache.data?matchQuiverToPortfolio(quiverCache.data):{count:0,tickers:[],grouped:{}};const s=buildScanData(pv,qcM);return JSON.stringify({topRisk:s.topRisk,topOpportunity:s.topOpportunity,concentrationRisk:s.concentrationRisk,cryptoExposurePct:+s.bitsoPct.toFixed(1),regime:s.reg.label,actionChecklist:s.actionChecklist,riskAlerts:s.riskAlerts.slice(0,4).map(a=>({level:a.level,symbol:a.symbol,title:a.title,educationalAction:a.educationalAction})),quiverMatches:qcM.count},null,2);}catch(e){return "no disponible";}})()}
-
 REGLAS DE RESPUESTA:
 1. Si mencionas Apple/AAPL, recuerda que costo original fue aprox. 2640 MXN y valor manual aprox. 5450 MXN.
 2. Distingue broker: GBM, Plata, Bitso.
@@ -546,26 +957,43 @@ async function alfredoReply(question) {
   const best = ranked[0], worst = ranked[ranked.length - 1];
   const botEq = botValue(), botPnl = botEq - bot.initialCapital;
   let reply = "";
+  const qCount = quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length;
   if (q.includes("riesgo")) {
     const high = pv.assets.filter(a => a.risk === "ALTO" || a.risk === "MEDIO/ALTO");
-    reply = `Tu riesgo principal esta en ${high.map(a => a.symbol).join(", ")}. El regimen esta ${reg.label}. No es que esten mal, son los que mas pueden moverse fuerte.`;
-  } else if (q.includes("vender")) {
-    reply = `Primero revisaria ${worst.symbol}: score ${worst.score}, senal ${worst.signal}, rendimiento ${pct(worst.gainPct)}. No es vender automatico, es vigilarlo mas.`;
+    const cryptoPct = (pv.assets.filter(a => a.type === "crypto").reduce((s,a) => s+a.valueMXN, 0) / (pv.totalValueMXN||1) * 100).toFixed(0);
+    reply = `Tu riesgo principal esta en ${high.map(a => a.symbol).join(", ")}. Cripto ${cryptoPct}% del portafolio. Regimen ${reg.label}. Los de mayor riesgo pueden moverse fuerte en ambas direcciones.`;
+  } else if (q.includes("vender") || q.includes("vendo") || q.includes("que vendo")) {
+    const losers = ranked.filter(a => a.gainPct < -10 || a.score < 35).slice(0, 3);
+    reply = `Para revisar primero: ${losers.length ? losers.map(a => `${a.symbol} (score ${a.score}, ${pct(a.gainPct)})`).join(", ") : worst.symbol + " (score " + worst.score + ")"}. Evaluar tesis, no venta automatica.`;
   } else if (q.includes("comprar") || q.includes("compro")) {
     const ideas = ranked.filter(a => a.signal.includes("BUY") || a.signal.includes("MOMENTUM")).slice(0, 4);
-    reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia, noticia y tamano pequeno.` : "No veo compra clara ahorita. Mercado neutral: mejor paciencia que forzar entrada.";
+    reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia y tamano pequeno.` : "No veo compra clara. Mercado " + reg.label + ": mejor paciencia.";
+  } else if (q.includes("vigilar") || q.includes("analiza") || q.includes("que harias")) {
+    const scan = computeDailyScan();
+    const alerts = scan.riskAlerts.slice(0,3).map(a => a.message).join("; ");
+    const actions = scan.educationalActions.slice(0,2).map(a => `${a.priority}: ${a.symbol} — ${a.action}`).join(". ");
+    reply = `Scan: ${alerts || "sin alertas criticas"}. Acciones sugeridas: ${actions || "mantener y monitorear"}.`;
+  } else if (q.includes("quiver") || q.includes("politico") || q.includes("congreso") || q.includes("insider")) {
+    if (qCount > 0) {
+      const top = [...quiverData.congressional, ...quiverData.insider].slice(0,3).map(m => `${(m.symbol||m.Ticker||"").toUpperCase()} (${m.Representative||m.Name||""})`).join(", ");
+      reply = `Quiver tiene ${qCount} registros en tus activos. Recientes: ${top}. Datos educativos, retraso hasta 45 dias.`;
+    } else {
+      reply = "Sin datos Quiver activos. Agrega QUIVER_API_KEY en .env para ver trading politico e insider.";
+    }
+  } else if (q.includes("radar") || q.includes("mercado") || q.includes("watchlist")) {
+    const radar = computeMarketRadar();
+    const hot = radar.hotTickers.slice(0,4).map(t => t.symbol).join(", ");
+    reply = `Market Radar activo: ${MARKET_WATCHLIST.length} tickers monitoreados. Mas activos ahora: ${hot || "sin señales destacadas"}. ${radar.portfolioOverlap.length} de tu portafolio en el radar.`;
+  } else if (q.includes("intel") || q.includes("inteligencia") || q.includes("grok")) {
+    const positivos = intelItems.filter(x => x.mood === "POSITIVO").length;
+    const negativos = intelItems.filter(x => x.mood === "NEGATIVO").length;
+    reply = `Cordelius Intelligence: ${intelItems.length} items. ${positivos} positivos, ${negativos} negativos. Tickers cubiertos: ${[...new Set(intelItems.flatMap(x => x.affected||[]))].slice(0,6).join(", ") || "sin items aun"}.`;
   } else if (q.includes("noticia")) {
     reply = `Hay ${news.length} noticias cargadas. Las cruzo contra tus activos para mostrar impacto probable por ticker.`;
   } else if (q.includes("bot")) {
     reply = `El bot ficticio tiene equity ${money(botEq)}, P&L ${money(botPnl)} y ${bot.tradesCount} operaciones. Laboratorio, no piloto automatico real.`;
-  } else if (q.includes("vigilar") || q.includes("daily scan") || q.includes("analiza") || q.includes("que harias") || q.includes("qué harías") || q.includes("que vendo") || q.includes("qué vendo")) {
-    const qcM = quiverCache.data ? matchQuiverToPortfolio(quiverCache.data) : { count: 0, tickers: [], grouped: {} };
-    const s = buildScanData(pv, qcM);
-    const rStr = s.topRisk ? s.topRisk.symbol + " (score " + s.topRisk.score + ")" : "sin critico";
-    const oStr = s.topOpportunity ? s.topOpportunity.symbol + " (score " + s.topOpportunity.score + ")" : "ninguna";
-    reply = `Escenario educativo — no es orden de compra/venta. Mayor riesgo a vigilar: ${rStr}. Oportunidad educativa: ${oStr}. Cripto: ${s.bitsoPct.toFixed(0)}% (${s.concentrationRisk}). Regimen: ${s.reg.label}. ${s.actionChecklist[0] || ""}`;
   } else {
-    reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol}; mas debil: ${worst.symbol}.`;
+    reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
   const ai = await askClaude(question, reply, pv, reg, botEq, botPnl);
   if (ai) reply = ai;
@@ -608,13 +1036,39 @@ function brainHtml() {
 function renderPortfolioRows(assets) {
   return assets.map(a => {
     const z = a.zones; const act = alfredoAction(a); const ind = a.ind;
+    const units = a.units || 0;
+    // Per-unit prices
+    const avgBuyMXN = units > 0 ? a.costMXN / units : 0;
+    const avgBuyUSD = (a.currency === "USD" && units > 0) ? (a.costManual / units) : null;
+    const curPriceMXN = units > 0 ? a.valueMXN / units : 0;
+    const curPriceUSD = (a.currency === "USD" && units > 0) ? (a.liveValue / units) : null;
+    const avgLabel = a.currency === "USD"
+      ? (avgBuyUSD != null ? money(avgBuyUSD, "USD") + " (≈ " + money(avgBuyMXN) + ")" : "no disponible")
+      : (avgBuyMXN > 0 ? money(avgBuyMXN) : "no disponible");
+    const curLabel = a.currency === "USD"
+      ? (curPriceUSD != null ? money(curPriceUSD, "USD") + " (≈ " + money(curPriceMXN) + ")" : "-")
+      : money(curPriceMXN);
+    const isCrypto = a.type === "crypto";
+    const unitsLabel = isCrypto ? Number(units).toFixed(units < 1 ? 8 : 4) + " " + a.symbol : units + " accs";
     return `<details class="asset-row">
       <summary>
-        <div class="asset-main">${logoHtml(a)}<div><b>${esc(a.display)}</b><span>${esc(a.name)}</span><em>${esc(a.source)} · ${esc(a.category)} · ${a.units} u</em></div></div>
-        <div class="asset-money"><b>${a.currency === "USD" ? money(a.liveValue, "USD") : money(a.liveValue, "MXN")}</b>${a.currency === "USD" ? `<div class="muted" style="font-size:12px">~ ${money(a.valueMXN)}</div>` : ""}<span class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)} · ${money(a.gainMXN)}</span></div>
+        <div class="asset-main">${logoHtml(a)}<div><b>${esc(a.display)}</b><span>${esc(a.name)}</span><em>${esc(a.source)} · ${esc(a.category)} · ${unitsLabel}</em></div></div>
+        <div class="asset-money">
+          <b>${a.currency === "USD" ? money(a.liveValue, "USD") : money(a.liveValue, "MXN")}</b>
+          ${a.currency === "USD" ? `<div class="muted" style="font-size:12px">≈ ${money(a.valueMXN)}</div>` : ""}
+          <span class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)} · ${money(a.gainMXN)}</span>
+        </div>
       </summary>
       <div class="asset-detail">
         <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
+        <div class="detail-grid" style="margin-bottom:14px">
+          <div><span>Cantidad</span><b>${unitsLabel}</b></div>
+          <div><span>Costo original</span><b>${money(a.costMXN)}</b></div>
+          <div><span>Valor actual</span><b>${money(a.valueMXN)}</b></div>
+          <div><span>Ganancia MXN</span><b class="${a.gainMXN >= 0 ? "green" : "red"}">${money(a.gainMXN)}</b></div>
+          <div><span>Promedio compra</span><b>${avgLabel}</b></div>
+          <div><span>Precio actual</span><b>${curLabel}</b></div>
+        </div>
         <div class="ind-row">
           <div class="ind"><span>RSI</span><b class="${ind.rsi > 70 ? "red" : ind.rsi < 30 ? "green" : ""}">${ind.rsi}</b></div>
           <div class="ind"><span>MACD</span><b class="${ind.macd >= 0 ? "green" : "red"}">${ind.macd}</b></div>
@@ -622,9 +1076,11 @@ function renderPortfolioRows(assets) {
           <div class="ind"><span>Tendencia</span><b>${ind.trend}</b></div>
           <div class="ind"><span>Volatilidad</span><b>${ind.volatility}</b></div>
           <div class="ind"><span>Score IA</span><b>${a.score}/100</b></div>
+          <div class="ind"><span>Riesgo</span><b class="${a.risk === "ALTO" ? "red" : a.risk === "BAJO" ? "green" : "yellow"}">${a.risk}</b></div>
+          <div class="ind"><span>Señal</span><b style="font-size:12px">${esc(a.signal)}</b></div>
         </div>
         <div class="alfredo-score" style="border-color:${act.color}55">
-          <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Alfredo Score ${act.score}/100</span></div>
+          <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Score ${act.score}/100</span></div>
           <ul>${act.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
         </div>
         <div class="detail-grid">
@@ -640,6 +1096,15 @@ function renderPortfolioRows(assets) {
 }
 
 
+function intelMatchWord(text, word) {
+  return new RegExp("(^|[\\s,;:.!?¿¡\"'(\\[{])(" + word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")($|[\\s,;:.!?¿¡\"')\\]}])", "i").test(text);
+}
+
+function intelHash(text) {
+  const s = String(text).trim().slice(0, 300);
+  return s.split("").reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0).toString(36).replace("-", "n");
+}
+
 function analyzeIntelText(text) {
   const raw = String(text || "");
   const lower = raw.toLowerCase();
@@ -648,11 +1113,11 @@ function analyzeIntelText(text) {
     .filter(a => lower.includes(String(a.symbol).toLowerCase()) || lower.includes(String(a.name || "").toLowerCase()))
     .map(a => a.symbol);
 
-  const positiveWords = ["bullish", "sube", "subir", "compra", "buy", "crecimiento", "ai", "ia", "contrato", "earnings", "beneficio", "aprobado"];
+  const positiveWords = ["bullish", "sube", "subir", "compra", "buy", "crecimiento", "artificial intelligence", "inteligencia artificial", "contrato", "earnings", "beneficio", "aprobado"];
   const negativeWords = ["bearish", "baja", "cae", "caida", "venta", "sell", "riesgo", "demanda", "regulacion", "hack", "multa", "recesion"];
 
-  const pos = positiveWords.filter(w => lower.includes(w)).length;
-  const neg = negativeWords.filter(w => lower.includes(w)).length;
+  const pos = positiveWords.filter(w => intelMatchWord(lower, w)).length;
+  const neg = negativeWords.filter(w => intelMatchWord(lower, w)).length;
 
   let mood = "NEUTRAL";
   if (pos > neg) mood = "POSITIVO";
@@ -660,13 +1125,14 @@ function analyzeIntelText(text) {
 
   const tags = [];
   if (lower.includes("china") || lower.includes("asia")) tags.push("Asia/China");
-  if (lower.includes("ai") || lower.includes("ia") || lower.includes("chips")) tags.push("IA/Tech");
+  if (/\bai\b/.test(lower) || intelMatchWord(lower, "ia") || lower.includes("chips") || lower.includes("inteligencia artificial")) tags.push("IA/Tech");
   if (lower.includes("cobre") || lower.includes("copper")) tags.push("Cobre");
   if (lower.includes("crypto") || lower.includes("bitcoin") || lower.includes("btc")) tags.push("Cripto");
   if (lower.includes("congreso") || lower.includes("senado") || lower.includes("regulacion")) tags.push("Politica/Regulacion");
 
   return {
     text: raw.slice(0, 3000),
+    hash: intelHash(raw),
     affected,
     mood,
     tags,
@@ -674,162 +1140,54 @@ function analyzeIntelText(text) {
   };
 }
 
-function renderQuiverPanel() {
-  try {
-    if (!QUIVER_API_KEY) {
-      return '<div class="quiver-box">'
-        + '<div class="quiver-item"><div class="label">Estado</div><div class="big yellow">PENDIENTE</div><p class="muted">Agrega QUIVER_API_KEY en .env para datos del Congreso.</p></div>'
-        + '<div class="quiver-item"><div class="label">Uso pensado</div><p>Compras de politicos, contratos, lobbying — cruzado contra tus activos.</p></div>'
-        + '<div class="quiver-item"><div class="label">Activos sensibles</div><p>MSFT, AAPL, UNH, AEP, GEV, COPX, PLTR reaccionan a regulacion publica.</p></div>'
-        + '</div>';
-    }
-    const qd = quiverCache.data;
-    if (!qd) return '<div class="panel"><div class="muted" style="padding:18px">Datos Quiver cargando... Refresca en unos segundos.</div></div>';
-    const matches = matchQuiverToPortfolio(qd);
-    if (!matches.count) return '<div class="panel"><div class="muted" style="padding:18px">Quiver configurado (' + (qd.count || 0) + ' registros) pero sin coincidencias con tu portafolio.</div></div>';
-    const topGroups = Object.values(matches.grouped || {}).sort((a, b) => b.count - a.count).slice(0, 6);
-    const summaryHtml = topGroups.map(g =>
-      '<div style="display:inline-flex;align-items:center;gap:6px;margin:4px;padding:5px 12px;border-radius:12px;border:1px solid rgba(59,157,255,.25);background:rgba(59,157,255,.08)">'
-      + '<b style="color:#3b9dff">' + esc(g.ticker) + '</b>'
-      + '<span class="muted" style="font-size:12px">×' + g.count + '</span>'
-      + (g.buys  ? ' <span style="color:#00ff99;font-size:11px;background:rgba(0,255,153,.1);padding:1px 6px;border-radius:999px">+' + g.buys + '</span>' : '')
-      + (g.sales ? ' <span style="color:#ff4d6d;font-size:11px;background:rgba(255,77,109,.1);padding:1px 6px;border-radius:999px">−' + g.sales + '</span>' : '')
-      + '</div>'
-    ).join("");
-    const rows = matches.items.slice(0, 40).map(m => {
-      const tt = (m.transaction || "").toLowerCase();
-      const isB = tt.includes("buy") || tt.includes("purchase");
-      const isS = tt.includes("sale") || tt.includes("sell");
-      const txColor = isB ? "#00ff99" : isS ? "#ff4d6d" : "#ffd35c";
-      const txLabel = isB ? "COMPRA" : isS ? "VENTA" : "OTRO";
-      return '<tr>'
-        + '<td><b style="color:#3b9dff">' + esc(m.ticker) + '</b></td>'
-        + '<td><span style="color:' + txColor + ';font-weight:800;font-size:12px">' + esc(txLabel) + '</span></td>'
-        + '<td class="muted" style="font-size:13px;max-width:180px;overflow:hidden;text-overflow:ellipsis">' + esc(m.politician || "—") + '</td>'
-        + '<td class="muted" style="font-size:13px">' + esc(String(m.amount || "—")) + '</td>'
-        + '<td class="muted" style="font-size:12px">' + esc(String(m.date || "—").slice(0, 10)) + '</td>'
-        + '</tr>';
-    }).join("");
-    return '<div class="panel" style="padding:18px">'
-      + '<div style="margin-bottom:12px">' + summaryHtml + '</div>'
-      + '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Tipo</th><th>Politico</th><th>Monto/Rango</th><th>Fecha</th></tr></thead><tbody>'
-      + rows + '</tbody></table></div>'
-      + '<div class="muted" style="font-size:12px;margin-top:8px">' + matches.count + ' coincidencias de ' + (qd.count || 0) + ' registros · Congressional Trading · <a href="/api/quiver/matches" target="_blank" style="color:#9fb3c8">JSON →</a></div>'
-      + '</div>';
-  } catch (e) {
-    return '<div class="panel"><div class="muted">Quiver no disponible: ' + esc(String(e.message || "error")) + '</div></div>';
-  }
-}
-
-function renderWatchTodayCard() {
-  try {
-    const qcM = quiverCache.data ? matchQuiverToPortfolio(quiverCache.data) : { count: 0, tickers: [], grouped: {} };
-    const s = buildScanData(null, qcM);
-    const riskColor = s.concentrationRisk === "MUY ALTO" || (s.topRisk && s.topRisk.score < 30) ? "#ff4d6d"
-      : s.concentrationRisk === "ALTO" ? "#ffd166" : "#00ff99";
-    const topRiskHtml = s.topRisk
-      ? '<b style="color:#ff4d6d">' + esc(s.topRisk.symbol) + '</b> <span class="muted" style="font-size:13px">' + esc(s.topRisk.signal) + ' · score ' + s.topRisk.score + ' · ' + (s.topRisk.gainPct >= 0 ? "+" : "") + s.topRisk.gainPct + '%</span>'
-      : '<span class="muted">Sin alerta critica</span>';
-    const topOppHtml = s.topOpportunity
-      ? '<b style="color:#00ff99">' + esc(s.topOpportunity.symbol) + '</b> <span class="muted" style="font-size:13px">' + esc(s.topOpportunity.signal) + ' · score ' + s.topOpportunity.score + '</span>'
-      : '<span class="muted">Sin oportunidad destacada</span>';
-    const checklistHtml = s.actionChecklist.slice(0, 5).map(item =>
-      '<li style="margin:5px 0;color:#c7dff7;font-size:14px">' + esc(item) + '</li>'
-    ).join("");
-    const quiverChips = (qcM.tickers || []).slice(0, 6).map(t =>
-      '<span style="background:rgba(59,157,255,.12);border:1px solid rgba(59,157,255,.25);border-radius:8px;padding:3px 10px;font-size:12px;margin:2px;display:inline-block">' + esc(t) + '</span>'
-    ).join("") || '<span class="muted" style="font-size:12px">Sin datos Quiver aun</span>';
-    return '<div class="panel" style="border-color:rgba(255,211,92,.35);background:rgba(255,211,92,.03)">'
-      + '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">'
-      + '<div style="font-size:22px;font-weight:900;color:#ffd35c">Que debo vigilar hoy</div>'
-      + '<div style="padding:3px 12px;border-radius:999px;border:1px solid ' + riskColor + '55;background:' + riskColor + '18;color:' + riskColor + ';font-size:12px;font-weight:800">Cripto: ' + esc(s.concentrationRisk) + ' · ' + s.bitsoPct.toFixed(0) + '%</div>'
-      + '<div class="muted" style="font-size:12px">Regimen: ' + esc(s.reg.label) + ' · ' + new Date().toLocaleDateString("es-MX") + '</div>'
-      + '<a href="/api/daily-scan" target="_blank" style="color:#9fb3c8;font-size:12px;text-decoration:none;margin-left:auto">JSON →</a>'
-      + '</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:14px">'
-      + '<div style="border:1px solid rgba(255,77,109,.2);border-radius:16px;padding:14px;background:rgba(255,77,109,.04)">'
-      + '<div class="label" style="margin-bottom:8px;color:#ff4d6d">Mayor riesgo</div>' + topRiskHtml + '</div>'
-      + '<div style="border:1px solid rgba(0,255,153,.2);border-radius:16px;padding:14px;background:rgba(0,255,153,.04)">'
-      + '<div class="label" style="margin-bottom:8px;color:#00ff99">Mejor oportunidad</div>' + topOppHtml + '</div>'
-      + '<div style="border:1px solid rgba(59,157,255,.2);border-radius:16px;padding:14px;background:rgba(59,157,255,.04)">'
-      + '<div class="label" style="margin-bottom:8px;color:#3b9dff">Senales Quiver</div>' + quiverChips
-      + (qcM.count ? '<div class="muted" style="font-size:11px;margin-top:5px">' + qcM.count + ' movimientos politicos</div>' : '')
-      + '</div>'
-      + '</div>'
-      + '<div class="label" style="margin-bottom:8px">Checklist educativo de hoy</div>'
-      + '<ul style="padding-left:18px;margin:0">' + checklistHtml + '</ul>'
-      + '</div>';
-  } catch (e) {
-    return '<div class="panel"><div class="muted">Vigilar hoy no disponible: ' + esc(String(e.message || "error")) + '</div></div>';
-  }
-}
-
-function renderDailyScanCard() {
-  try {
-    const qcM = quiverCache.data ? matchQuiverToPortfolio(quiverCache.data) : { count: 0, tickers: [], grouped: {} };
-    const s = buildScanData(null, qcM);
-    const alerts = s.riskAlerts.slice(0, 3);
-    const riskLevel = alerts.some(a => a.level === "CRITICO") ? "CRITICO"
-      : alerts.some(a => a.level === "ALTO")    ? "ALTO"
-      : alerts.some(a => a.level === "ATENCION") ? "ATENCION" : "NORMAL";
-    const riskColor = (riskLevel === "CRITICO" || riskLevel === "ALTO") ? "#ff4d6d"
-      : riskLevel === "ATENCION" ? "#ffd166" : "#00ff99";
-    const alertRows = alerts.map(a => {
-      const lc = (a.level === "CRITICO" || a.level === "ALTO") ? "#ff4d6d" : a.level === "ATENCION" ? "#ffd166" : "#00ff99";
-      return '<div style="border-left:3px solid ' + lc + ';padding:8px 12px;margin:6px 0;background:rgba(255,255,255,.03);border-radius:0 10px 10px 0">'
-        + '<b style="color:' + lc + ';font-size:12px">' + esc(a.level) + '</b> <b style="font-size:13px">' + esc(a.title || a.symbol) + '</b>'
-        + (a.reason ? '<div class="muted" style="font-size:12px;margin-top:2px">' + esc(a.reason) + '</div>' : '')
-        + (a.educationalAction ? '<div style="color:#9bd3ff;font-size:12px;margin-top:1px">' + esc(a.educationalAction) + '</div>' : '')
-        + '</div>';
-    }).join("") || '<div class="muted" style="font-size:13px">Sin alertas criticas.</div>';
-    const topGroups = Object.values(qcM.grouped || {}).sort((a, b) => b.count - a.count).slice(0, 5);
-    const quiverHtml = topGroups.length ? topGroups.map(g =>
-      '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(120,160,210,.08)">'
-      + '<span style="font-weight:800;color:#3b9dff;min-width:52px">' + esc(g.ticker) + '</span>'
-      + '<span class="muted" style="font-size:12px">×' + g.count + '</span>'
-      + (g.buys  ? ' <span style="color:#00ff99;font-size:11px">+' + g.buys + '</span>'  : '')
-      + (g.sales ? ' <span style="color:#ff4d6d;font-size:11px">−' + g.sales + '</span>' : '')
-      + '</div>'
-    ).join("") : '<span class="muted" style="font-size:13px">Sin coincidencias Quiver</span>';
-    return '<div class="panel" style="border-color:rgba(59,157,255,.35)">'
-      + '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">'
-      + '<div style="font-size:22px;font-weight:900;background:linear-gradient(90deg,#00ff99,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">SCAN DIARIO</div>'
-      + '<div style="padding:4px 12px;border-radius:999px;border:1px solid ' + riskColor + '55;background:' + riskColor + '18;color:' + riskColor + ';font-size:12px;font-weight:800">' + esc(riskLevel) + '</div>'
-      + '<div class="muted" style="font-size:12px">' + new Date().toLocaleDateString("es-MX") + ' · ' + esc(s.reg.label) + '</div>'
-      + '<a href="/api/daily-scan" target="_blank" style="color:#9fb3c8;font-size:12px;text-decoration:none;margin-left:auto">Ver JSON</a>'
-      + '</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px">'
-      + '<div><div class="label" style="margin-bottom:8px">Top alertas</div>' + alertRows + '</div>'
-      + '<div><div class="label" style="margin-bottom:8px">Quiver en portafolio</div>' + quiverHtml
-      + '<div class="muted" style="font-size:12px;margin-top:6px">'
-      + qcM.count + ' total'
-      + (s.biggestWinner ? ' · mayor ganancia: ' + esc(s.biggestWinner.symbol) + ' (' + (s.biggestWinner.gainPct >= 0 ? '+' : '') + s.biggestWinner.gainPct + '%)' : '')
-      + (s.weakestTechnical ? ' · RSI mas bajo: ' + esc(s.weakestTechnical.symbol) + ' (' + s.weakestTechnical.rsi + ')' : '')
-      + '</div></div>'
-      + '</div>'
-      + '<div style="margin-top:14px;padding:12px 14px;border-radius:14px;background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);color:#c7dff7;font-size:13px;line-height:1.6">'
-      + '<b style="color:#3b9dff;font-size:11px;letter-spacing:.08em">RESUMEN EDUCATIVO</b><br>'
-      + esc(s.educationalSummary)
-      + '</div>'
-      + '</div>';
-  } catch (e) {
-    return '<div class="panel"><div class="muted">Scan diario no disponible: ' + esc(String(e.message || "error")) + '</div></div>';
-  }
-}
-
 function renderIntelPanel() {
-  const rows = (intelItems || []).slice(0, 10).map(function(x) {
+  const items = intelItems || [];
+  const count = items.length;
+  const posCount = items.filter(x => x.mood === "POSITIVO").length;
+  const negCount = items.filter(x => x.mood === "NEGATIVO").length;
+  const neuCount = items.filter(x => x.mood === "NEUTRAL").length;
+
+  const rows = items.slice(0, 20).map(function(x) {
     const moodClass = x.mood === "POSITIVO" ? "green" : (x.mood === "NEGATIVO" ? "red" : "yellow");
+    const moodKey = x.mood === "POSITIVO" ? "POS" : (x.mood === "NEGATIVO" ? "NEG" : "NEU");
     const affected = (x.affected && x.affected.length) ? x.affected.join(", ") : "Sin activo directo";
     const tags = (x.tags && x.tags.length) ? x.tags.join(" · ") : "General";
+    const hashVal = x.hash ? esc(x.hash) : "";
 
-    return '<div class="news-card">'
-      + '<div><b class="' + moodClass + '">' + esc(x.mood) + '</b><div class="muted">' + esc(x.time) + '</div></div>'
+    return '<div class="news-card intel-item" data-mood="' + moodKey + '">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+      + '<div><b class="' + moodClass + '">' + esc(x.mood) + '</b><div class="muted" style="font-size:12px">' + esc(x.time) + '</div></div>'
+      + (hashVal ? '<form method="POST" action="/intel/delete" style="margin:0">'
+        + '<input type="hidden" name="id" value="' + hashVal + '">'
+        + '<button type="submit" style="background:rgba(255,77,109,.15);border:1px solid rgba(255,77,109,.35);color:#ff4d6d;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:12px" title="Borrar este analisis">&#x2715;</button>'
+        + '</form>' : '')
+      + '</div>'
       + '<div><div><b>Activos afectados:</b> ' + esc(affected) + '</div>'
       + '<div class="muted">' + esc(tags) + '</div>'
-      + '<p>' + esc(x.text).slice(0, 700) + '</p></div>'
+      + '<p style="white-space:pre-wrap">' + esc(x.text).slice(0, 700) + '</p></div>'
       + '</div>';
   }).join("") || '<div class="msg muted">Todavia no hay analisis pegado. Pega texto de Grok, X o noticias.</div>';
+
+  const clearBtn = count > 0
+    ? '<form method="POST" action="/intel/clear" onsubmit="return confirm(\'Borrar todos los analisis Intel? Esta accion no se puede deshacer.\')" style="margin:0">'
+      + '<button type="submit" style="background:rgba(255,77,109,.12);border:1px solid rgba(255,77,109,.3);color:#ff4d6d;border-radius:8px;padding:5px 14px;cursor:pointer;font-size:13px">Limpiar todo</button>'
+      + '</form>'
+    : '';
+
+  const filterBar = '<div id="intel-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'ALL\')" style="background:rgba(59,157,255,.2);border:1px solid rgba(59,157,255,.5);color:#3b9dff;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px;font-weight:bold">Todos <b>' + count + '</b></button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'POS\')" style="background:rgba(0,255,153,.08);border:1px solid rgba(0,255,153,.3);color:#00ff99;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">POSITIVO <b>' + posCount + '</b></button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'NEG\')" style="background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.3);color:#ff4d6d;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEGATIVO <b>' + negCount + '</b></button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'NEU\')" style="background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);color:#ffd166;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEUTRAL <b>' + neuCount + '</b></button>'
+    + '<div style="margin-left:auto">' + clearBtn + '</div>'
+    + '</div>'
+    + '<script>function intelFilter(btn,type){'
+    + 'document.querySelectorAll(".intel-item").forEach(function(el){'
+    + 'el.style.display=(type==="ALL"||el.dataset.mood===type)?"":"none";});'
+    + 'document.querySelectorAll(".intel-chip").forEach(function(b){'
+    + 'b.style.fontWeight=b===btn?"bold":"normal";'
+    + 'b.style.opacity=b===btn?"1":"0.65";});}'
+    + '</script>';
 
   return '<div class="panel">'
     + '<form method="POST" action="/intel">'
@@ -838,7 +1196,265 @@ function renderIntelPanel() {
     + '</form>'
     + '<p class="muted">Modo manual: pega texto externo y Cordelius lo cruza contra tus activos. No opera dinero real.</p>'
     + '</div>'
-    + '<div class="panel">' + rows + '</div>';
+    + '<div class="panel">' + filterBar + rows
+    + (items.length > 20 ? '<div class="muted" style="text-align:center;padding:10px 0;font-size:13px">Mostrando 20 de ' + items.length + ' analisis &mdash; borra los mas antiguos para ver los recientes arriba.</div>' : '')
+    + '</div>'
+    + renderIntelByAsset();
+}
+
+function renderIntelByAsset() {
+  const items = intelItems || [];
+  if (!items.length) return "";
+
+  const byAsset = {};
+  for (const item of items) {
+    for (const sym of (item.affected || [])) {
+      if (!byAsset[sym]) byAsset[sym] = [];
+      byAsset[sym].push(item);
+    }
+  }
+
+  const symbols = Object.keys(byAsset)
+    .filter(sym => PORTFOLIO.some(a => a.symbol === sym))
+    .sort();
+
+  if (!symbols.length) return "";
+
+  const cards = symbols.map(function(sym) {
+    const asset = PORTFOLIO.find(a => a.symbol === sym);
+    const symItems = byAsset[sym];
+    const pos = symItems.filter(x => x.mood === "POSITIVO").length;
+    const neg = symItems.filter(x => x.mood === "NEGATIVO").length;
+    const neu = symItems.filter(x => x.mood === "NEUTRAL").length;
+    const net = pos > neg ? "POSITIVO" : neg > pos ? "NEGATIVO" : "NEUTRAL";
+    const netClass = net === "POSITIVO" ? "green" : net === "NEGATIVO" ? "red" : "yellow";
+    const logo = asset ? '<div class="asset-logo" style="background:' + esc(asset.color) + ';width:30px;height:30px;min-width:30px;font-size:11px;border-radius:8px;display:flex;align-items:center;justify-content:center">' + esc(asset.logo) + '</div>' : "";
+    const snippets = symItems.slice(0, 2).map(function(x) {
+      return '<div class="muted" style="font-size:12px;margin-top:5px;padding-top:5px;border-top:1px solid rgba(255,255,255,.06)">'
+        + esc(x.time) + ' &mdash; ' + esc(x.text.slice(0, 110)) + (x.text.length > 110 ? '&hellip;' : '')
+        + '</div>';
+    }).join("");
+
+    return '<div class="news-card" style="padding:14px 16px">'
+      + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'
+      + logo
+      + '<b style="font-size:15px">' + esc(sym) + '</b>'
+      + '<span class="' + netClass + '" style="font-size:12px;font-weight:bold">' + esc(net) + '</span>'
+      + '<span class="muted" style="font-size:12px">' + symItems.length + ' menci' + (symItems.length === 1 ? "on" : "ones") + '</span>'
+      + '<span style="font-size:11px;margin-left:4px;opacity:.7">'
+      + (pos ? '<span style="color:#00ff99">+' + pos + '</span> ' : '')
+      + (neg ? '<span style="color:#ff4d6d">-' + neg + '</span> ' : '')
+      + (neu ? '<span style="color:#ffd166">=' + neu + '</span>' : '')
+      + '</span>'
+      + '</div>'
+      + snippets
+      + '</div>';
+  }).join("");
+
+  return '<h3 style="margin:24px 0 10px;font-size:16px;color:#9fb3c8">Intel relacionado con mis activos</h3>'
+    + '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">'
+    + cards
+    + '</div>';
+}
+
+function renderExternalRadar() {
+  const trending = computeQuiverTrending();
+  const radar = computeMarketRadar();
+  const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
+
+  // Merge external tickers from quiver trending + radar watchlist
+  const extQuiver = trending.topTickers.filter(t => !portfolioSymbols.has(t.symbol)).slice(0, 8);
+  const extRadar = radar.watchlist.filter(t => !t.inPortfolio && (t.quiverSignals > 0 || MARKET_WATCHLIST.includes(t.symbol))).slice(0, 8);
+
+  const merged = new Map();
+  extQuiver.forEach(t => merged.set(t.symbol, { symbol: t.symbol, quiverTotal: t.total, buys: t.buys, sales: t.sales, politicianCount: t.politicianCount, latestDate: t.latestDate, fromRadar: false }));
+  extRadar.forEach(t => {
+    const e = merged.get(t.symbol) || { symbol: t.symbol, quiverTotal: 0, buys: 0, sales: 0, politicianCount: 0, latestDate: null, fromRadar: true };
+    e.fromRadar = true;
+    e.quiverTotal = e.quiverTotal || t.quiverSignals;
+    merged.set(t.symbol, e);
+  });
+
+  const items = [...merged.values()].sort((a, b) => b.quiverTotal - a.quiverTotal).slice(0, 10);
+
+  if (!items.length) {
+    return '<div class="panel" style="max-width:1280px;margin:0 auto 8px"><div class="muted">Radar externo: sin datos Quiver activos. Con QUIVER_API_KEY verás stocks calientes del Congreso que no están en tu portafolio.</div></div>';
+  }
+
+  function externalSignal(t) {
+    if (t.buys > 0 && t.buys > t.sales * 1.2) return { label: "Bullish", color: "#00ff99", reason: t.buys + " compras políticas" + (t.politicianCount > 1 ? " · " + t.politicianCount + " políticos" : "") };
+    if (t.sales > 0 && t.sales > t.buys * 1.2) return { label: "Risk/Venta", color: "#ff4d6d", reason: t.sales + " ventas políticas" + (t.politicianCount > 1 ? " · " + t.politicianCount + " políticos" : "") };
+    if (t.quiverTotal >= 3) return { label: "Watch", color: "#ffd35c", reason: t.quiverTotal + " registros Quiver · compras y ventas mixtas" };
+    if (t.fromRadar) return { label: "Radar IA", color: "#3b9dff", reason: "en watchlist IA · sin posición propia" };
+    return { label: "Neutral", color: "#9fb3c8", reason: "datos limitados" };
+  }
+
+  const rows = items.map(t => {
+    const sig = externalSignal(t);
+    const dateStr = t.latestDate ? new Date(t.latestDate).toLocaleDateString("es-MX", { month: "short", day: "numeric" }) : "";
+    return '<tr>'
+      + '<td><b>' + esc(t.symbol) + '</b></td>'
+      + '<td style="color:' + sig.color + ';font-weight:800">' + esc(sig.label) + '</td>'
+      + '<td>' + t.quiverTotal + '</td>'
+      + '<td><span style="color:#00ff99">' + (t.buys || 0) + ' C</span> · <span style="color:#ff4d6d">' + (t.sales || 0) + ' V</span></td>'
+      + '<td class="muted" style="font-size:12px">' + esc(sig.reason) + '</td>'
+      + '<td class="muted" style="font-size:12px">' + dateStr + '</td>'
+      + '</tr>';
+  }).join("");
+
+  // Also show top politicians
+  const politRows = trending.mostActivePoliticians.slice(0, 5).map(p =>
+    '<tr><td><b>' + esc(p.name) + '</b></td><td class="muted">' + esc(p.party) + '</td><td>' + p.trades + '</td><td style="font-size:12px;color:var(--muted)">' + p.tickers.slice(0, 5).join(", ") + '</td></tr>'
+  ).join("");
+
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;max-width:1280px;margin:0 auto 8px">'
+    + '<div class="panel"><div class="label" style="margin-bottom:10px">Stocks externos calientes · Quiver + Radar</div>'
+    + '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Señal</th><th>Total</th><th>C/V</th><th>Razón</th><th>Fecha</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<div class="muted" style="font-size:12px;margin-top:8px">Educativo · NO en tu portafolio · solo vigilancia · datos Quiver con retraso hasta 45d</div></div>'
+    + (politRows ? '<div class="panel"><div class="label" style="margin-bottom:10px">Políticos más activos (Congreso)</div>'
+      + '<div class="table-wrap"><table><thead><tr><th>Nombre</th><th>Partido</th><th>Trades</th><th>Tickers</th></tr></thead><tbody>' + politRows + '</tbody></table></div>'
+      + '<div class="muted" style="font-size:12px;margin-top:8px">Fuente: Quiver Quant · datos educativos · retraso hasta 45 días</div></div>' : '')
+    + '</div>';
+}
+
+function renderQuiverPanel() {
+  if (!quiverData.configured) {
+    return '<div class="quiver-box">'
+      + '<div class="quiver-item"><div class="label">Estado</div><div class="big yellow">PENDIENTE</div><p class="muted">Agrega QUIVER_API_KEY en .env para conectar datos de congreso, insiders y contratos.</p></div>'
+      + '<div class="quiver-item"><div class="label">Activos cubiertos</div><p>MSFT, AAPL, PLTR, UNH, AEP, GEV, COPX, NFLX — acciones USA rastreadas por Quiver.</p></div>'
+      + '<div class="quiver-item"><div class="label">No cubiertos</div><p>BBVA (MX), XRP, BTC, ETH y cripto no aparecen en datos de Quiver.</p></div>'
+      + '</div>';
+  }
+  if (quiverData.error) {
+    return '<div class="panel"><div class="muted">Quiver error: ' + esc(quiverData.error) + '</div></div>';
+  }
+
+  const allM = [
+    ...quiverData.congressional.map(x => ({ ...x, _ds: "congressional" })),
+    ...quiverData.insider.map(x => ({ ...x, _ds: "insider" })),
+    ...quiverData.contracts.map(x => ({ ...x, _ds: "contracts" }))
+  ].sort((a, b) => (a.daysAgo == null ? 999 : a.daysAgo) - (b.daysAgo == null ? 999 : b.daysAgo));
+
+  const tickers = [...new Set(allM.map(x => x.symbol))];
+
+  const tickerChips = tickers.slice(0, 12).map(sym => {
+    const asset = PORTFOLIO.find(a => a.symbol === sym);
+    const bg = asset ? asset.color : "#1e293b";
+    const cnt = allM.filter(x => x.symbol === sym).length;
+    return '<span style="display:inline-flex;align-items:center;gap:5px;background:' + esc(bg) + '44;border:1px solid ' + esc(bg) + '88;border-radius:10px;padding:4px 10px;font-size:12px;margin:3px">'
+      + (asset ? '<span style="background:' + esc(asset.color) + ';border-radius:5px;padding:1px 5px;font-size:10px;font-weight:900">' + esc(asset.logo) + '</span>' : '')
+      + '<b>' + esc(sym) + '</b> <span class="muted">×' + cnt + '</span></span>';
+  }).join("");
+
+  const recentRows = allM.slice(0, 12).map(m => {
+    const txRaw = (m.Transaction || m.TransactionType || m.transaction || "").toLowerCase();
+    const isBuy  = /buy|purchase|bought/.test(txRaw);
+    const isSell = /sale|sell|sold/.test(txRaw);
+    const txColor = isBuy ? "#00ff99" : isSell ? "#ff4d6d" : "#ffd166";
+    const txLabel = isBuy ? "COMPRA" : isSell ? "VENTA" : "OTRO";
+    const who  = esc(m.Representative || m.Name || m.name || m.Politician || "Desconocido");
+    const party = m.Party ? " (" + esc(m.Party.slice(0, 1)) + ")" : "";
+    const amount = m.Amount || m.amount || m.Value || "";
+    const ds = m._ds === "congressional" ? "Congreso" : m._ds === "insider" ? "Insider" : "Contrato";
+    const days = m.daysAgo != null ? m.daysAgo + "d" : "";
+    return '<tr>'
+      + '<td><b>' + esc(m.symbol) + '</b></td>'
+      + '<td style="color:' + txColor + ';font-weight:800">' + txLabel + '</td>'
+      + '<td>' + who + party + '</td>'
+      + '<td class="muted" style="font-size:12px">' + ds + '</td>'
+      + '<td class="muted" style="font-size:12px">' + esc(String(amount).slice(0, 20)) + '</td>'
+      + '<td class="muted" style="font-size:12px">' + days + '</td>'
+      + '</tr>';
+  }).join("");
+
+  const cacheAge = quiverData.lastFetch ? Math.floor((Date.now() - quiverData.lastFetch) / 60000) : null;
+
+  return '<div class="panel">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">'
+    + '<div><span class="label" style="font-size:13px">' + allM.length + ' matches · ' + tickers.length + ' tickers · ' + quiverData.congressional.length + ' congreso · ' + quiverData.insider.length + ' insiders · ' + quiverData.contracts.length + ' contratos</span></div>'
+    + (cacheAge != null ? '<span class="muted" style="font-size:12px">Cache: hace ' + cacheAge + ' min</span>' : '')
+    + '</div>'
+    + '<div style="margin-bottom:14px">' + tickerChips + '</div>'
+    + '<div class="table-wrap"><table>'
+    + '<thead><tr><th>Activo</th><th>Tipo</th><th>Quien</th><th>Dataset</th><th>Monto</th><th>Dias</th></tr></thead>'
+    + '<tbody>' + (recentRows || '<tr><td colspan="6" class="muted">Sin datos recientes</td></tr>') + '</tbody>'
+    + '</table></div>'
+    + '<div class="muted" style="font-size:12px;margin-top:10px">Datos educativos. Retraso típico Quiver: hasta 45 días. No implica señal de compra/venta.</div>'
+    + '</div>';
+}
+
+function renderDailyScanCard() {
+  try {
+    const scan = computeDailyScan();
+    const ps = scan.portfolioSummary;
+    const qs = scan.quiverSummary;
+    const alerts  = scan.riskAlerts.slice(0, 3);
+    const actions = scan.educationalActions.slice(0, 3);
+    const themes  = scan.marketThemes.slice(0, 4);
+
+    const riskLevel = alerts.some(a => a.level === "CRITICO") ? "CRITICO"
+      : alerts.some(a => a.level === "ALTO")    ? "ALTO"
+      : alerts.some(a => a.level === "ATENCION") ? "ATENCION" : "NORMAL";
+    const riskColor = (riskLevel === "CRITICO" || riskLevel === "ALTO") ? "#ff4d6d"
+      : riskLevel === "ATENCION" ? "#ffd166" : "#00ff99";
+
+    const alertRows = alerts.map(a => {
+      const lc = (a.level === "CRITICO" || a.level === "ALTO") ? "#ff4d6d" : a.level === "ATENCION" ? "#ffd166" : "#00ff99";
+      return '<div style="border-left:3px solid ' + lc + ';padding:8px 12px;margin:6px 0;background:rgba(255,255,255,.03);border-radius:0 10px 10px 0">'
+        + '<b style="color:' + lc + ';font-size:12px">' + esc(a.level) + '</b> ' + esc(a.message) + '</div>';
+    }).join("") || '<div class="muted" style="font-size:13px">Sin alertas criticas.</div>';
+
+    const actionRows = actions.map(a => {
+      const pc = a.priority === "RIESGO" ? "#ff4d6d" : a.priority === "VIGILAR" ? "#ffd166" : a.priority === "CONSIDERAR" ? "#3b9dff" : "#00ff99";
+      return '<div style="border-left:3px solid ' + pc + ';padding:8px 12px;margin:6px 0;background:rgba(255,255,255,.03);border-radius:0 10px 10px 0">'
+        + '<b style="color:' + pc + ';font-size:12px">' + esc(a.priority) + '</b> <b>' + esc(a.symbol) + '</b> — <span class="muted">' + esc(a.action) + '</span></div>';
+    }).join("") || '<div class="muted" style="font-size:13px">Sin acciones pendientes.</div>';
+
+    const themeChips = themes.map(t => {
+      const tc = t.alert ? "#ff4d6d" : t.strength === "FUERTE" ? "#00ff99" : t.strength === "MODERADO" ? "#3b9dff" : "#ffd166";
+      return '<span style="display:inline-block;padding:5px 12px;border-radius:999px;border:1px solid ' + tc + '44;background:' + tc + '18;color:' + tc + ';font-size:12px;font-weight:700;margin:3px">'
+        + esc(t.theme) + ' <small style="opacity:.8">' + esc(t.strength) + (t.quiverSignals ? ' · ' + t.quiverSignals + ' señales' : '') + '</small></span>';
+    }).join("");
+
+    const topTickers = (qs.topTickers || []).slice(0, 5).map(t =>
+      '<span style="background:rgba(59,157,255,.15);border:1px solid rgba(59,157,255,.3);border-radius:8px;padding:3px 9px;font-size:12px;margin:2px;display:inline-block">'
+      + esc(t.symbol) + ' <b>×' + t.total + '</b></span>'
+    ).join("") || '<span class="muted" style="font-size:13px">Sin datos Quiver aun (agrega QUIVER_API_KEY en .env)</span>';
+
+    return '<div class="panel" style="border-color:rgba(59,157,255,.35)">'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">'
+      + '<div>'
+      + '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">'
+      + '<div style="font-size:22px;font-weight:900;background:linear-gradient(90deg,#00ff99,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">SCAN DIARIO</div>'
+      + '<div style="padding:4px 12px;border-radius:999px;border:1px solid ' + riskColor + '55;background:' + riskColor + '18;color:' + riskColor + ';font-size:12px;font-weight:800">' + esc(riskLevel) + '</div>'
+      + '<div class="muted" style="font-size:12px">' + esc(scan.date) + ' · ' + esc(ps.regime) + '</div>'
+      + '</div>'
+      + '<div class="label" style="margin-bottom:8px">Temas de mercado detectados</div>'
+      + '<div style="margin-bottom:14px">' + (themeChips || '<span class="muted">Sin datos suficientes</span>') + '</div>'
+      + '<div class="label" style="margin-bottom:8px">Señales Quiver en tu portafolio</div>'
+      + '<div style="margin-bottom:6px">' + topTickers + '</div>'
+      + '<div class="muted" style="font-size:12px;margin-top:6px">' + qs.total + ' matches totales · ' + qs.congressional + ' congreso · ' + qs.insider + ' insiders · ' + qs.contracts + ' contratos</div>'
+      + '</div>'
+      + '<div>'
+      + '<div class="label" style="margin-bottom:8px">Top alertas</div>'
+      + alertRows
+      + '<div class="label" style="margin:14px 0 8px">Acciones educativas</div>'
+      + actionRows
+      + '</div>'
+      + '</div>'
+      + '<div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(120,160,210,.1);display:flex;gap:18px;flex-wrap:wrap;align-items:center">'
+      + '<div><span class="label">Patrimonio</span> <b class="' + (ps.gainPct >= 0 ? 'green' : 'red') + '">' + money(ps.totalMXN) + '</b> <span class="muted">' + pct(ps.gainPct) + '</span></div>'
+      + '<div><span class="label">Bitso/Cripto</span> <b class="' + (ps.concentration.alert ? 'red' : 'green') + '">' + ps.concentration.bitso_pct + '%</b>'
+        + (ps.concentration.alert ? '<span style="color:#ff4d6d;font-size:11px;margin-left:4px">⚠ ALTO</span>' : '') + '</div>'
+      + '<div><span class="label">Intel cargado</span> <b>' + scan.intel.count + '</b></div>'
+      + '<a href="/api/daily-scan" target="_blank" style="color:#9fb3c8;font-size:12px;text-decoration:none;margin-left:auto">Ver JSON →</a>'
+      + '</div>'
+      + (scan.educationalSummary ? '<div style="margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);color:#c7dff7;font-size:13px;line-height:1.6">'
+        + '<b style="color:#3b9dff;font-size:11px;letter-spacing:.08em">RESUMEN EDUCATIVO</b><br>' + esc(scan.educationalSummary) + '</div>' : '')
+      + '</div>';
+  } catch (e) {
+    return '<div class="panel"><div class="muted">Scan diario no disponible: ' + esc(String(e.message || "error")) + '</div></div>';
+  }
 }
 
 function renderNews() {
@@ -968,10 +1584,10 @@ header{max-width:1280px;margin:auto;padding:30px 0 14px;position:sticky;top:0;z-
 .app-icon:before{content:"";position:absolute;inset:11px;border-radius:20px;border:1px solid rgba(255,255,255,.5)}
 h1{font-size:48px;margin:0;letter-spacing:.5px;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 30px rgba(255,211,92,.2)}
 .subtitle{color:var(--muted);font-size:15px;margin-top:4px}
-nav{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;overflow-x:auto;-webkit-overflow-scrolling:touch}
 nav a,.btn{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);text-decoration:none;border-radius:14px;padding:11px 16px;font-weight:700;cursor:pointer;transition:.2s}
 .btn:hover,nav a:hover{background:rgba(59,157,255,.14);border-color:#3b9dff}
-.grid{max-width:1280px;margin:16px auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.grid{max-width:1280px;margin:16px auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}
 .card,.panel,.msg,.asset-row,.news-card,.brain-card{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:0 16px 50px rgba(0,0,0,.3);backdrop-filter:blur(16px)}
 .card{padding:20px;transition:.25s}.card:hover{transform:translateY(-2px);border-color:rgba(59,157,255,.4)}
 .label{color:var(--muted);font-size:12px;letter-spacing:.14em;text-transform:uppercase}
@@ -1046,12 +1662,11 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 
 <header>
   <div class="logo-wrap">
-    <div class="app-icon">A</div>
-    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">Alfredo AI · portafolio real · noticias inteligentes · cerebro de trading simulado</div></div>
+    <div class="app-icon">C<span style="font-size:0.65em;vertical-align:super">Δ</span></div>
+    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">CORDΞLIUS · Trading · Intelligence · Law · Alfredo AI</div></div>
   </div>
   <nav>
-    <a href="#watchtoday">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#portfolio">Portafolio</a>
-    <a href="#quiver">Quiver</a><a href="#chart">Grafica</a><a href="#alfredo">Alfredo AI</a><a href="#system">Sistema</a>
+    <a href="#home">Inicio</a><a href="#vigilar">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#intelligence">Intelligence</a><a href="#radar">Trading AI</a><a href="#portfolio">Portafolio</a><a href="#quiver">Quiver</a><a href="#chart">Graficas</a><a href="#alfredo">Alfredo AI</a><a href="#modulos">Law / Help</a><a href="#system">Sistema</a>
   </nav>
 </header>
 
@@ -1062,6 +1677,14 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <span class="switch">Claude: <b class="${ANTHROPIC_API_KEY ? "green" : "yellow"}">${ANTHROPIC_API_KEY ? "OK" : "SIN KEY"}</b></span>
 </div>
 
+<a id="home"></a>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-bottom:8px">
+  <a href="#portfolio" style="text-decoration:none"><div class="card" style="border-color:rgba(59,157,255,.35);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,0,0,0))"><div class="label">Trading</div><div class="big blue" style="font-size:26px">Portafolio</div><div class="muted">Activos · Scan Diario · Quiver · Bot ficticio</div></div></a>
+  <a href="#intelligence" style="text-decoration:none"><div class="card" style="border-color:rgba(0,255,153,.35);background:linear-gradient(135deg,rgba(0,255,153,.08),rgba(0,0,0,0))"><div class="label">Intelligence</div><div class="big green" style="font-size:26px">Radar</div><div class="muted">Intel manual · Trading político · Market Radar</div></div></a>
+  <a href="#modulos" style="text-decoration:none"><div class="card" style="border-color:rgba(255,211,92,.35);background:linear-gradient(135deg,rgba(255,211,92,.08),rgba(0,0,0,0))"><div class="label">Law</div><div class="big yellow" style="font-size:26px">Cordelius Law</div><div class="muted">Cuaderno jurídico · casos · apuntes (próximo)</div></div></a>
+  <a href="#alfredo" style="text-decoration:none"><div class="card" style="border-color:rgba(129,140,248,.35);background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(0,0,0,0))"><div class="label">Alfredo AI</div><div class="big" style="font-size:26px;color:#818cf8">Asistente</div><div class="muted">Preguntas · análisis educativo · chat</div></div></a>
+</div>
+
 <div class="grid">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;var estado=cp>45?"AGRESIVO":(cp<20?"DEFENSIVO":"NEUTRAL");var ec=estado==="AGRESIVO"?"#ff4d6d":(estado==="DEFENSIVO"?"#00ff99":"#ffd35c");function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card"><div class="label">Estado general</div><div class="big" style="color:${ec}">${estado}</div><div class="muted">Cripto ${cp.toFixed(0)}% · educativo, no asesoria</div></div><div class="card"><div class="label">Exposicion por plataforma</div><div>GBM ${pp(gbm)}</div><div>Plata ${pp(plata)}</div><div>Bitso ${pp(bitso)}</div></div><div class="card"><div class="label">Exposicion por divisa</div><div>USD ${pp(plata)}</div><div>MXN ${pp(gbm+bitso)}</div><div>Cripto ${pp(bitso)}</div></div><div class="card"><div class="label">Tipo de cambio</div><div class="big">$${FX_USD_MXN.toFixed(2)}</div><div class="muted">USD a MXN · .env USD_MXN o fallback · ${nowMX()}</div></div>`;})()}<div class="card"><div class="label">Patrimonio total estimado</div><div class="big green glow">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div>
   <div class="card"><div class="label">Regimen</div><div class="big" style="color:${reg.color}">${esc(reg.label)}</div><div class="muted">${pct(reg.avg)} · ${esc(reg.detail)}</div></div>
@@ -1069,35 +1692,59 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <div class="card"><div class="label">Mas debil</div><div class="big red">${esc(worst.symbol)}</div><div>${esc(worst.signal)} · ${worst.score}/100</div></div>
 </div>
 
-<a id="watchtoday"></a><h2>Que debo vigilar hoy</h2>${renderWatchTodayCard()}
-
-<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + senales</h2>${renderDailyScanCard()}
-
-<a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
-${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-top:22px">${esc(k)}</h2>${renderPortfolioRows(list)}`).join("")}
-
-<h2>Ranking Alfredo con zonas educativas</h2>
-<div class="ranking">${ranked.map((a, i) => `<div class="rank"><div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted">${esc(a.source)} · ${esc(a.risk)} · ${esc(a.signal)}</div></div><div><div class="bar"><span style="width:${a.score}%"></span></div><div class="muted">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · Venta ${a.currency === "USD" ? money(a.zones.sell, "USD") : money(a.zones.sell)}</div></div><div><b>${a.score}/100</b></div></div>`).join("")}</div>
-
-<a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
-
-<a id="quiver"></a><h2>Quiver — Congreso · Trading politico <span style="background:${QUIVER_API_KEY ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY ? 'LIVE' : 'PENDIENTE'}</span></h2>
-${renderQuiverPanel()}
-
-<a id="chart"></a><h2>Grafica avanzada del portafolio</h2>
+<a id="chart"></a><h2>Graficas — portafolio + TradingView</h2>
 <div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted">Eje, max, min, area y variacion. Se guarda en ${esc(HISTORY_FILE)}.</div></div>
 <h2>Chart profesional (${esc(best.symbol)}) — TradingView</h2>
 <div class="tv-embed"><iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&hidesidetoolbar=0&saveimage=0&studies=RSI@tv-basicstudies,MACD@tv-basicstudies" style="width:100%;height:100%;border:0"></iframe></div>
 
 <a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
-<a id="alfredo"></a><h2>Alfredo AI — asistente interno</h2>
-<div class="panel"><details class="chat-details">
-  <summary>Mostrar / esconder chat de Alfredo AI</summary>
-  <div class="muted">Apaga Thinking Mode arriba para no gastar Claude. Si esta OFF, responde en modo local.</div>
-  <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo: vigilar hoy, analiza portafolio, riesgo, comprar, bot..." autocomplete="off"><button class="btn">Preguntar</button></form>
-  ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
+<a id="alfredo"></a><h2>Alfredo AI — asistente educativo</h2>
+<div class="panel" style="padding:0"><details class="chat-details">
+  <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:rgba(59,157,255,.07);border-radius:24px;user-select:none">
+    <span style="display:flex;align-items:center;gap:12px">
+      <span style="width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,#3b9dff,#00ff99);display:grid;place-items:center;font-size:18px;font-weight:900">AI</span>
+      <span><b>Alfredo AI</b> <span class="muted" style="font-size:13px">· preguntas sobre tu portafolio · educativo</span></span>
+    </span>
+    <span class="btn" style="font-size:13px;padding:6px 14px">Abrir chat ▾</span>
+  </summary>
+  <div style="padding:16px 20px 20px">
+    <div class="muted" style="margin-bottom:12px;font-size:13px">Preguntas útiles: "riesgo", "que vendo", "comprar", "vigilar", "quiver", "radar", "intel", "bot"  ·  Apaga Thinking Mode para no gastar Claude.</div>
+    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <div style="max-height:480px;overflow-y:auto;margin-top:12px">
+      ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
+    </div>
+  </div>
 </details></div>
+
+<a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
+${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-top:22px">${esc(k)}</h2>${renderPortfolioRows(list)}`).join("")}
+
+<h2>Ranking Alfredo — score · riesgo · señal educativa</h2>
+<div class="ranking">${ranked.map((a, i) => {
+  const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length + quiverData.insider.filter(x => x.symbol === a.symbol).length;
+  const bullish = a.score >= 65 && a.ind.momentum >= 0;
+  const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
+  const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
+  const sigColor = bullish ? "#00ff99" : bearish ? "#ff4d6d" : "#ffd35c";
+  const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
+    a.score < 30 ? "No promediar — revisar tesis" :
+    a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
+  return `<div class="rank" style="grid-template-columns:auto 1fr auto">
+    <div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted" style="font-size:12px">${esc(a.source)} · ${esc(a.risk)}</div>${qCount > 0 ? `<div style="color:#00ff99;font-size:11px">Q×${qCount}</div>` : ""}</div>
+    <div>
+      <div class="bar"><span style="width:${a.score}%"></span></div>
+      <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap">
+        <span style="color:${sigColor};font-size:12px;font-weight:700">${sigLabel}</span>
+        <span class="muted" style="font-size:12px">${esc(a.signal)}</span>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:3px">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · ${esc(eduAction)}</div>
+    </div>
+    <div style="text-align:right"><b style="font-size:20px">${a.score}/100</b><div class="${a.gainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(a.gainPct)}</div></div>
+  </div>`;
+}).join("")}</div>
+
+<a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
 <a id="bot"></a><h2>Trading AI ficticio — laboratorio</h2>
 <div class="grid">
@@ -1113,7 +1760,75 @@ ${renderQuiverPanel()}
 <h2>Bitacora del bot</h2>
 <div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razon</th></tr></thead><tbody>${botTables.histRows}</tbody></table></div>
 
-<a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual</h2>${renderIntelPanel()}
+<a id="vigilar"></a><h2>Trading AI — Radar externo · Stocks calientes</h2>
+${renderExternalRadar()}
+
+<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
+${renderQuiverPanel()}
+
+<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
+
+<a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
+
+<a id="intelligence"></a><h2>Cordelius Intelligence — Radar político · Intel manual</h2>
+${(function(){
+  const intel = computeIntelligence();
+  const trending = computeQuiverTrending();
+  const topTickerChips = intel.impactedTickers.slice(0,8).map(t =>
+    '<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(0,255,153,.3);border-radius:10px;padding:4px 10px;font-size:12px;margin:3px;background:rgba(0,255,153,.06)">'
+    + '<b>' + esc(t.symbol) + '</b> '
+    + '<span style="color:' + (t.sentiment==="POSITIVO"?"#00ff99":"#ff4d6d") + '">' + esc(t.sentiment) + '</span>'
+    + ' ×' + t.intelCount + '</span>'
+  ).join("");
+  const politRows = intel.politicalTrading.slice(0,8).map(m => {
+    const tx = (m.transaction||"").toLowerCase();
+    const txColor = /buy|purchase/.test(tx) ? "#00ff99" : /sale|sell/.test(tx) ? "#ff4d6d" : "#ffd166";
+    return '<tr><td><b>' + esc(m.symbol) + '</b></td><td style="color:' + txColor + ';font-weight:800">' + esc(m.transaction||"").toUpperCase().slice(0,8) + '</td><td>' + esc(m.who) + (m.party?" ("+esc(m.party)+")":"") + '</td><td class="muted" style="font-size:12px">' + esc(m.date||"") + '</td></tr>';
+  }).join("");
+  const topIntelHtml = intel.topics.slice(0,3).map(t =>
+    '<div style="border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.03);border-radius:14px;padding:14px;margin-bottom:10px">'
+    + '<span style="display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:900;background:' + (t.mood==="POSITIVO"?"rgba(0,255,153,.2)":t.mood==="NEGATIVO"?"rgba(255,77,109,.2)":"rgba(255,211,92,.15)") + ';color:' + (t.mood==="POSITIVO"?"#00ff99":t.mood==="NEGATIVO"?"#ff4d6d":"#ffd35c") + ';margin-bottom:8px">' + esc(t.mood) + '</span> '
+    + (t.affected.length ? '<span class="muted" style="font-size:12px">' + t.affected.join(", ") + '</span>' : "")
+    + '<div style="color:#dbeafe;margin-top:6px;font-size:14px">' + esc(t.text) + '</div>'
+    + '<small class="muted">' + esc(t.time||"") + '</small></div>'
+  ).join("");
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;max-width:1280px;margin:0 auto 8px">'
+    + '<div class="panel"><div class="label" style="margin-bottom:8px">Intel manual · tickers impactados</div>'
+    + (topTickerChips ? '<div style="margin-bottom:12px">' + topTickerChips + '</div>' : '<div class="muted">Sin intel manual todavía.</div>')
+    + topIntelHtml
+    + '<a href="#intel" class="btn" style="display:inline-block;margin-top:8px;font-size:13px">Ver todo Intel ↓</a></div>'
+    + '<div class="panel"><div class="label" style="margin-bottom:8px">Trading político (Quiver · congreso)</div>'
+    + (trending.configured && politRows
+      ? '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Tipo</th><th>Quien</th><th>Fecha</th></tr></thead><tbody>' + politRows + '</tbody></table></div>'
+      : '<div class="muted">Sin datos Quiver — agrega QUIVER_API_KEY en .env.</div>')
+    + '<div class="muted" style="font-size:12px;margin-top:8px">Educativo. Retraso típico hasta 45 días.</div></div>'
+    + '</div>';
+})()}
+
+<a id="radar"></a><h2>Trading AI — Market Radar</h2>
+${(function(){
+  const radar = computeMarketRadar();
+  const hot = radar.hotTickers.slice(0,10);
+  const chips = MARKET_WATCHLIST.map(sym => {
+    const t = radar.watchlist.find(x => x.symbol === sym);
+    const active = t && (t.quiverSignals > 0 || (t.score != null && t.score > 60));
+    return '<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid '+(active?"rgba(0,255,153,.5)":"rgba(120,160,210,.15)")+';border-radius:8px;padding:4px 9px;font-size:12px;margin:2px;background:'+(t&&t.inPortfolio?"rgba(59,157,255,.1)":active?"rgba(0,255,153,.06)":"transparent")+'">'
+      + '<b>' + esc(sym) + '</b>'
+      + (t && t.inPortfolio ? ' <span style="color:#3b9dff;font-size:10px">●</span>' : '')
+      + (t && t.quiverSignals > 0 ? ' <span style="color:#00ff99;font-size:10px">Q'+t.quiverSignals+'</span>' : '')
+      + '</span>';
+  }).join("");
+  const hotRows = hot.map(t =>
+    '<tr><td><b>' + esc(t.symbol) + '</b>' + (t.inPortfolio?' <span style="color:#3b9dff;font-size:11px">PORT</span>':'') + '</td>'
+    + '<td>' + (t.score!=null?t.score+"/100":"-") + '</td>'
+    + '<td style="color:' + (t.quiverSignals>0?"#00ff99":"var(--muted)") + '">' + (t.quiverSignals||"-") + '</td>'
+    + '<td style="font-size:12px;color:var(--muted)">' + esc(t.signal||"-") + '</td></tr>'
+  ).join("");
+  return '<div class="panel" style="max-width:1280px;margin:0 auto 8px"><div class="label" style="margin-bottom:10px">Watchlist · azul = en portafolio · verde = señal Quiver</div>'
+    + '<div style="margin-bottom:14px">' + chips + '</div>'
+    + (hot.length ? '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Score</th><th>Quiver</th><th>Señal</th></tr></thead><tbody>' + hotRows + '</tbody></table></div>' : '<div class="muted">Sin señales activas en watchlist.</div>')
+    + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
+})()}
 
 <a id="modulos"></a><h2>Modulos Cordelius (proximamente)</h2><div class="grid"><div class="card"><div class="label">Cordelius Health</div><div class="big" style="color:#818cf8">Proximamente</div><div class="muted">WHOOP API: sueno, HRV, recuperacion, habitos (pendiente)</div></div><div class="card"><div class="label">Cordelius Law</div><div class="big" style="color:#ffd35c">Proximamente</div><div class="muted">Cuaderno juridico, apuntes, casos (pendiente)</div></div><div class="card"><div class="label">Cordelius Intelligence</div><div class="big" style="color:#3b9dff">Grok / X manual</div><div class="muted">Pegar analisis de X o Grok (pendiente P2)</div></div><div class="card"><div class="label">Asia / China Tech</div><div class="big" style="color:#00ff99">Radar</div><div class="muted">Chips, cobre, IA, energia (pendiente, sin fuente)</div></div><div class="card"><div class="label">Alpaca</div><div class="big" style="color:#ffd35c">Pendiente</div><div class="muted">Solo paper trading futuro, sin ordenes reales</div></div></div><a id="system"></a><h2>Sistema</h2>
 <div class="grid">
@@ -1124,50 +1839,6 @@ ${renderQuiverPanel()}
 </div>
 
 <div class="disclaimer">Cordelius Trading es educativo. No es asesoria financiera. El bot es 100% ficticio (paper trading) y no se conecta a ningun exchange real.</div>
-
-<div id="quiver-live-card" style="
-  position:fixed;
-  right:16px;
-  bottom:16px;
-  z-index:9999;
-  max-width:360px;
-  padding:14px;
-  border:1px solid rgba(0,255,153,.25);
-  border-radius:18px;
-  background:rgba(2,4,10,.88);
-  backdrop-filter:blur(12px);
-  box-shadow:0 0 30px rgba(0,255,153,.12);
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-">
-  <div style="font-size:12px;color:#9fb3c8;margin-bottom:4px;">QUiVER x PORTAFOLIO</div>
-  <div id="quiver-live-title" style="font-size:20px;font-weight:800;color:#00ff99;">Cargando...</div>
-  <div id="quiver-live-body" style="font-size:13px;color:#eaf6ff;margin-top:8px;line-height:1.35;"></div>
-</div>
-
-<script>
-(async function(){
-  try {
-    const r = await fetch('/api/quiver/matches');
-    const j = await r.json();
-
-    const title = document.getElementById('quiver-live-title');
-    const body = document.getElementById('quiver-live-body');
-
-    const count = j.portfolioMatches?.count || 0;
-    const tickers = j.portfolioMatches?.tickers || [];
-
-    title.textContent = count + ' matches políticos';
-    body.innerHTML =
-      '<b>Quiver:</b> ' + (j.quiverCount || 0) + ' registros<br>' +
-      '<b>Tickers:</b> ' + (tickers.length ? tickers.slice(0,8).join(', ') : 'Sin matches') + '<br>' +
-      '<span style="color:#9fb3c8">Cruce real contra tu portafolio.</span>';
-  } catch(e) {
-    document.getElementById('quiver-live-title').textContent = 'Quiver error';
-    document.getElementById('quiver-live-body').textContent = e.message;
-  }
-})();
-</script>
-
 </body></html>`;
 }
 
@@ -1188,610 +1859,66 @@ async function handleIntel(req, res) {
   req.on("end", async () => {
     const text = new URLSearchParams(body).get("intel") || "";
     if (text.trim()) {
-      intelItems.unshift(analyzeIntelText(text.trim()));
-      intelItems = intelItems.slice(0, 30);
-      saveJSON(INTEL_FILE, intelItems);
-      addThought("Nuevo analisis manual agregado a Cordelius Intelligence.", "scan");
+      const item = analyzeIntelText(text.trim());
+      const isDup = intelItems.some(x => x.hash && x.hash === item.hash);
+      if (!isDup) {
+        intelItems.unshift(item);
+        intelItems = intelItems.slice(0, 30);
+        saveJSON(INTEL_FILE, intelItems);
+        addThought("Nuevo analisis manual agregado a Cordelius Intelligence.", "scan");
+      }
     }
     res.writeHead(302, { Location: "/#intel" });
     res.end();
   });
 }
 
-
-// Quiver real fetcher: intenta leer datos de Quiver usando QUIVER_API_KEY.
-async function fetchQuiverDataReal() {
-  if (!QUIVER_API_KEY) {
-    return {
-      ok: true,
-      configured: false,
-      count: 0,
-      items: [],
-      message: "QUIVER_API_KEY not configured"
-    };
-  }
-  if (quiverCache.data && (Date.now() - quiverCache.ts < quiverCache.TTL_MS)) {
-    return quiverCache.data;
-  }
-
-  const url = "https://api.quiverquant.com/beta/live/congresstrading";
-
-  try {
-    const r = await fetch(url, {
-      headers: {
-        "X-API-KEY": QUIVER_API_KEY,
-        "Accept": "application/json",
-        "User-Agent": "Cordelius-Trading/1.0"
-      }
-    });
-
-    const text = await r.text();
-
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return {
-        ok: false,
-        configured: true,
-        count: 0,
-        items: [],
-        source: url,
-        status: r.status,
-        message: "Quiver returned non-JSON response",
-        error: text.slice(0, 300)
-      };
+function handleIntelDelete(req, res) {
+  let body = "";
+  req.on("data", c => body += c);
+  req.on("end", () => {
+    const id = new URLSearchParams(body).get("id") || "";
+    if (id) {
+      intelItems = intelItems.filter(x => x.hash !== id);
+      saveJSON(INTEL_FILE, intelItems);
     }
-
-    const arr = Array.isArray(data)
-      ? data
-      : data && Array.isArray(data.data)
-        ? data.data
-        : [];
-
-    const normalized = arr.slice(0, 1000).map((x, i) => {
-      const ticker =
-        x.Ticker || x.ticker || x.Symbol || x.symbol || x.Stock || x.stock || "";
-
-      const politician =
-        x.Representative || x.representative ||
-        x.Senator || x.senator ||
-        x.Name || x.name ||
-        x.Politician || x.politician || "";
-
-      const transaction =
-        x.Transaction || x.transaction ||
-        x.Type || x.type ||
-        x.Action || x.action || "";
-
-      const amount =
-        x.Amount || x.amount ||
-        x.Range || x.range ||
-        x.Value || x.value || "";
-
-      const date =
-        x.TransactionDate || x.transactionDate ||
-        x.Date || x.date ||
-        x.ReportDate || x.reportDate || "";
-
-      return {
-        id: i + 1,
-        ticker,
-        politician,
-        transaction,
-        amount,
-        date,
-        raw: x
-      };
-    });
-
-    const quiverResult = {
-      ok: true,
-      configured: true,
-      ts: Date.now(),
-      source: url,
-      authMode: "X-API-KEY",
-      status: r.status,
-      count: normalized.length,
-      items: normalized,
-      message: normalized.length ? "Quiver congressional trading loaded" : "Quiver responded but returned 0 rows"
-    };
-    quiverCache.data = quiverResult;
-    quiverCache.ts = Date.now();
-    return quiverResult;
-  } catch (e) {
-    return {
-      ok: false,
-      configured: true,
-      count: 0,
-      items: [],
-      source: url,
-      message: "Quiver fetch failed",
-      error: e.message
-    };
-  }
+    res.writeHead(302, { Location: "/#intel" });
+    res.end();
+  });
 }
 
-
-
-function matchQuiverToPortfolio(quiverPayload) {
-  const myPortfolio =
-    (typeof portfolio !== "undefined" && Array.isArray(portfolio)) ? portfolio :
-    (typeof PORTFOLIO !== "undefined" && Array.isArray(PORTFOLIO)) ? PORTFOLIO :
-    (typeof ASSETS !== "undefined" && Array.isArray(ASSETS)) ? ASSETS :
-    (typeof assets !== "undefined" && Array.isArray(assets)) ? assets :
-    [];
-
-  const items = Array.isArray(quiverPayload?.items) ? quiverPayload.items : [];
-  const myTickers = new Set(myPortfolio.map(a => String(a.symbol || "").toUpperCase()));
-
-  const matches = items
-    .filter(x => myTickers.has(String(x.ticker || "").toUpperCase()))
-    .map(x => {
-      const ticker = String(x.ticker || "").toUpperCase();
-      const asset = myPortfolio.find(a => String(a.symbol || "").toUpperCase() === ticker);
-      return {
-        ticker,
-        assetName: asset?.name || "",
-        source: asset?.source || "",
-        category: asset?.category || "",
-        politician: x.politician || x.raw?.Representative || x.Representative || "",
-        transaction: x.transaction || x.raw?.Transaction || x.Transaction || "",
-        amount: x.amount || x.raw?.Amount || x.Amount || x.raw?.Range || x.Range || "",
-        date: x.date || x.raw?.TransactionDate || x.TransactionDate || "",
-        raw: x.raw || x
-      };
-    });
-
-  const tickers = [...new Set(matches.map(x => x.ticker))];
-
-  const grouped = {};
-  for (const m of matches) {
-    if (!grouped[m.ticker]) grouped[m.ticker] = { ticker: m.ticker, count: 0, buys: 0, sales: 0, others: 0, latestDate: null, totalReportedMin: 0, items: [] };
-    grouped[m.ticker].count++;
-    const tt = (m.transaction || "").toLowerCase();
-    if (tt.includes("buy") || tt.includes("purchase")) grouped[m.ticker].buys++;
-    else if (tt.includes("sale") || tt.includes("sell")) grouped[m.ticker].sales++;
-    else grouped[m.ticker].others++;
-    if (m.date && (!grouped[m.ticker].latestDate || m.date > grouped[m.ticker].latestDate)) grouped[m.ticker].latestDate = m.date;
-    const amt = parseFloat(String(m.amount || "").replace(/[^0-9.]/g, "")) || 0;
-    grouped[m.ticker].totalReportedMin += amt;
-    grouped[m.ticker].items.push(m);
-  }
-
-  return {
-    count: matches.length,
-    tickers,
-    items: matches.slice(0, 50),
-    grouped
-  };
-}
-
-
-function buildScanData(pvData, matchesData) {
-  const pv = pvData || portfolioValue();
-  const reg = marketRegime();
-  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
-  const totalMXN = pv.totalValueMXN || 1;
-  const bitsoPct = pv.assets.filter(a => a.source === "Bitso").reduce((s, a) => s + a.valueMXN, 0) / totalMXN * 100;
-  const cryptoSyms = pv.assets.filter(a => a.type === "crypto" || a.source === "Bitso").map(a => a.symbol);
-  const matches = matchesData || { count: 0, tickers: [], items: [], grouped: {} };
-
-  const biggestWinner    = pv.assets.reduce((p, c) => c.gainPct > p.gainPct ? c : p, pv.assets[0]);
-  const biggestLoser     = pv.assets.reduce((p, c) => c.gainPct < p.gainPct ? c : p, pv.assets[0]);
-  const weakestTechnical = pv.assets.slice().sort((a, b) => a.ind.rsi - b.ind.rsi)[0];
-  const topOpportunityAsset = pv.assets.filter(a => a.score > 50 && a.gainPct < 20).sort((a, b) => b.score - a.score)[0] || ranked[0];
-  const topRiskAsset = pv.assets.filter(a => a.risk === "ALTO" || a.score < 40).sort((a, b) => a.score - b.score)[0] || ranked[ranked.length - 1];
-  const concentrationRisk = bitsoPct > 60 ? "MUY ALTO" : bitsoPct > 45 ? "ALTO" : bitsoPct > 30 ? "MEDIO" : "NORMAL";
-
-  const riskAlerts = [];
-  if (bitsoPct > 45) riskAlerts.push({ level: "ALTO", type: "CONCENTRACION", symbol: "PORTAFOLIO",
-    title: "Concentracion cripto alta",
-    reason: "Cripto/Bitso " + bitsoPct.toFixed(0) + "% del portafolio. Alta correlacion en caidas.",
-    educationalAction: "Considera diversificar gradualmente hacia GBM o instrumentos de deuda.",
-    tickers: cryptoSyms });
-  for (const a of pv.assets) {
-    if (a.gainPct < -15 && a.risk === "ALTO") riskAlerts.push({ level: "ALTO", type: "DRAWDOWN", symbol: a.symbol,
-      title: a.symbol + " en drawdown con riesgo alto",
-      reason: "Perdida " + a.gainPct.toFixed(1) + "% — activo de riesgo ALTO.",
-      educationalAction: "Revisar tesis. Escenario educativo: esperar confirmacion antes de cualquier movimiento.",
-      tickers: [a.symbol] });
-    if (a.score < 30) riskAlerts.push({ level: "CRITICO", type: "SCORE_CRITICO", symbol: a.symbol,
-      title: a.symbol + " score critico (" + a.score + "/100)",
-      reason: "Senales tecnicas muy debiles: " + a.signal,
-      educationalAction: "No promediar a la baja. Vigilar y esperar confirmacion de rebote.",
-      tickers: [a.symbol] });
-    if (a.gainPct > 80 && a.ind.momentum > 0) riskAlerts.push({ level: "OPORTUNIDAD", type: "TOMA_GANANCIA", symbol: a.symbol,
-      title: a.symbol + " +" + a.gainPct.toFixed(0) + "% — considerar toma parcial",
-      reason: "Ganancia alta con momentum positivo. Escenario de rebalanceo hipotetico.",
-      educationalAction: "Evaluar venta parcial educativa del 20-30%. Protege capital ganado sin cerrar posicion.",
-      tickers: [a.symbol] });
-  }
-
-  const actionChecklist = [];
-  if (riskAlerts.some(r => r.level === "CRITICO")) actionChecklist.push("Revisa activos con score critico hoy");
-  if (bitsoPct > 45) actionChecklist.push("Evalua rebalanceo hipotetico cripto — concentracion " + bitsoPct.toFixed(0) + "%");
-  if (matches.count > 0) actionChecklist.push("Revisa " + matches.count + " movimientos Quiver en tu portafolio");
-  if (biggestWinner && biggestWinner.gainPct > 60) actionChecklist.push("Considera toma parcial hipotetica en " + biggestWinner.symbol + " (+" + biggestWinner.gainPct.toFixed(0) + "%)");
-  if (weakestTechnical && weakestTechnical.ind.rsi < 35) actionChecklist.push("Vigila " + weakestTechnical.symbol + " con RSI bajo (" + weakestTechnical.ind.rsi + ") — posible zona de rebote");
-  if (!actionChecklist.length) actionChecklist.push("Sin alertas criticas hoy. Mantener y monitorear regimen " + reg.label + ".");
-
-  const educationalSummary = [
-    bitsoPct > 60 ? "Concentracion cripto muy alta (" + bitsoPct.toFixed(0) + "%). Bitso domina — revisa exposicion." :
-    bitsoPct > 45 ? "Cripto/Bitso sobre 45% (" + bitsoPct.toFixed(0) + "%) — vigilar correlacion en caidas." : null,
-    matches.count > 0 ? matches.count + " movimientos del Congreso en tus activos (Quiver)." : null,
-    "Mejor: " + ranked[0].symbol + " (score " + ranked[0].score + "/100, " + (ranked[0].gainPct >= 0 ? "+" : "") + ranked[0].gainPct.toFixed(0) + "%).",
-    "A vigilar: " + ranked[ranked.length - 1].symbol + " (score " + ranked[ranked.length - 1].score + "/100).",
-    "Regimen: " + reg.label + ". " + reg.detail,
-    "EDUCATIVO: no es asesoria financiera. No ordena comprar ni vender."
-  ].filter(Boolean).join(" ");
-
-  return {
-    pv, reg, ranked, bitsoPct, cryptoSyms, concentrationRisk,
-    topRisk: topRiskAsset ? { symbol: topRiskAsset.symbol, score: topRiskAsset.score, risk: topRiskAsset.risk, gainPct: +topRiskAsset.gainPct.toFixed(2), signal: topRiskAsset.signal } : null,
-    topOpportunity: topOpportunityAsset ? { symbol: topOpportunityAsset.symbol, score: topOpportunityAsset.score, gainPct: +topOpportunityAsset.gainPct.toFixed(2), signal: topOpportunityAsset.signal } : null,
-    weakestTechnical: weakestTechnical ? { symbol: weakestTechnical.symbol, rsi: weakestTechnical.ind.rsi, score: weakestTechnical.score } : null,
-    biggestWinner: biggestWinner ? { symbol: biggestWinner.symbol, gainPct: +biggestWinner.gainPct.toFixed(2) } : null,
-    biggestLoser:  biggestLoser  ? { symbol: biggestLoser.symbol,  gainPct: +biggestLoser.gainPct.toFixed(2)  } : null,
-    riskAlerts: riskAlerts.slice(0, 8),
-    actionChecklist,
-    educationalSummary,
-    quiverMatches: matches
-  };
-}
-
-
-
-// === MEGA_BACKEND_ENDPOINTS_FIX_V1 ===
-const MARKET_WATCHLIST = [
-  "NVDA","TSLA","AMD","META","GOOGL","AMZN","AAPL","MSFT","PLTR","NFLX",
-  "SMCI","COIN","MSTR","SOFI","HOOD","RIVN","NIO","BABA","UNH","LLY",
-  "AVGO","QQQ","SPY"
-];
-
-async function localJson(path){
-  try{
-    const r = await fetch("http://127.0.0.1:3000" + path);
-    const text = await r.text();
-    if (!text || text.trim().startsWith("<")) return null;
-    return JSON.parse(text);
-  }catch(e){
-    return null;
-  }
-}
-
-function txKind(tx){
-  const t = String(tx || "").toLowerCase();
-  if (t.includes("purchase") || t.includes("buy")) return "BUY";
-  if (t.includes("sale") || t.includes("sell")) return "SALE";
-  return "OTHER";
-}
-
-function safeNum(x){
-  const n = Number(String(x ?? "0").replace(/[^0-9.\-]/g,""));
-  return Number.isFinite(n) ? n : 0;
-}
-
-function getAllQuiverItemsFromMemory(matchesPayload){
-  let arr = [];
-
-  try{
-    if (typeof quiverCache !== "undefined") {
-      if (Array.isArray(quiverCache)) arr = quiverCache;
-      else if (Array.isArray(quiverCache.data)) arr = quiverCache.data;
-      else if (Array.isArray(quiverCache.items)) arr = quiverCache.items;
-      else if (Array.isArray(quiverCache.quiver)) arr = quiverCache.quiver;
-    }
-  }catch(e){}
-
-  if (!arr.length) {
-    arr = matchesPayload?.portfolioMatches?.items || matchesPayload?.items || [];
-  }
-
-  return Array.isArray(arr) ? arr : [];
-}
-
-function compactTickerRow(ticker, items){
-  let buys = 0, sales = 0, others = 0, amount = 0, latestDate = "";
-  const politicians = {};
-
-  for (const it of items) {
-    const k = txKind(it.Transaction || it.transaction);
-    if (k === "BUY") buys++;
-    else if (k === "SALE") sales++;
-    else others++;
-
-    amount += safeNum(it.Amount || it.amount);
-    const d = it.TransactionDate || it.date || it.ReportDate || "";
-    if (String(d) > String(latestDate)) latestDate = d;
-
-    const p = it.Representative || it.politician || it.Politician || "Desconocido";
-    politicians[p] = (politicians[p] || 0) + 1;
-  }
-
-  return {
-    ticker,
-    count: items.length,
-    buys,
-    sales,
-    others,
-    latestDate,
-    totalReportedMin: Math.round(amount),
-    mostActivePoliticians: Object.entries(politicians)
-      .sort((a,b)=>b[1]-a[1])
-      .slice(0,5)
-      .map(([name,count])=>({name,count}))
-  };
-}
-
-async function computeQuiverTrending(){
-  const matchesPayload = await localJson("/api/quiver/matches?t=" + Date.now());
-  const raw = getAllQuiverItemsFromMemory(matchesPayload);
-
-  const byTicker = {};
-  const byPolitician = {};
-  const latestTrades = [];
-
-  for (const it of raw) {
-    const ticker = String(it.Ticker || it.ticker || "").trim().toUpperCase();
-    if (!ticker) continue;
-
-    byTicker[ticker] ||= [];
-    byTicker[ticker].push(it);
-
-    const politician = it.Representative || it.politician || it.Politician || "Desconocido";
-    byPolitician[politician] = (byPolitician[politician] || 0) + 1;
-
-    latestTrades.push({
-      ticker,
-      politician,
-      transaction: it.Transaction || it.transaction || "",
-      kind: txKind(it.Transaction || it.transaction),
-      amount: it.Amount || it.amount || it.Range || "",
-      date: it.TransactionDate || it.date || it.ReportDate || "",
-      description: it.Description || it.description || ""
-    });
-  }
-
-  const rows = Object.entries(byTicker)
-    .map(([ticker,items]) => compactTickerRow(ticker, items))
-    .sort((a,b)=>b.count-a.count);
-
-  return {
-    ok: true,
-    ts: Date.now(),
-    quiverCount: raw.length || matchesPayload?.quiverCount || 0,
-    source: raw.length ? "quiverCache/full-or-fallback" : "portfolioMatchesFallback",
-    topTickers: rows.slice(0,15),
-    topBuys: rows.slice().sort((a,b)=>b.buys-a.buys).slice(0,15),
-    topSales: rows.slice().sort((a,b)=>b.sales-a.sales).slice(0,15),
-    topByAmount: rows.slice().sort((a,b)=>b.totalReportedMin-a.totalReportedMin).slice(0,15),
-    mostActivePoliticians: Object.entries(byPolitician)
-      .sort((a,b)=>b[1]-a[1])
-      .slice(0,15)
-      .map(([name,count])=>({name,count})),
-    latestTrades: latestTrades
-      .sort((a,b)=>String(b.date).localeCompare(String(a.date)))
-      .slice(0,30),
-    portfolioMatches: matchesPayload?.portfolioMatches || null
-  };
-}
-
-async function computeMarketRadar(){
-  const trending = await computeQuiverTrending();
-  const portfolio = await localJson("/api/portfolio?t=" + Date.now());
-
-  const assets = portfolio?.assets || [];
-  const owned = new Set(assets.map(a => String(a.symbol || "").toUpperCase()));
-  const trendMap = {};
-  for (const r of trending.topTickers || []) trendMap[r.ticker] = r;
-
-  const watchlist = MARKET_WATCHLIST.map(ticker => {
-    const q = trendMap[ticker] || null;
-    const asset = assets.find(a => String(a.symbol || "").toUpperCase() === ticker) || null;
-    const inPortfolio = owned.has(ticker);
-    const heatScore =
-      (q ? Math.min(60, q.count * 4) : 0) +
-      (inPortfolio ? 25 : 0) +
-      (q?.buys > q?.sales ? 10 : 0) +
-      (["NVDA","TSLA","AMD","AAPL","MSFT","PLTR","META","AMZN"].includes(ticker) ? 5 : 0);
-
-    return {
-      ticker,
-      inPortfolio,
-      quiverCount: q?.count || 0,
-      buys: q?.buys || 0,
-      sales: q?.sales || 0,
-      others: q?.others || 0,
-      latestDate: q?.latestDate || null,
-      portfolioScore: asset?.score ?? null,
-      portfolioSignal: asset?.signal ?? null,
-      gainPct: asset?.gainPct ?? null,
-      heatScore
-    };
-  }).sort((a,b)=>b.heatScore-a.heatScore);
-
-  const hotTickers = watchlist.slice(0,12);
-  const portfolioOverlap = watchlist.filter(x=>x.inPortfolio).slice(0,12);
-  const quiverTrending = watchlist.filter(x=>x.quiverCount > 0).slice(0,12);
-
-  return {
-    ok: true,
-    ts: Date.now(),
-    watchlist,
-    watchlistCount: MARKET_WATCHLIST.length,
-    hotTickers,
-    portfolioOverlap,
-    quiverTrending,
-    educationalSummary:
-      "Radar educativo: combina watchlist popular, Quiver/congreso y tu portafolio. No compra ni vende; prioriza que vigilar."
-  };
-}
-
-async function computeIntelligence(){
-  const daily = await localJson("/api/daily-scan?t=" + Date.now());
-  const radar = await computeMarketRadar();
-  const trending = await computeQuiverTrending();
-  const intel = await localJson("/api/intel?t=" + Date.now());
-
-  const portfolioImpacts = [
-    daily?.topRisk?.symbol && {type:"risk", symbol:daily.topRisk.symbol, note:"Mayor riesgo del scan diario"},
-    daily?.topOpportunity?.symbol && {type:"opportunity", symbol:daily.topOpportunity.symbol, note:"Mejor oportunidad del scan diario"},
-    daily?.biggestWinner?.symbol && {type:"winner", symbol:daily.biggestWinner.symbol, note:"Mayor ganador del portafolio"},
-    daily?.biggestLoser?.symbol && {type:"loser", symbol:daily.biggestLoser.symbol, note:"Mayor perdedor del portafolio"}
-  ].filter(Boolean);
-
-  return {
-    ok: true,
-    ts: Date.now(),
-    modules: {
-      dailyScan: !!daily?.ok,
-      quiverTrending: !!trending?.ok,
-      marketRadar: !!radar?.ok,
-      manualIntel: true
-    },
-    dailyScan: daily ? {
-      portfolioValue: daily.portfolioValue,
-      portfolioGainPct: daily.portfolioGainPct,
-      regime: daily.regime,
-      topRisk: daily.topRisk,
-      topOpportunity: daily.topOpportunity,
-      concentrationRisk: daily.concentrationRisk,
-      cryptoExposurePct: daily.cryptoExposurePct,
-      educationalSummary: daily.educationalSummary
-    } : null,
-    quiverTrending: {
-      quiverCount: trending.quiverCount,
-      topTickers: trending.topTickers?.slice(0,10),
-      mostActivePoliticians: trending.mostActivePoliticians?.slice(0,10),
-      latestTrades: trending.latestTrades?.slice(0,10)
-    },
-    marketRadar: {
-      watchlistCount: radar.watchlistCount,
-      hotTickers: radar.hotTickers?.slice(0,10),
-      portfolioOverlap: radar.portfolioOverlap?.slice(0,10)
-    },
-    intelItems: intel?.items || intel?.intel || intel || [],
-    portfolioImpacts,
-    educationalSummary:
-      "Cordelius Intelligence une scan diario, Quiver, radar de mercado y análisis manual pegado. Uso educativo, no asesoría financiera."
-  };
-}
-// === END MEGA_BACKEND_ENDPOINTS_FIX_V1 ===
-
-async function computeDailyScanSafe() {
-  let quiver  = { count: 0, items: [] };
-  let matches = { count: 0, tickers: [], items: [], grouped: {} };
-  try {
-    quiver  = await fetchQuiverDataReal();
-    matches = matchQuiverToPortfolio(quiver);
-  } catch (e) {
-    matches = { count: 0, tickers: [], items: [], grouped: {}, error: e.message };
-  }
-  const pv = portfolioValue();
-  const s  = buildScanData(pv, matches);
-  return {
-    ok: true,
-    date: new Date().toLocaleDateString("es-MX"),
-    ts: Date.now(),
-    portfolioValue:    +pv.totalValueMXN.toFixed(2),
-    portfolioCost:     +pv.totalCostMXN.toFixed(2),
-    portfolioGainPct:  +pv.totalGainPct.toFixed(2),
-    assets:            pv.assets.length,
-    regime:            s.reg.label,
-    topRisk:           s.topRisk,
-    topOpportunity:    s.topOpportunity,
-    weakestTechnical:  s.weakestTechnical,
-    biggestWinner:     s.biggestWinner,
-    biggestLoser:      s.biggestLoser,
-    concentrationRisk: s.concentrationRisk,
-    cryptoExposurePct: +s.bitsoPct.toFixed(1),
-    quiverMatches: {
-      count:   matches.count,
-      tickers: matches.tickers,
-      items:   matches.items.slice(0, 30),
-      grouped: matches.grouped
-    },
-    riskAlerts:         s.riskAlerts,
-    actionChecklist:    s.actionChecklist,
-    educationalSummary: s.educationalSummary,
-    quiverConfigured: !!QUIVER_API_KEY,
-    quiverCount:      quiver.count || 0
-  };
+function handleIntelClear(req, res) {
+  intelItems = [];
+  saveJSON(INTEL_FILE, intelItems);
+  addThought("Intel limpiado: todos los analisis borrados.", "warn");
+  res.writeHead(302, { Location: "/#intel" });
+  res.end();
 }
 
 const server = http.createServer(async (req, res) => {
-  req.originalUrl = req.url;
-  req.url = (req.url || "").split("?")[0];
-  const reqPath = req.url;
-
-  
-
-  
-  if (req.url === "/api/quiver/trending") {
-    try {
-      const payload = await computeQuiverTrending();
-      res.writeHead(200, {"Content-Type":"application/json; charset=utf-8"});
-      return res.end(JSON.stringify(payload));
-    } catch (e) {
-      res.writeHead(500, {"Content-Type":"application/json; charset=utf-8"});
-      return res.end(JSON.stringify({ok:false,error:e.message}));
-    }
-  }
-
-  if (req.url === "/api/market-radar") {
-    try {
-      const payload = await computeMarketRadar();
-      res.writeHead(200, {"Content-Type":"application/json; charset=utf-8"});
-      return res.end(JSON.stringify(payload));
-    } catch (e) {
-      res.writeHead(500, {"Content-Type":"application/json; charset=utf-8"});
-      return res.end(JSON.stringify({ok:false,error:e.message}));
-    }
-  }
-
-  if (req.url === "/api/intelligence") {
-    try {
-      const payload = await computeIntelligence();
-      res.writeHead(200, {"Content-Type":"application/json; charset=utf-8"});
-      return res.end(JSON.stringify(payload));
-    } catch (e) {
-      res.writeHead(500, {"Content-Type":"application/json; charset=utf-8"});
-      return res.end(JSON.stringify({ok:false,error:e.message}));
-    }
-  }
-
-if (req.url === "/api/daily-scan") {
-    try {
-      const payload = await computeDailyScanSafe();
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify(payload));
-    } catch (e) {
-      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({ ok: false, error: e.message }));
-    }
-  }
-
-  if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
-  if (req.method === "POST" && req.url === "/intel") return handleIntel(req, res);
-  if (req.url === "/toggle-thinking") {
+  const path = req.url.split("?")[0];
+  if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
+  if (req.method === "POST" && path === "/intel") return handleIntel(req, res);
+  if (req.method === "POST" && path === "/intel/delete") return handleIntelDelete(req, res);
+  if (req.method === "POST" && path === "/intel/clear") return handleIntelClear(req, res);
+  if (path === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
     saveJSON(SETTINGS_FILE, settings);
     res.writeHead(302, { Location: "/#alfredo" }); return res.end();
   }
-  if (req.url === "/bot/start") { bot.running = true; addThought("Bot ficticio encendido.", "scan"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
-  if (req.url === "/bot/pause") { bot.running = false; addThought("Bot ficticio pausado.", "warn"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
-  if (req.url === "/bot/reset") {
+  if (path === "/bot/start") { bot.running = true; addThought("Bot ficticio encendido.", "scan"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
+  if (path === "/bot/pause") { bot.running = false; addThought("Bot ficticio pausado.", "warn"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
+  if (path === "/bot/reset") {
     bot = { initialCapital: 1000, cash: 1000, positions: {}, history: [], equityHistory: [], thoughts: [], running: true, totalRealizedPnl: 0, maxDrawdown: 0, tradesCount: 0, lastTick: null };
     addThought("Bot reiniciado desde cero.", "scan"); saveJSON(BOT_FILE, bot);
     res.writeHead(302, { Location: "/#bot" }); return res.end();
   }
-  if (req.url === "/health") {
+  if (path === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), uptime: Math.floor(process.uptime()) }));
   }
-  if (req.url === "/api/status") {
+  if (path === "/api/status") {
     const pv = portfolioValue();
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
@@ -1799,43 +1926,77 @@ if (req.url === "/api/daily-scan") {
       portfolio: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct, assets: pv.assets.length },
       bot: { running: bot.running, cash: bot.cash, trades: bot.tradesCount },
       intel: { count: intelItems.length },
+      quiver: { configured: quiverData.configured, congressional: quiverData.congressional.length, insider: quiverData.insider.length, contracts: quiverData.contracts.length },
       settings: { thinkingEnabled: settings.thinkingEnabled, theme: settings.themeMode }
     }));
   }
-  if (req.url === "/api/portfolio") {
+  if (path === "/api/portfolio") {
     const pv = portfolioValue();
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), ...pv }));
   }
-
-  if (req.url === "/api/quiver") {
-    const payload = await fetchQuiverDataReal();
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    return res.end(JSON.stringify(payload));
-  }
-
-  if (req.url === "/api/quiver/matches") {
-    const quiver = await fetchQuiverDataReal();
-    const matches = matchQuiverToPortfolio(quiver);
-    const payload = {
-      ok: true,
-      ts: Date.now(),
-      quiverConfigured: !!QUIVER_API_KEY,
-      quiverCount: quiver.count || 0,
-      portfolioMatches: {
-        count:   matches.count,
-        tickers: matches.tickers,
-        items:   matches.items,
-        grouped: matches.grouped
-      }
+  if (path === "/api/intel") {
+    const intelSummary = {
+      total: intelItems.length,
+      positivo: intelItems.filter(x => x.mood === "POSITIVO").length,
+      negativo: intelItems.filter(x => x.mood === "NEGATIVO").length,
+      neutral: intelItems.filter(x => x.mood === "NEUTRAL").length,
+      byAsset: intelItems.reduce((acc, x) => {
+        (x.affected || []).forEach(sym => { acc[sym] = (acc[sym] || 0) + 1; });
+        return acc;
+      }, {})
     };
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    return res.end(JSON.stringify(payload));
-  }
-
-  if (req.url === "/api/intel") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, items: intelItems }));
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, summary: intelSummary, items: intelItems }));
+  }
+  if (path === "/api/quiver") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true, configured: quiverData.configured, error: quiverData.error || null,
+      summary: {
+        congressional: quiverData.congressional.length,
+        insider: quiverData.insider.length,
+        contracts: quiverData.contracts.length,
+        lastFetch: quiverData.lastFetch,
+        cacheAgeMinutes: quiverData.lastFetch ? Math.floor((Date.now() - quiverData.lastFetch) / 60000) : null
+      },
+      congressional: quiverData.congressional,
+      insider: quiverData.insider,
+      contracts: quiverData.contracts
+    }));
+  }
+  if (path === "/api/quiver/matches") {
+    const allMatches = [
+      ...quiverData.congressional.map(x => ({ ...x, dataset: "congressional" })),
+      ...quiverData.insider.map(x => ({ ...x, dataset: "insider" })),
+      ...quiverData.contracts.map(x => ({ ...x, dataset: "contracts" }))
+    ].sort((a, b) => (a.daysAgo == null ? 999 : a.daysAgo) - (b.daysAgo == null ? 999 : b.daysAgo));
+    const tickers = [...new Set(allMatches.map(x => x.symbol))];
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true, ts: Date.now(),
+      configured: quiverData.configured,
+      quiverCount: quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length,
+      matchCount: allMatches.length,
+      tickers,
+      matches: allMatches
+    }));
+  }
+  if (path === "/api/daily-scan") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeDailyScan()));
+  }
+  if (path === "/api/quiver/trending") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeQuiverTrending()));
+  }
+  if (path === "/api/market-radar") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeMarketRadar()));
+  }
+  if (path === "/api/intelligence") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeIntelligence()));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
@@ -1869,6 +2030,13 @@ async function boot() {
     try { savePortfolioPoint(); } catch (e) { console.log("savePortfolioPoint omitido:", e.message); }
     try { botTick(); } catch (e) { console.log("botTick omitido:", e.message); }
 
+    try {
+      await Promise.race([
+        fetchQuiverData(),
+        new Promise(resolve => setTimeout(resolve, 10000))
+      ]);
+    } catch (e) { console.log("fetchQuiverData boot omitido:", e.message); }
+
     setInterval(async () => {
       try {
         await Promise.race([
@@ -1893,6 +2061,15 @@ async function boot() {
         console.log("fetchNews interval omitido:", e.message);
       }
     }, 1000 * 60 * 12);
+
+    setInterval(async () => {
+      try {
+        await Promise.race([
+          fetchQuiverData(),
+          new Promise(resolve => setTimeout(resolve, 10000))
+        ]);
+      } catch (e) {}
+    }, QUIVER_CACHE_MS);
   }, 500);
 }
 boot();
@@ -1904,3 +2081,5 @@ boot();
 /* CORDELIUS_P2_INTEL_APPLIED */
 
 /* CORDELIUS_CLAUDE_SMART_APPLIED */
+
+/* CORDELIUS_F3A1_APPLIED */
