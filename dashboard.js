@@ -7,6 +7,8 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
 const QUIVER_CACHE_MS = 2 * 60 * 60 * 1000;
+// WHOOP vars — read at runtime, never logged
+const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLIENT_SECRET);
 
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
@@ -511,6 +513,207 @@ function computeDailyScan() {
     educationalSummary,
     rawMatchesLimited: allQuiverMatches.slice(0, 20),
     intel: { count: intelItems.length, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
+  };
+}
+
+function classifyExternalTicker(symbol) {
+  const aiSemis    = ["NVDA","AMD","AVGO","SMCI","INTC","TSM","QCOM","MU"];
+  const megaCap    = ["AAPL","MSFT","GOOGL","AMZN","META","NFLX"];
+  const cryptoPx   = ["COIN","MSTR","HOOD","SOFI"];
+  const evChina    = ["TSLA","RIVN","NIO","BABA"];
+  const healthcare = ["UNH","LLY","JNJ","PFE"];
+  const etfs       = ["QQQ","SPY","IWM","GLD","TLT","XLK"];
+  if (aiSemis.includes(symbol))    return { sector: "AI / Semiconductores",   color: "#818cf8", emoji: "⚡" };
+  if (megaCap.includes(symbol))    return { sector: "Mega Cap Tech",           color: "#3b9dff", emoji: "🌐" };
+  if (cryptoPx.includes(symbol))   return { sector: "Crypto Proxy",            color: "#f59e0b", emoji: "₿"  };
+  if (evChina.includes(symbol))    return { sector: "EV / China Tech",         color: "#10b981", emoji: "🚗" };
+  if (healthcare.includes(symbol)) return { sector: "Healthcare / Defensivo",  color: "#f472b6", emoji: "🏥" };
+  if (etfs.includes(symbol))       return { sector: "ETF / Mercado amplio",    color: "#94a3b8", emoji: "📊" };
+  return                                  { sector: "Otros",                   color: "#9fb3c8", emoji: "◆"  };
+}
+
+function computePortfolioIntelligence() {
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  const totalMXN = pv.totalValueMXN || 1;
+  const bySource = {};
+  for (const a of pv.assets) {
+    if (!bySource[a.source]) bySource[a.source] = { assets: [], totalValue: 0, totalCost: 0 };
+    bySource[a.source].assets.push(a);
+    bySource[a.source].totalValue += a.valueMXN;
+    bySource[a.source].totalCost += a.costMXN;
+  }
+  const accountSummaries = Object.entries(bySource).map(([src, d]) => ({
+    source: src,
+    totalValue: +d.totalValue.toFixed(2),
+    totalCost:  +d.totalCost.toFixed(2),
+    gain:       +(d.totalValue - d.totalCost).toFixed(2),
+    gainPct:    d.totalCost > 0 ? +((d.totalValue - d.totalCost) / d.totalCost * 100).toFixed(2) : 0,
+    pct:        +(d.totalValue / totalMXN * 100).toFixed(1),
+    assets:     d.assets.length
+  }));
+  const cryptoMXN  = pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct  = cryptoMXN / totalMXN * 100;
+  const riskAssets = ranked.filter(a => a.score < 35 || a.gainPct < -12 || a.risk === "ALTO");
+  const oppAssets  = ranked.filter(a => a.gainPct > 50 && a.score > 55);
+  const buyDip     = ranked.filter(a => a.signal && (a.signal.includes("BUY") || a.signal.includes("MOMENTUM")) && a.score > 45);
+  return {
+    ok: true, ts: Date.now(),
+    totalValueMXN: +pv.totalValueMXN.toFixed(2), totalCostMXN: +pv.totalCostMXN.toFixed(2),
+    totalGainMXN: +pv.totalGainMXN.toFixed(2), totalGainPct: +pv.totalGainPct.toFixed(2),
+    regime: reg.label, assetCount: pv.assets.length, accountSummaries,
+    concentration: { criptoPct: +criptoPct.toFixed(1), alert: criptoPct > 45 },
+    best:  ranked[0] ? { symbol: ranked[0].symbol, score: ranked[0].score, gainPct: +ranked[0].gainPct.toFixed(2), signal: ranked[0].signal } : null,
+    worst: ranked[ranked.length-1] ? { symbol: ranked[ranked.length-1].symbol, score: ranked[ranked.length-1].score, gainPct: +ranked[ranked.length-1].gainPct.toFixed(2), signal: ranked[ranked.length-1].signal } : null,
+    riskAssets: riskAssets.slice(0,5).map(a => ({ symbol: a.symbol, score: a.score, gainPct: +a.gainPct.toFixed(2), risk: a.risk })),
+    oppAssets:  oppAssets.slice(0,3).map(a => ({ symbol: a.symbol, score: a.score, gainPct: +a.gainPct.toFixed(2) })),
+    buyDip:     buyDip.slice(0,3).map(a => ({ symbol: a.symbol, score: a.score, signal: a.signal })),
+    quiverInPortfolio: quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length,
+    intelItems: intelItems.length
+  };
+}
+
+function computeExternalMarketIntelligence() {
+  const portSyms = new Set(PORTFOLIO.map(a => a.symbol));
+  const pv = portfolioValue();
+  const classified = MARKET_WATCHLIST.map(sym => {
+    const cls = classifyExternalTicker(sym);
+    const inPort = portSyms.has(sym);
+    const portAsset = inPort ? pv.assets.find(a => a.symbol === sym) : null;
+    const src = quiverDataFull.congressional.length > 0 ? quiverDataFull.congressional : quiverData.congressional;
+    const srcI = quiverDataFull.insider.length > 0 ? quiverDataFull.insider : quiverData.insider;
+    const srcC = quiverDataFull.contracts.length > 0 ? quiverDataFull.contracts : quiverData.contracts;
+    const qSig  = [...src.filter(x=>(x.symbol||"").toUpperCase()===sym), ...srcI.filter(x=>(x.symbol||"").toUpperCase()===sym), ...srcC.filter(x=>(x.symbol||"").toUpperCase()===sym)].length;
+    const qBuys = src.filter(x=>(x.symbol||"").toUpperCase()===sym && /buy|purchase/.test((x.Transaction||x.transaction||"").toLowerCase())).length;
+    const qSale = src.filter(x=>(x.symbol||"").toUpperCase()===sym && /sale|sell/.test((x.Transaction||x.transaction||"").toLowerCase())).length;
+    return { symbol: sym, sector: cls.sector, sectorColor: cls.color, sectorEmoji: cls.emoji, inPortfolio: inPort,
+      score: portAsset ? portAsset.score : null, signal: portAsset ? portAsset.signal : null,
+      gainPct: portAsset ? +portAsset.gainPct.toFixed(2) : null,
+      quiverSignals: qSig, quiverBuys: qBuys, quiverSales: qSale };
+  });
+  const bySector = {};
+  for (const t of classified) {
+    if (!bySector[t.sector]) bySector[t.sector] = { sector: t.sector, color: t.sectorColor, emoji: t.sectorEmoji, tickers: [] };
+    bySector[t.sector].tickers.push(t);
+  }
+  const sectors = Object.values(bySector).map(s => ({
+    ...s, hotCount: s.tickers.filter(t => t.quiverSignals > 0).length,
+    totalQuiver: s.tickers.reduce((sum, t) => sum + t.quiverSignals, 0)
+  })).sort((a, b) => b.totalQuiver - a.totalQuiver);
+  const externalHot = classified.filter(t => !t.inPortfolio && (t.quiverSignals > 0 || (t.score != null && t.score > 60)))
+    .sort((a, b) => (b.quiverSignals + (b.score||0)/10) - (a.quiverSignals + (a.score||0)/10));
+  return {
+    ok: true, ts: Date.now(), watchlistCount: MARKET_WATCHLIST.length,
+    classified, sectors, externalHot: externalHot.slice(0,10),
+    externalAll: classified.filter(t => !t.inPortfolio),
+    portfolioOverlap: classified.filter(t => t.inPortfolio),
+    educationalNote: "EDUCATIVO: radar de vigilancia. No implica recomendación de compra o venta."
+  };
+}
+
+function computeQuiverIntelligence() {
+  const portSyms = new Set(PORTFOLIO.map(a => a.symbol));
+  if (!quiverData.configured) {
+    return {
+      ok: true, ts: Date.now(), configured: false,
+      message: "Agrega QUIVER_API_KEY en .env para activar datos institucionales.",
+      pendingFeatures: ["Compras del Congreso USA","Ventas del Congreso USA","Insider trading en tus activos","Contratos gubernamentales","Políticos más activos","Tickers más movidos institucionalmente"],
+      watchlistNote: "El radar de mercado funciona sin Quiver — solo sin datos institucionales."
+    };
+  }
+  const congAll = quiverDataFull.congressional.length > 0 ? quiverDataFull.congressional : quiverData.congressional;
+  const insAll  = quiverDataFull.insider.length > 0 ? quiverDataFull.insider : quiverData.insider;
+  const conAll  = quiverDataFull.contracts.length > 0 ? quiverDataFull.contracts : quiverData.contracts;
+  const congBuys  = congAll.filter(x => /buy|purchase/.test((x.Transaction||x.transaction||"").toLowerCase()));
+  const congSales = congAll.filter(x => /sale|sell/.test((x.Transaction||x.transaction||"").toLowerCase()));
+  const insBuys   = insAll.filter(x => /buy|purchase/.test((x.TransactionType||x.transaction||"").toLowerCase()));
+  const insSales  = insAll.filter(x => /sale|sell/.test((x.TransactionType||x.transaction||"").toLowerCase()));
+  const politMap = {};
+  for (const m of congAll) {
+    const who = m.Representative || m.Politician || m.Name || "";
+    const sym = (m.symbol || m.Ticker || "").toUpperCase();
+    if (!who) continue;
+    if (!politMap[who]) politMap[who] = { name: who, party: m.Party||"", trades:0, buys:0, sales:0, tickers: new Set() };
+    politMap[who].trades++;
+    if (/buy|purchase/.test((m.Transaction||"").toLowerCase())) politMap[who].buys++;
+    else if (/sale|sell/.test((m.Transaction||"").toLowerCase())) politMap[who].sales++;
+    if (sym) politMap[who].tickers.add(sym);
+  }
+  const activePoliticians = Object.values(politMap)
+    .map(p => ({ name:p.name, party:p.party, trades:p.trades, buys:p.buys, sales:p.sales, tickers:[...p.tickers], portfolioTickers:[...p.tickers].filter(s=>portSyms.has(s)) }))
+    .sort((a,b) => b.trades - a.trades).slice(0, 8);
+  const allTrades = [
+    ...congAll.map(x => ({ symbol:(x.symbol||x.Ticker||"").toUpperCase(), dataset:"Congreso", transaction:x.Transaction||x.transaction||"", who:x.Representative||x.Name||"", party:x.Party||"", amount:x.Amount||x.amount||x.Value||"", date:x.Date||"", inPortfolio:portSyms.has((x.symbol||x.Ticker||"").toUpperCase()) })),
+    ...insAll.map(x  => ({ symbol:(x.symbol||x.Ticker||"").toUpperCase(), dataset:"Insider",   transaction:x.TransactionType||x.transaction||"", who:x.Name||x.Insider||"", party:"", amount:x.Amount||x.Value||"", date:x.Date||"", inPortfolio:portSyms.has((x.symbol||x.Ticker||"").toUpperCase()) })),
+    ...conAll.map(x  => ({ symbol:(x.symbol||x.Ticker||"").toUpperCase(), dataset:"Contrato",  transaction:"CONTRACT", who:x.Agency||x.Customer||"", party:"", amount:x.Amount||x.Value||"", date:x.Date||"", inPortfolio:portSyms.has((x.symbol||x.Ticker||"").toUpperCase()) }))
+  ].sort((a,b) => (b.date>a.date?1:b.date<a.date?-1:0)).slice(0, 30);
+  const tickAct = {};
+  for (const t of allTrades) {
+    if (!t.symbol) continue;
+    if (!tickAct[t.symbol]) tickAct[t.symbol] = { symbol:t.symbol, total:0, buys:0, sales:0, contracts:0, inPortfolio:portSyms.has(t.symbol) };
+    tickAct[t.symbol].total++;
+    if (/buy|purchase/.test(t.transaction.toLowerCase())) tickAct[t.symbol].buys++;
+    else if (/sale|sell/.test(t.transaction.toLowerCase())) tickAct[t.symbol].sales++;
+    else if (t.dataset==="Contrato") tickAct[t.symbol].contracts++;
+  }
+  const topTickers = Object.values(tickAct).sort((a,b) => b.total-a.total).slice(0, 15);
+  return {
+    ok: true, ts: Date.now(), configured: true,
+    congressional: { total: congAll.length, portfolio: congAll.filter(x=>portSyms.has((x.symbol||x.Ticker||"").toUpperCase())).length, external: congAll.filter(x=>!portSyms.has((x.symbol||x.Ticker||"").toUpperCase())).length, buys: congBuys.length, sales: congSales.length },
+    insider:       { total: insAll.length,  portfolio: insAll.filter(x=>portSyms.has((x.symbol||x.Ticker||"").toUpperCase())).length,  external: insAll.filter(x=>!portSyms.has((x.symbol||x.Ticker||"").toUpperCase())).length,  buys: insBuys.length, sales: insSales.length },
+    contracts:     { total: conAll.length,  portfolio: conAll.filter(x=>portSyms.has((x.symbol||x.Ticker||"").toUpperCase())).length,  external: conAll.filter(x=>!portSyms.has((x.symbol||x.Ticker||"").toUpperCase())).length },
+    activePoliticians, latestTrades: allTrades.slice(0, 20), topTickers,
+    educationalNote: "Datos educativos. Retraso típico hasta 45 días. No implica acción de inversión."
+  };
+}
+
+function computeSectorThemes() {
+  const pv = portfolioValue();
+  const total = pv.totalValueMXN || 1;
+  const portSectors = {};
+  const SECTOR_MAP = { AAPL:"Tech/AI", MSFT:"Tech/AI", PLTR:"Tech/AI", IREN:"Tech/AI", SSYS:"Tech/AI", PATH:"Tech/AI", NFLX:"Tech/AI", GEV:"Energía/Grid", AEP:"Energía/Grid", COPX:"Energía/Grid", UNH:"Healthcare", BBVA:"Banca MXN" };
+  for (const a of pv.assets) {
+    const sector = a.type === "crypto" ? "Cripto" : (SECTOR_MAP[a.symbol] || "Otros");
+    if (!portSectors[sector]) portSectors[sector] = { sector, value: 0, assets: [] };
+    portSectors[sector].value += a.valueMXN;
+    portSectors[sector].assets.push(a.symbol);
+  }
+  const portfolioSectors = Object.values(portSectors).map(s => ({ ...s, pct: +(s.value / total * 100).toFixed(1) })).sort((a,b) => b.value-a.value);
+  const emi = computeExternalMarketIntelligence();
+  return {
+    ok: true, ts: Date.now(), portfolioSectors,
+    externalSectors: emi.sectors,
+    hotSectors: emi.sectors.filter(s => s.totalQuiver > 0),
+    educationalNote: "EDUCATIVO: clasificación por sector para análisis de concentración."
+  };
+}
+
+function computeDailyNewsletter() {
+  const pi  = computePortfolioIntelligence();
+  const emi = computeExternalMarketIntelligence();
+  const qi  = computeQuiverIntelligence();
+  const scan = computeDailyScan();
+  const reg = marketRegime();
+  const today = new Date().toLocaleDateString("es-MX", { weekday:"long", year:"numeric", month:"long", day:"numeric" });
+  const lines = [];
+  lines.push(`Patrimonio: ${money(pi.totalValueMXN)} · rendimiento global ${pct(pi.totalGainPct)}.`);
+  if (pi.concentration.alert) lines.push(`⚠ Cripto ${pi.concentration.criptoPct}% del portafolio — concentración alta.`);
+  if (pi.best) lines.push(`Mejor activo: ${pi.best.symbol} (${pi.best.score}/100 · ${pct(pi.best.gainPct)}). Débil: ${pi.worst ? pi.worst.symbol + " (" + pi.worst.score + "/100)" : "—"}.`);
+  if (scan.riskAlerts.length > 0) lines.push(`Alertas: ${scan.riskAlerts.slice(0,2).map(a => a.message).join("; ")}.`);
+  if (emi.externalHot.length > 0) lines.push(`Externos calientes: ${emi.externalHot.slice(0,4).map(t => t.symbol).join(", ")}.`);
+  if (qi.configured && qi.congressional && qi.congressional.total > 0) lines.push(`Quiver: ${qi.congressional.buys} compras / ${qi.congressional.sales} ventas del congreso.`);
+  else if (!qi.configured) lines.push("Quiver: pendiente de API key.");
+  if (intelItems.length > 0) lines.push(`Intel manual: ${intelItems.length} items · ${intelItems.filter(x=>x.mood==="POSITIVO").length}+ / ${intelItems.filter(x=>x.mood==="NEGATIVO").length}−.`);
+  lines.push(`Régimen: ${reg.label}. ${reg.detail}`);
+  lines.push("EDUCATIVO — no es asesoría financiera.");
+  return {
+    ok: true, ts: Date.now(), date: today, greeting: "Cordelius OS · " + today, lines,
+    fullSummary: lines.join(" "),
+    portfolio: pi,
+    external: { hotCount: emi.externalHot.length, topSectors: emi.sectors.slice(0,3).map(s => s.sector) },
+    quiver: qi.configured ? { congressional: qi.congressional, insider: qi.insider } : { configured: false },
+    scan: { riskAlerts: scan.riskAlerts.length, actions: scan.educationalActions.length }
   };
 }
 
@@ -1051,6 +1254,65 @@ EDUCATIVO — no es asesoría financiera.`;
     reply = `Hay ${news.length} noticias cargadas. Las cruzo contra tus activos para mostrar impacto probable por ticker.`;
   } else if (q.includes("bot")) {
     reply = `El bot ficticio tiene equity ${money(botEq)}, P&L ${money(botPnl)} y ${bot.tradesCount} operaciones. Laboratorio, no piloto automatico real.`;
+  } else if (q.includes("daily brief") || q.includes("newsletter") || q.includes("pasó hoy") || q.includes("paso hoy") || q.includes("resumen")) {
+    const nl = computeDailyNewsletter();
+    reply = nl.lines.join("\n");
+  } else if (q.includes("stocks calientes") || q.includes("caliente") || q.includes("qué hay afuera") || q.includes("que hay afuera")) {
+    const emi = computeExternalMarketIntelligence();
+    const hot = emi.externalHot.slice(0, 6);
+    reply = hot.length
+      ? `Stocks externos calientes: ${hot.map(t => `${t.symbol} (sector: ${t.sector}${t.quiverSignals > 0 ? ", Q×" + t.quiverSignals : ""})`).join(", ")}. EDUCATIVO — solo vigilancia.`
+      : `Watchlist: ${MARKET_WATCHLIST.slice(0, 10).join(", ")}. Sin señales Quiver activas. Agrega QUIVER_API_KEY para ver datos institucionales.`;
+  } else if (q.includes("sectores") || q.includes("sector")) {
+    const st = computeSectorThemes();
+    const portStr = st.portfolioSectors.map(s => `${s.sector} ${s.pct}%`).join(", ");
+    const hotExt = st.hotSectors.slice(0, 3).map(s => s.sector).join(", ");
+    reply = `Tu portafolio por sector: ${portStr}. Externos activos en Quiver: ${hotExt || "sin señales"}. EDUCATIVO.`;
+  } else if (q.includes("congreso") || q.includes("insiders") || q.includes("qué dice quiver") || q.includes("que dice quiver")) {
+    const qi = computeQuiverIntelligence();
+    if (!qi.configured) {
+      reply = "Sin datos Quiver. Agrega QUIVER_API_KEY en .env para ver: compras/ventas del Congreso USA, insider trading, contratos gubernamentales.";
+    } else {
+      const topPol = qi.activePoliticians[0];
+      reply = `Quiver ON — Congreso: ${qi.congressional.buys} compras / ${qi.congressional.sales} ventas. Insider: ${qi.insider.buys} compras / ${qi.insider.sales} ventas. Contratos: ${qi.contracts.total}.${topPol ? " Más activo: " + topPol.name + " (" + topPol.trades + " trades)." : ""} Datos educativos, retraso típico 45 días.`;
+    }
+  } else if (q.includes("mis activos vs externos") || q.includes("portafolio vs") || q.includes("comparar")) {
+    const pi = computePortfolioIntelligence();
+    const emi = computeExternalMarketIntelligence();
+    reply = `Mi portafolio: ${pi.assetCount} activos, ${money(pi.totalValueMXN)}, rendimiento ${pct(pi.totalGainPct)}. Externos vigilados: ${emi.externalAll.length} tickers externos en ${emi.sectors.length} sectores. ${emi.externalHot.length > 0 ? "Calientes: " + emi.externalHot.slice(0,4).map(t=>t.symbol).join(", ") + "." : ""} EDUCATIVO.`;
+  } else if (q.includes("paper trading") || q.includes("alpaca") || q.includes("simulacion") || q.includes("simulación")) {
+    const idea = computeTradeIdea();
+    reply = idea.hasIdea
+      ? `Paper Mode — ${idea.type}: ${idea.symbol} — ${idea.reason}. Confianza: ${idea.confidence}. Falta para operar real: ${idea.missingData}. Alpaca: pendiente de conexión. NO hay trading real.`
+      : "Paper Mode activo. Sin idea de trade destacada ahora. Bot simulado: equity " + money(botEq) + ", P&L " + money(botPnl) + ". Alpaca: pendiente. NO hay trading real.";
+  } else if (q.includes("morning report") || q.includes("reporte diario") || q.includes("reporte mañana") || q.includes("reporte manana")) {
+    const nl = computeDailyNewsletter();
+    const idea = computeTradeIdea();
+    reply = `Morning Report — ${nl.date}. ${nl.lines.slice(0,3).join(" ")} ${idea.hasIdea ? "Idea: " + idea.type + " " + idea.symbol + " — " + idea.reason + "." : "Sin idea de trade destacada."} Endpoint: GET /api/morning-report`;
+  } else if (q.includes("automatiz") || q.includes("autopilot") || q.includes("auto pilot")) {
+    reply = `Automatización Cordelius — Scripts disponibles: health_check.sh (verifica /health), restart_safe.sh (reinicio seguro), morning_report.sh (guarda JSON en reports/), final_check.sh (valida antes de push). Usa bash scripts/health_check.sh desde ~/corde-bot. Cloud: conceptualmente listo para migrar a VPS/Railway. NO hay trading real ni órdenes automáticas.`;
+  } else if (q.includes("estado del sistema") || q.includes("system status") || (q.includes("health") && !q.includes("healthcare"))) {
+    reply = `Sistema Cordelius — Servidor: ONLINE (si ves esto). Paper Mode: ON. Real Trading: OFF. Alpaca: PENDIENTE. Quiver: ${quiverData.configured ? "ON" : "pendiente API key"}. Bot ficticio: equity ${money(botEq)}, P&L ${money(botPnl)}. Revisa /health para JSON completo.`;
+  } else if (q.includes("cloud") || q.includes("nube") || q.includes("migrar") || q.includes("vps") || q.includes("servidor")) {
+    reply = `Cloud / Migración — Cordelius puede migrar a VPS (Railway, Render, Fly.io) o servidor propio. Scripts de automatización ya preparados en scripts/. Requeriría: .env en variables de entorno del host, PM2 o systemd para proceso, HTTPS con reverse proxy. Sin Alpaca real no hay riesgo financiero. Actualmente: Termux/Android.`;
+  } else if (q.includes("termux") || q.includes("android") || q.includes("watchdog")) {
+    reply = `Termux — Cordelius corre en Termux (Android). Scripts: ./start.sh, ./stop.sh, ./watchdog.sh (reinicio automático si cae). Para inicio automático al boot: Termux:Boot (app separada) + script en ~/.termux/boot/. Sin Termux:Boot, iniciar manualmente tras reiniciar Android.`;
+  } else if (q.includes("paper status") || q.includes("estado paper") || q.includes("bot status")) {
+    const idea = computeTradeIdea();
+    const m = botMetrics();
+    reply = `Paper Status — Bot ficticio: ${bot.running ? "ACTIVO" : "PAUSADO"}. Equity: ${money(botEq)}. P&L: ${money(botPnl)}. Trades: ${m.totalTrades}. Ratio: ${m.winRatio}%. Trade idea: ${idea.hasIdea ? idea.type + " " + idea.symbol : "sin señal"}. Alpaca: PENDIENTE. NO hay dinero real.`;
+  } else if (q.includes("salud") || q.includes("whoop") || q.includes("readiness") || q.includes("cómo estoy") || q.includes("como estoy")) {
+    const h = computeHealthReadiness();
+    reply = `Health Readiness — WHOOP: ${h.configured ? "detectado" : "pendiente de conexión"}. Recovery: ${h.recovery !== null ? h.recovery + "%" : "sin datos"}. Sleep: ${h.sleep !== null ? h.sleep + "%" : "sin datos"}. HRV: ${h.hrv !== null ? h.hrv + " ms" : "sin datos"}. Modo operativo: ${h.operatingMode}. Sugerencia: ${h.suggestion}. ${h.message} NO es consejo médico. El objetivo es evitar decisiones impulsivas cuando el estado físico esté bajo.`;
+  } else if (q.includes("modo operativo") || q.includes("debo operar") || q.includes("puedo operar")) {
+    const h = computeHealthReadiness();
+    const idea = computeTradeIdea();
+    reply = `Modo operativo: ${h.operatingMode}. ${h.configured ? "" : "Sin datos de WHOOP — usando modo neutral. "}${h.suggestion}. Trade idea: ${idea.hasIdea ? idea.type + " en " + idea.symbol + " (confianza " + idea.confidence + ")" : "sin señal destacada"}. RECORDATORIO: no es asesoría financiera ni consejo médico. Usar solo como contexto personal educativo.`;
+  } else if (q.includes("morning report con salud") || q.includes("reporte con salud") || q.includes("reporte completo")) {
+    const nl = computeDailyNewsletter();
+    const h = computeHealthReadiness();
+    const idea = computeTradeIdea();
+    reply = `Morning Report — ${nl.date}. ${nl.lines.slice(0, 2).join(" ")} Estado personal: WHOOP ${h.configured ? "ON" : "pendiente"}, modo ${h.operatingMode}, ${h.suggestion}. Trade idea: ${idea.hasIdea ? idea.type + " " + idea.symbol : "sin señal"}. NO es asesoría financiera ni consejo médico.`;
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
@@ -1069,25 +1331,67 @@ function logoHtml(a) { return `<div class="asset-logo" style="background:${esc(a
 
 function brainHtml() {
   const thoughts = (bot.thoughts || []).slice(0, 9);
-  const nodes = ["AAPL", "BBVA", "BTC", "ETH", "MSFT", "IREN", "PLTR", "COPX", "RISK", "NEWS", "AI", "BOT"];
+  const pv = portfolioValue();
+  const cripto = pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
+  const hasHighRisk = pv.assets.some(a => a.score < 35 || a.risk === "ALTO");
+  const idea = computeTradeIdea();
+  const nodes = [
+    { label: pct(pv.totalGainPct)+" port",                    delay: 0,    color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d" },
+    { label: hasHighRisk ? "Risk ⚠" : "Risk ✓",               delay: 0.3,  color: hasHighRisk ? "#ff4d6d" : "#00ff99" },
+    { label: "Quiver "+(quiverData.configured ? "✓" : "—"),   delay: 0.7,  color: quiverData.configured ? "#00ff99" : "#9fb3c8" },
+    { label: "Congress",                                        delay: 1.1 },
+    { label: "Insiders",                                        delay: 0.5 },
+    { label: "News "+news.length,                              delay: 0.9,  color: news.length > 0 ? "#3b9dff" : "#9fb3c8" },
+    { label: "BBVA",                                            delay: 0.2 },
+    { label: "MSFT",                                            delay: 0.6 },
+    { label: "AI",                                              delay: 1.4,  color: "#818cf8" },
+    { label: "PLTR",                                            delay: 0.8 },
+    { label: idea.hasIdea ? idea.symbol+" "+idea.type.split("_")[0] : "Paper —", delay: 1.2, color: idea.hasIdea ? "#ffd35c" : "#9fb3c8" },
+    { label: "Scan",                                            delay: 0.4 },
+    { label: "BTC",                                             delay: 1.0 },
+    { label: "Cripto "+criptoPct.toFixed(0)+"%",               delay: 0.15, color: criptoPct > 45 ? "#ff4d6d" : "#f59e0b" },
+    { label: "AAPL",                                            delay: 0.55 },
+    { label: "Macro",                                           delay: 0.95 },
+  ];
+  const positions = [
+    "left:4%;top:10%",  "left:20%;top:4%",  "left:38%;top:13%", "left:56%;top:4%",
+    "left:73%;top:13%", "left:86%;top:5%",  "left:8%;top:42%",  "left:26%;top:35%",
+    "left:44%;top:44%", "left:61%;top:36%", "left:78%;top:44%", "left:88%;top:34%",
+    "left:4%;top:74%",  "left:23%;top:68%", "left:45%;top:76%", "left:66%;top:70%",
+  ];
   return `<div class="brain-card">
     <div class="brain-left">
       <div class="brain-title">Cerebro Alfredo AI</div>
-      <div class="brain-sub">Red neuronal viva: noticias → portafolio → riesgo → decision</div>
-      <div class="brain">
-        ${nodes.map((n, i) => `<span class="brain-node n${i}">${n}<i class="pulse"></i></span>`).join("")}
-        <svg viewBox="0 0 600 300" class="brain-lines" preserveAspectRatio="none">
-          <path d="M80 80 C160 30 240 120 320 70 S500 60 540 150"/>
-          <path d="M70 210 C150 130 260 250 350 180 S470 130 550 220"/>
-          <path d="M110 150 C200 80 300 210 420 90"/>
-          <path d="M150 250 C250 160 350 280 520 120"/>
-          <path d="M60 120 C180 170 280 40 520 190"/>
+      <div class="brain-sub">Red neuronal viva: datos → análisis → señales → decisiones</div>
+      <div class="brain" style="min-height:380px">
+        ${nodes.map((n, i) => `<span class="brain-node" style="${positions[i]};${n.color ? "color:"+n.color+";border-color:"+n.color+"44" : ""}">${esc(n.label)}<i class="pulse" style="animation-delay:${n.delay}s"></i></span>`).join("")}
+        <svg viewBox="0 0 700 380" class="brain-lines" preserveAspectRatio="none">
+          <path d="M50 55 C130 25 220 120 280 60 S440 25 530 75"/>
+          <path d="M50 55 C100 155 180 195 280 185"/>
+          <path d="M50 55 C80 275 165 295 320 305"/>
+          <path d="M140 28 C205 95 260 155 310 182"/>
+          <path d="M280 60 C340 100 380 155 425 182"/>
+          <path d="M400 28 C445 78 445 165 430 182"/>
+          <path d="M530 75 C595 125 625 158 608 182"/>
+          <path d="M80 195 C165 245 245 295 320 305"/>
+          <path d="M185 178 C240 235 282 285 320 305"/>
+          <path d="M310 182 C350 245 352 285 320 305"/>
+          <path d="M430 182 C445 238 422 278 430 305"/>
+          <path d="M608 182 C625 238 562 288 525 305"/>
+          <path d="M80 195 C125 238 162 258 185 178" style="stroke:#3b9dff;stroke-dasharray:8 18;opacity:.5"/>
+          <path d="M430 182 C485 198 545 198 608 182" style="stroke:#ffd35c;stroke-dasharray:6 20;opacity:.5"/>
+          <path d="M50 278 C140 305 245 325 320 305"/>
+          <path d="M320 305 C400 308 462 308 525 305"/>
+          <path d="M525 305 C585 318 632 278 652 255"/>
+          <path d="M165 268 C220 290 278 305 320 305"/>
+          <path d="M455 305 C500 295 550 275 575 258"/>
         </svg>
       </div>
     </div>
     <div class="brain-feed">
       <div class="feed-title">Pensamientos en vivo</div>
-      ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando senales del mercado...</div>`}
+      ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando señales del mercado...</div>`}
     </div>
   </div>`;
 }
@@ -1564,19 +1868,33 @@ function renderDailyScanCard() {
 
 function renderNews() {
   if (!news.length) return `<div class="muted">Cargando noticias...</div>`;
-  return news.map(n => {
+  const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
+  function newsCard(n) {
     const c = n.classification;
     const img = n.image ? `<img class="news-img" src="${esc(n.image)}" alt="">` : `<div class="news-img placeholder">NEWS</div>`;
     const impacted = n.impacted && n.impacted.length ? n.impacted : ["Mercado"];
+    const dateStr = n.datetime ? new Date(n.datetime * 1000).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
     return `<div class="news-card">${img}<div class="news-body">
-      <div class="chips"><span>${esc(c.type)}</span><span style="background:${c.impactColor}22;border-color:${c.impactColor}55;color:${c.impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span><span>${esc(n.source || "Fuente")}</span></div>
+      <div class="chips"><span>${esc(c.type)}</span><span style="background:${c.impactColor}22;border-color:${c.impactColor}55;color:${c.impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span><span>${esc(n.source || "Fuente")}</span>${dateStr ? `<span style="color:#9fb3c8">${esc(dateStr)}</span>` : ""}</div>
       <h3>${esc(n.headline || "Sin titulo")}</h3>
       <p>${esc((n.summary || "").slice(0, 240))}</p>
-      <div class="impact"><b>Activos posiblemente impactados:</b>${impacted.map(x => `<span>${esc(x)}</span>`).join("")}</div>
-      <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No es comprar/vender automatico; sirve para saber que vigilar.</div>
-      <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente</a>
+      <div class="impact"><b>Activos impactados:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
+      <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
+      <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente ↗</a>
     </div></div>`;
-  }).join("");
+  }
+  const portfolioNews = news.filter(n => n.impacted && n.impacted.some(t => portfolioSymbols.has(t)));
+  const externalNews = news.filter(n => !portfolioNews.includes(n));
+  let html = "";
+  if (portfolioNews.length) {
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin:8px 0 12px;max-width:1280px">Impactan tu portafolio (${portfolioNews.length})</div>`;
+    html += portfolioNews.map(newsCard).join("");
+  }
+  if (externalNews.length) {
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#9fb3c8;margin:${portfolioNews.length ? "24px" : "8px"} 0 12px;max-width:1280px">Mercado general (${externalNews.length})</div>`;
+    html += externalNews.map(newsCard).join("");
+  }
+  return html || `<div class="muted">Sin noticias disponibles.</div>`;
 }
 
 
@@ -1655,6 +1973,390 @@ function renderBotTables() {
   return { posRows, histRows };
 }
 
+function renderQuiverIntelligencePanel() {
+  const qi = computeQuiverIntelligence();
+  const trending = computeQuiverTrending();
+  if (!qi.configured) {
+    return `<div class="panel" style="max-width:1280px;margin:0 auto 14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+        <div>
+          <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">QUIVER INTELLIGENCE — PENDIENTE</div>
+          <div style="color:#9fb3c8;font-size:13px;margin-top:2px">${esc(qi.message)}</div>
+        </div>
+        <span style="border:1px solid rgba(255,211,92,.3);border-radius:99px;padding:4px 14px;font-size:12px;font-weight:900;color:#ffd35c">SIN API KEY</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:14px">
+        ${qi.pendingFeatures.map(f => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;padding:12px;background:rgba(255,255,255,.02)"><div style="font-size:12px;color:#9fb3c8">🔒 ${esc(f)}</div></div>`).join("")}
+      </div>
+      <div style="border:1px solid rgba(59,157,255,.15);border-radius:14px;padding:12px;background:rgba(59,157,255,.04)">
+        <div style="font-size:12px;color:#9fb3c8">📡 ${esc(qi.watchlistNote)}</div>
+      </div>
+    </div>`;
+  }
+  const portSyms = new Set(PORTFOLIO.map(a => a.symbol));
+  function txColor(tx) { return /buy|purchase/.test((tx||"").toLowerCase()) ? "#00ff99" : /sale|sell/.test((tx||"").toLowerCase()) ? "#ff4d6d" : "#ffd35c"; }
+  function txLabel(tx) { return /buy|purchase/.test((tx||"").toLowerCase()) ? "COMPRA" : /sale|sell/.test((tx||"").toLowerCase()) ? "VENTA" : ((tx||"OTRO").toUpperCase().slice(0,8)); }
+  const latestRows = qi.latestTrades.slice(0,12).map(t =>
+    `<tr style="opacity:${t.inPortfolio ? 1 : 0.7}">
+      <td><b style="color:${t.inPortfolio ? "#3b9dff" : "#eaf6ff"}">${esc(t.symbol)}</b>${t.inPortfolio ? ' <span style="font-size:10px;color:#3b9dff">PORT</span>' : ''}</td>
+      <td style="font-size:11px;color:#9fb3c8">${esc(t.dataset)}</td>
+      <td style="color:${txColor(t.transaction)};font-weight:800;font-size:12px">${txLabel(t.transaction)}</td>
+      <td style="font-size:12px">${esc(t.who || "—")}</td>
+      <td style="font-size:11px;color:#9fb3c8">${esc(t.date || "—")}</td>
+      <td style="font-size:12px;color:#ffd35c">${esc(String(t.amount || "—").slice(0,12))}</td>
+    </tr>`).join("");
+  const polRows = qi.activePoliticians.slice(0,6).map(p =>
+    `<div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;padding:12px;background:rgba(255,255,255,.02)">
+      <div style="font-weight:900;font-size:13px">${esc(p.name)}</div>
+      <div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc(p.party)} · ${p.trades} trades · ${p.buys}🟢 ${p.sales}🔴</div>
+      ${p.portfolioTickers.length ? `<div style="margin-top:4px;font-size:11px;color:#3b9dff">En tu portafolio: ${p.portfolioTickers.join(", ")}</div>` : ""}
+    </div>`).join("");
+  const statCards = [
+    { label: "Congreso Compras", value: qi.congressional.buys, color: "#00ff99" },
+    { label: "Congreso Ventas",  value: qi.congressional.sales, color: "#ff4d6d" },
+    { label: "Insider Compras",  value: qi.insider.buys, color: "#00ff99" },
+    { label: "Insider Ventas",   value: qi.insider.sales, color: "#ff4d6d" },
+    { label: "En mi portafolio", value: qi.congressional.portfolio + qi.insider.portfolio, color: "#3b9dff" },
+    { label: "Externos",         value: qi.congressional.external + qi.insider.external, color: "#9fb3c8" },
+  ];
+  return `<div style="max-width:1280px;margin:0 auto 14px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:16px">
+      ${statCards.map(c => `<div style="border:1px solid ${c.color}22;border-radius:14px;padding:12px;background:${c.color}08;text-align:center">
+        <div style="font-size:22px;font-weight:900;color:${c.color}">${c.value}</div>
+        <div style="font-size:10px;color:#9fb3c8;text-transform:uppercase;margin-top:2px">${esc(c.label)}</div>
+      </div>`).join("")}
+    </div>
+    ${polRows ? `<div style="margin-bottom:14px"><div style="font-size:11px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:10px">Políticos más activos</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">${polRows}</div></div>` : ""}
+    <div class="panel" style="padding:14px">
+      <div style="font-size:11px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:10px">Operaciones recientes (Congreso · Insider · Contratos)</div>
+      ${latestRows ? `<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Fuente</th><th>Tipo</th><th>Quién</th><th>Fecha</th><th>Monto</th></tr></thead><tbody>${latestRows}</tbody></table></div>` : '<div class="muted">Sin operaciones recientes.</div>'}
+      <div style="margin-top:10px;font-size:11px;color:#5a7a9a">${esc(qi.educationalNote)}</div>
+    </div>
+  </div>`;
+}
+
+function renderExternalRadarBySector() {
+  const emi = computeExternalMarketIntelligence();
+  const portSyms = new Set(PORTFOLIO.map(a => a.symbol));
+  const sectorBlocks = emi.sectors.map(s => {
+    const chips = s.tickers.map(t => {
+      const hot = t.quiverSignals > 0;
+      const port = t.inPortfolio;
+      const bg = port ? "rgba(59,157,255,.12)" : hot ? "rgba(0,255,153,.06)" : "transparent";
+      const border = port ? "rgba(59,157,255,.4)" : hot ? "rgba(0,255,153,.35)" : "rgba(120,160,210,.15)";
+      const label = port ? "PORT" : hot ? "Q×" + t.quiverSignals : "";
+      return `<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid ${border};border-radius:8px;padding:4px 10px;font-size:12px;margin:2px 2px;background:${bg}">
+        <b>${esc(t.symbol)}</b>
+        ${label ? `<span style="font-size:10px;color:${port?"#3b9dff":"#00ff99"}">${esc(label)}</span>` : ""}
+        ${t.gainPct != null ? `<span style="font-size:10px;color:${t.gainPct>=0?"#00ff99":"#ff4d6d"}">${pct(t.gainPct)}</span>` : ""}
+      </span>`;
+    }).join("");
+    return `<div style="border:1px solid ${s.color}18;border-radius:18px;padding:14px 16px;background:${s.color}06">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:16px">${s.emoji}</span>
+        <span style="font-size:13px;font-weight:900;color:${s.color}">${esc(s.sector)}</span>
+        ${s.totalQuiver > 0 ? `<span style="border:1px solid ${s.color}44;border-radius:99px;padding:2px 8px;font-size:11px;color:${s.color};margin-left:auto">Q×${s.totalQuiver}</span>` : ""}
+      </div>
+      <div>${chips}</div>
+    </div>`;
+  }).join("");
+  return `<div style="max-width:1280px;margin:0 auto 14px">
+    <div style="font-size:11px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:12px">Radar por sector · azul=en portafolio · verde=señal Quiver · (${emi.watchlistCount} tickers)</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">${sectorBlocks}</div>
+    <div style="margin-top:12px;font-size:11px;color:#4a6a8a">${esc(emi.educationalNote)}</div>
+  </div>`;
+}
+
+function renderDailyBrief() {
+  const nl = computeDailyNewsletter();
+  const pi = nl.portfolio;
+  const gainColor = pi.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  const metrics = [
+    { label: "Patrimonio", value: money(pi.totalValueMXN), sub: `${pct(pi.totalGainPct)} · ${money(pi.totalGainMXN)}`, subColor: gainColor },
+    { label: "Mejor activo", value: pi.best ? pi.best.symbol : "—", sub: pi.best ? `${pi.best.signal} · ${pi.best.score}/100` : "—", subColor: "#9fb3c8", valueColor: "#00ff99" },
+    { label: "Más débil",   value: pi.worst ? pi.worst.symbol : "—", sub: pi.worst ? `${pct(pi.worst.gainPct)} · score ${pi.worst.score}` : "—", subColor: "#9fb3c8", valueColor: "#ff4d6d" },
+    { label: "Vigilar hoy", value: pi.riskAssets.length ? pi.riskAssets.slice(0,2).map(a=>a.symbol).join(", ") : "OK", sub: pi.riskAssets.length ? `${pi.riskAssets.length} en zona de riesgo` : "Sin alertas críticas", subColor: pi.riskAssets.length ? "#ff4d6d" : "#00ff99", valueColor: pi.riskAssets.length ? "#ffd35c" : "#00ff99" },
+    { label: "Externos calientes", value: nl.external.hotCount > 0 ? String(nl.external.hotCount) + " tickers" : "—", sub: nl.external.topSectors.slice(0,2).join(", ") || "Sin señales Quiver", subColor: "#9fb3c8", valueColor: "#3b9dff" },
+    { label: "Quiver", value: nl.quiver.configured === false ? "PENDIENTE" : (nl.quiver.congressional ? nl.quiver.congressional.buys + "C/" + nl.quiver.congressional.sales + "V" : "—"), sub: nl.quiver.configured === false ? "Agrega QUIVER_API_KEY" : "Congreso · Insiders", subColor: "#9fb3c8", valueColor: nl.quiver.configured === false ? "#ffd35c" : "#00ff99" },
+  ];
+  return `<div style="max-width:1280px;margin:16px auto 4px;border:1px solid rgba(120,160,210,.18);border-radius:28px;overflow:hidden;background:linear-gradient(135deg,rgba(7,16,30,.92),rgba(2,4,10,.97));box-shadow:0 8px 48px rgba(0,0,0,.45)">
+    <div style="background:linear-gradient(90deg,rgba(0,255,153,.1),rgba(59,157,255,.1),rgba(255,211,92,.08));padding:13px 24px;border-bottom:1px solid rgba(120,160,210,.1);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>
+        <span style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8">CORDELIUS DAILY BRIEF</span>
+        <div style="font-size:13px;color:#4a6a8a;margin-top:2px">${esc(nl.date)}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="border:1px solid rgba(59,157,255,.3);border-radius:99px;padding:4px 12px;font-size:12px;font-weight:800;color:${pi.regime === "ALCISTA" ? "#00ff99" : pi.regime === "BAJISTA" ? "#ff4d6d" : "#ffd35c"}">${esc(pi.regime)}</span>
+        <span style="border:1px solid rgba(120,160,210,.2);border-radius:99px;padding:4px 12px;font-size:12px;color:#9fb3c8">Cripto ${pi.concentration.criptoPct}%${pi.concentration.alert ? " ⚠" : ""}</span>
+        <span style="border:1px solid rgba(120,160,210,.2);border-radius:99px;padding:4px 12px;font-size:12px;color:#9fb3c8">${pi.assetCount} activos</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+      ${metrics.map((m, i) => `<div style="padding:15px 18px;${i < metrics.length-1 ? "border-right:1px solid rgba(120,160,210,.07)" : ""}">
+        <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#9fb3c8;margin-bottom:4px">${esc(m.label)}</div>
+        <div style="font-size:18px;font-weight:900;color:${m.valueColor || "#eaf6ff"}">${esc(String(m.value))}</div>
+        <div style="font-size:11px;color:${m.subColor || "#9fb3c8"};margin-top:2px">${esc(m.sub)}</div>
+      </div>`).join("")}
+    </div>
+    <div style="padding:10px 24px;background:rgba(0,0,0,.22);border-top:1px solid rgba(120,160,210,.07)">
+      <div style="font-size:12px;color:#5a7a9a;font-style:italic;margin-bottom:6px">Buenos días Pedro — esto es lo importante hoy:</div>
+      <div style="display:flex;flex-direction:column;gap:3px">${nl.lines.slice(0,-1).map(l => `<div style="font-size:12px;color:#9fb3c8">· ${esc(l)}</div>`).join("")}</div>
+    </div>
+  </div>`;
+}
+
+function renderAccountSummary(source, assets) {
+  if (!assets.length) return "";
+  const totalValue = assets.reduce((s, a) => s + a.valueMXN, 0);
+  const totalCost = assets.reduce((s, a) => s + a.costMXN, 0);
+  const totalGain = totalValue - totalCost;
+  const totalGainPct = totalCost > 0 ? (totalGain / totalCost * 100) : 0;
+  const sorted = assets.slice().sort((a, b) => b.score - a.score);
+  const topAsset = sorted[0], weakAsset = sorted[sorted.length - 1];
+  const hasRisk = assets.some(a => a.risk === "ALTO");
+  const gainColor = totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  const colors = { GBM: "#3b9dff", Plata: "#00ff99", Bitso: "#f59e0b" };
+  const color = colors[source] || "#9fb3c8";
+  return `<div style="border:1px solid ${color}22;border-radius:18px;padding:14px 20px;margin-bottom:10px;background:linear-gradient(135deg,${color}07,rgba(0,0,0,0));display:grid;grid-template-columns:80px 1fr auto auto auto;gap:14px;align-items:center">
+    <div style="font-size:16px;font-weight:900;color:${color}">${esc(source)}</div>
+    <div>
+      <div style="font-size:20px;font-weight:900">${money(totalValue)}</div>
+      <div style="font-size:12px;color:${gainColor}">${pct(totalGainPct)} · ${money(totalGain)}</div>
+    </div>
+    <div style="text-align:center"><div style="font-size:10px;color:#9fb3c8;text-transform:uppercase;margin-bottom:2px">Mejor</div><div style="font-weight:900;color:#00ff99">${esc(topAsset.symbol)}</div><div style="font-size:11px;color:#9fb3c8">${topAsset.score}/100</div></div>
+    <div style="text-align:center"><div style="font-size:10px;color:#9fb3c8;text-transform:uppercase;margin-bottom:2px">Débil</div><div style="font-weight:900;color:#ff4d6d">${esc(weakAsset.symbol)}</div><div style="font-size:11px;color:#9fb3c8">${weakAsset.score}/100</div></div>
+    <div style="text-align:right"><div style="font-size:10px;color:#9fb3c8;text-transform:uppercase;margin-bottom:2px">Riesgo</div><div style="font-weight:900;color:${hasRisk ? "#ff4d6d" : "#00ff99"}">${hasRisk ? "ALTO" : "OK"}</div></div>
+  </div>`;
+}
+
+function computeTradeIdea() {
+  const pv = portfolioValue();
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  const tp = ranked.find(a => a.gainPct > 80 && a.score > 55);
+  if (tp) return { hasIdea: true, type: "TAKE_PROFIT", symbol: tp.symbol, action: "TOMA GANANCIA PARCIAL (hipotético)", reason: `+${tp.gainPct.toFixed(0)}% ganancia acumulada`, score: tp.score, risk: tp.risk, confidence: "MODERADA", source: "portfolio", missingData: "Confirmación tendencia sectorial + volumen real", timestamp: nowMX() };
+  const rd = ranked.find(a => a.score < 30 && a.gainPct < -15);
+  if (rd) return { hasIdea: true, type: "REDUCE_RISK", symbol: rd.symbol, action: "REDUCIR RIESGO (hipotético)", reason: `Score ${rd.score}/100 · caída ${pct(rd.gainPct)} · riesgo ${rd.risk}`, score: rd.score, risk: rd.risk, confidence: "ALTA", source: "portfolio", missingData: "Tesis de recuperación documentada", timestamp: nowMX() };
+  const bd = ranked.find(a => a.signal && a.signal.includes("BUY") && a.gainPct < -3 && a.score > 45);
+  if (bd) return { hasIdea: true, type: "BUY_DIP", symbol: bd.symbol, action: "BUY DIP (hipotético)", reason: `Score ${bd.score}/100 · caída ${pct(bd.gainPct)} · señal ${bd.signal}`, score: bd.score, risk: bd.risk, confidence: "BAJA", source: "portfolio", missingData: "Volumen real + confirmación Quiver", timestamp: nowMX() };
+  const wt = ranked.find(a => a.gainPct > 20 && a.score > 60);
+  if (wt) return { hasIdea: true, type: "WATCH", symbol: wt.symbol, action: "MANTENER Y VIGILAR", reason: `Score ${wt.score}/100 · ganancia ${pct(wt.gainPct)} · ${wt.signal}`, score: wt.score, risk: wt.risk, confidence: "NEUTRAL", source: "portfolio", missingData: "N/A — posición sólida", timestamp: nowMX() };
+  return { hasIdea: false, type: "NO_TRADE", symbol: null, action: "SIN SEÑAL", reason: "Sin señales destacadas ahora", score: null, risk: null, confidence: "N/A", source: null, missingData: "N/A", timestamp: nowMX() };
+}
+
+function computeOperatingMode(recovery) {
+  if (recovery === null || recovery === undefined) return "NORMAL";
+  if (recovery < 33) return "CONSERVADOR";
+  if (recovery >= 67) return "NORMAL";
+  return "NEUTRAL";
+}
+
+function computeHealthReadiness() {
+  return {
+    ok: true,
+    configured: WHOOP_CONFIGURED,
+    source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "whoop_pending",
+    recovery: null,
+    sleep: null,
+    strain: null,
+    hrv: null,
+    restingHeartRate: null,
+    operatingMode: computeOperatingMode(null),
+    message: WHOOP_CONFIGURED
+      ? "WHOOP API key detectada — implementación de datos en progreso."
+      : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
+    suggestion: "usa modo neutral",
+    educationalNote: "No es consejo médico. Sirve para contexto personal."
+  };
+}
+
+function renderTradingAIStatus() {
+  return `<div style="max-width:1280px;margin:0 auto 8px;border:1px solid rgba(255,211,92,.18);border-radius:24px;padding:18px 22px;background:linear-gradient(135deg,rgba(255,211,92,.04),rgba(59,157,255,.04))">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div>
+        <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">TRADING AI · PAPER MODE</div>
+        <div style="color:#9fb3c8;font-size:13px;margin-top:2px">Simulación educativa — sin dinero real — Alpaca pendiente de conexión</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <span style="border:1px solid rgba(255,211,92,.3);border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;color:#ffd35c">PAPER ONLY</span>
+        <span style="border:1px solid rgba(120,160,210,.15);border-radius:99px;padding:4px 13px;font-size:12px;color:#9fb3c8">Alpaca: pendiente</span>
+      </div>
+    </div>
+    <div class="grid" style="margin:0;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">${renderBotMetricCards()}</div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(120,160,210,.07);display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <a class="btn" href="/bot/start" style="font-size:13px;padding:7px 14px">▶ Start</a>
+      <a class="btn" href="/bot/pause" style="font-size:13px;padding:7px 14px">⏸ Pause</a>
+      <a class="btn" href="/bot/reset" style="font-size:13px;padding:7px 14px">↺ Reset</a>
+      <span class="muted" style="font-size:12px">PAPER TRADING / SIMULACIÓN — NO USA DINERO REAL</span>
+    </div>
+  </div>`;
+}
+
+function renderPaperTradingPanel() {
+  const idea = computeTradeIdea();
+  const bt = renderBotTables();
+  return `<div style="max-width:1280px;margin:0 auto 16px">
+    ${idea.hasIdea ? `<div style="border:1px solid rgba(0,255,153,.18);border-radius:18px;padding:14px 20px;margin-bottom:14px;background:rgba(0,255,153,.03)">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99;margin-bottom:8px">Idea de paper trade (hipotético — no ejecutar)</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <b style="font-size:20px">${esc(idea.symbol)}</b>
+        <span style="color:#00ff99;font-weight:700">${esc(idea.action)}</span>
+        <span class="muted" style="font-size:13px">${esc(idea.reason)}</span>
+      </div>
+    </div>` : ""}
+    ${spark(bot.equityHistory, { key: "v", color: "#00ff99", height: 220 })}
+    <h2 style="font-size:18px;margin:16px 0 8px">Posiciones simuladas</h2>
+    <div class="panel table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${bt.posRows}</tbody></table></div>
+    <h2 style="font-size:18px;margin:16px 0 8px">Bitácora del bot</h2>
+    <div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razón</th></tr></thead><tbody>${bt.histRows}</tbody></table></div>
+  </div>`;
+}
+
+function renderMorningReport() {
+  const nl = computeDailyNewsletter();
+  const idea = computeTradeIdea();
+  const h = computeHealthReadiness();
+  const lines = nl.lines.slice(0, 3);
+  const ideaHtml = idea.hasIdea
+    ? `<div style="margin-top:10px;padding:9px 13px;background:rgba(0,255,153,.06);border:1px solid rgba(0,255,153,.15);border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99">IDEA PAPER</span>
+        <b style="font-size:13px">${esc(idea.symbol)}</b>
+        <span style="color:#00ff99;font-weight:700;font-size:13px">${esc(idea.type)}</span>
+        <span class="muted" style="font-size:12px">${esc(idea.reason)}</span>
+      </div>`
+    : `<div style="margin-top:10px;padding:7px 12px;background:rgba(120,160,210,.05);border-radius:8px;color:#9fb3c8;font-size:12px">Sin idea de trade destacada hoy.</div>`;
+  const healthHtml = `<div style="margin-top:10px;padding:9px 13px;background:rgba(244,114,182,.05);border:1px solid rgba(244,114,182,.15);border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6">ESTADO PERSONAL</span>
+    <span style="color:#ffd35c;font-weight:700;font-size:13px">${esc(h.operatingMode)}</span>
+    <span class="muted" style="font-size:12px">${esc(h.suggestion)}</span>
+    <span style="background:${h.configured ? "rgba(0,255,153,.12)" : "rgba(255,211,92,.10)"};color:${h.configured ? "#00ff99" : "#ffd35c"};border-radius:99px;padding:2px 9px;font-size:11px;font-weight:700">WHOOP ${h.configured ? "ON" : "PENDIENTE"}</span>
+  </div>`;
+  return `<div style="max-width:1280px;margin:0 auto 12px">
+    <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04);padding:16px 20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff">Morning Report — ${esc(nl.date)}</div>
+          <div style="font-size:14px;color:#dbeafe;font-weight:600;margin-top:3px">${esc(nl.greeting)}</div>
+        </div>
+        <a href="/api/morning-report" target="_blank" style="font-size:11px;color:#3b9dff;text-decoration:none;border:1px solid rgba(59,157,255,.25);border-radius:99px;padding:4px 11px">JSON</a>
+      </div>
+      <ul style="margin:0;padding-left:16px;list-style:disc">
+        ${lines.map(l => `<li style="margin-bottom:5px;color:#c8d8f0;font-size:13px">${esc(l)}</li>`).join("")}
+      </ul>
+      ${ideaHtml}
+      ${healthHtml}
+    </div>
+  </div>`;
+}
+
+function renderAutopilotPanel() {
+  const statusCards = [
+    { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
+    { label: "CLOUDFLARE",   value: "MANUAL",   sub: "bash tunnel.sh",    bg: "rgba(255,211,92,.07)",   border: "rgba(255,211,92,.18)",   color: "#ffd35c" },
+    { label: "PAPER MODE",   value: "ON",       sub: "Sin dinero real",   bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
+    { label: "REAL TRADING", value: "OFF",      sub: "Desactivado",       bg: "rgba(255,77,109,.07)",   border: "rgba(255,77,109,.18)",   color: "#ff4d6d" },
+    { label: "QUIVER",       value: quiverData.configured ? "ON" : "—",  sub: quiverData.configured ? "Datos en vivo" : "Agrega API key", bg: quiverData.configured ? "rgba(0,255,153,.07)" : "rgba(255,211,92,.07)", border: quiverData.configured ? "rgba(0,255,153,.18)" : "rgba(255,211,92,.18)", color: quiverData.configured ? "#00ff99" : "#ffd35c" },
+    { label: "ALPACA",       value: "PENDIENTE",sub: "Paper solo (F3)",   bg: "rgba(129,140,248,.07)",  border: "rgba(129,140,248,.18)",  color: "#818cf8" },
+    { label: "WHOOP",        value: WHOOP_CONFIGURED ? "DETECTADO" : "PENDIENTE", sub: WHOOP_CONFIGURED ? "API key lista" : "Conecta para readiness", bg: WHOOP_CONFIGURED ? "rgba(0,255,153,.07)" : "rgba(244,114,182,.07)", border: WHOOP_CONFIGURED ? "rgba(0,255,153,.18)" : "rgba(244,114,182,.18)", color: WHOOP_CONFIGURED ? "#00ff99" : "#f472b6" },
+  ];
+  return `<div style="max-width:1280px;margin:0 auto 16px">
+    <div class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.04)">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Autopilot — Estado del sistema</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
+        ${statusCards.map(c => `<div style="background:${c.bg};border:1px solid ${c.border};border-radius:12px;padding:10px 12px;text-align:center">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:${c.color};margin-bottom:3px">${c.label}</div>
+          <div style="font-size:16px;font-weight:900;color:${c.color}">${c.value}</div>
+          <div class="muted" style="font-size:10px;margin-top:2px">${c.sub}</div>
+        </div>`).join("")}
+      </div>
+      <div style="border-top:1px solid rgba(120,160,210,.08);padding-top:10px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${["health_check.sh","restart_safe.sh","morning_report.sh","final_check.sh"].map(s =>
+            `<span style="border:1px solid rgba(129,140,248,.22);border-radius:99px;padding:3px 10px;font-size:11px;font-family:monospace;color:#818cf8">bash scripts/${esc(s)}</span>`
+          ).join("")}
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px">Próximo: Termux:Boot — ver AUTOMATION.md</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderHealthReadinessPanel() {
+  const h = computeHealthReadiness();
+  const metrics = [
+    { label: "Recovery",      value: h.recovery       !== null ? h.recovery + "%" : "—",  color: "#9fb3c8" },
+    { label: "Sleep",         value: h.sleep          !== null ? h.sleep + "%" : "—",     color: "#9fb3c8" },
+    { label: "Strain",        value: h.strain         !== null ? String(h.strain) : "—",  color: "#9fb3c8" },
+    { label: "HRV",           value: h.hrv            !== null ? h.hrv + " ms" : "—",     color: "#9fb3c8" },
+    { label: "Resting HR",    value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
+    { label: "Modo Operativo",value: h.operatingMode, color: "#ffd35c" },
+  ];
+  return `<div style="max-width:1280px;margin:0 auto 12px">
+    <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+        <div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health Readiness</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · educativo</div>
+        </div>
+        <span style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        ${metrics.map(m =>
+          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:90px">
+            <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
+            <div style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
+          </div>`
+        ).join("")}
+      </div>
+      <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
+        ${esc(h.message)}
+        <span class="muted" style="margin-left:8px;font-size:12px">Sugerencia: <b style="color:#ffd35c">${esc(h.suggestion)}</b></span>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
+    </div>
+  </div>`;
+}
+
+function renderPortfolioSnapshot(pv, reg) {
+  const best = pv.assets.slice().sort((a, b) => b.score - a.score)[0];
+  const cripto = pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
+  const gainColor = pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  return `<div style="background:var(--panel);border:1px solid rgba(59,157,255,.2);border-radius:20px;padding:16px 20px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Portfolio Snapshot</div>
+    <div style="font-size:28px;font-weight:900;color:${gainColor};line-height:1">${money(pv.totalValueMXN)}</div>
+    <div style="font-size:13px;color:${gainColor};margin:4px 0 10px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <span style="background:rgba(255,211,92,.1);border:1px solid rgba(255,211,92,.2);border-radius:99px;padding:3px 10px;font-size:11px;color:#ffd35c">${esc(reg.label)}</span>
+      <span style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:99px;padding:3px 10px;font-size:11px;color:#9fb3c8">Cripto ${criptoPct.toFixed(0)}%</span>
+      ${best ? `<span style="background:rgba(0,255,153,.08);border:1px solid rgba(0,255,153,.2);border-radius:99px;padding:3px 10px;font-size:11px;color:#00ff99">Top: ${esc(best.symbol)} ${best.score}/100</span>` : ""}
+      <span style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:99px;padding:3px 10px;font-size:11px;color:#9fb3c8">${pv.assets.length} activos</span>
+    </div>
+  </div>`;
+}
+
+function renderExecutiveHub(pv, reg) {
+  const h = computeHealthReadiness();
+  const idea = computeTradeIdea();
+  const nl = computeDailyNewsletter();
+  const modules = [
+    { label: "PORTAFOLIO",    value: money(pv.totalValueMXN), sub: pct(pv.totalGainPct), color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d", href: "#portfolio" },
+    { label: "MERCADO",       value: esc(reg.label),           sub: pct(reg.avg),         color: reg.color,  href: "#vigilar" },
+    { label: "PAPER TRADE",   value: idea.hasIdea ? esc(idea.type) : "SIN SEÑAL", sub: idea.hasIdea ? esc(idea.symbol || "") : "", color: idea.hasIdea ? "#00ff99" : "#9fb3c8", href: "#bot" },
+    { label: "HEALTH",        value: h.configured ? "WHOOP ON" : "SIN DATOS",    sub: esc(h.operatingMode), color: h.configured ? "#00ff99" : "#9fb3c8", href: "#health" },
+    { label: "QUIVER",        value: quiverData.configured ? "LIVE" : "PENDIENTE", sub: quiverData.configured ? "Datos institucionales" : "Agrega API key", color: quiverData.configured ? "#00ff99" : "#ffd35c", href: "#quiver" },
+  ];
+  return `<div style="max-width:1280px;margin:0 auto 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+    ${modules.map(m => `<a href="${m.href}" style="text-decoration:none">
+      <div style="background:var(--panel);border:1px solid rgba(120,160,210,.14);border-radius:16px;padding:14px 16px;transition:.2s" onmouseover="this.style.borderColor='${m.color}40'" onmouseout="this.style.borderColor='rgba(120,160,210,.14)'">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">${m.label}</div>
+        <div style="font-size:17px;font-weight:900;color:${m.color};line-height:1.1">${m.value}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:4px">${m.sub}</div>
+      </div>
+    </a>`).join("")}
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -1709,10 +2411,9 @@ h2{max-width:1280px;margin:34px auto 14px;font-size:26px;background:linear-gradi
 .brain-lines{position:absolute;inset:0;width:100%;height:100%}
 .brain-lines path{fill:none;stroke:#00ff99;stroke-width:2.4;stroke-linecap:round;stroke-dasharray:12 12;animation:dash 3s linear infinite;opacity:.75;filter:drop-shadow(0 0 8px #00ff99)}
 @keyframes dash{to{stroke-dashoffset:-90}}
-.brain-node{position:absolute;display:grid;place-items:center;min-width:56px;height:36px;padding:0 10px;border-radius:999px;font-weight:900;font-size:13px;border:1px solid rgba(120,160,210,.22);background:rgba(8,18,36,.9);box-shadow:0 0 22px rgba(59,157,255,.3);z-index:3}
+.brain-node{position:absolute;display:grid;place-items:center;min-width:52px;height:32px;padding:0 9px;border-radius:999px;font-weight:900;font-size:11px;border:1px solid rgba(120,160,210,.22);background:rgba(8,18,36,.92);box-shadow:0 0 18px rgba(59,157,255,.28);z-index:3}
 .brain-node .pulse{position:absolute;inset:-4px;border-radius:999px;border:1px solid rgba(0,255,153,.4);animation:ping 2.4s ease-out infinite}
 @keyframes ping{0%{transform:scale(1);opacity:.7}100%{transform:scale(1.6);opacity:0}}
-.n0{left:9%;top:16%}.n1{left:25%;top:8%}.n2{left:44%;top:20%}.n3{left:68%;top:11%}.n4{left:12%;top:52%}.n5{left:34%;top:44%}.n6{left:55%;top:52%}.n7{left:76%;top:45%}.n8{left:18%;top:78%}.n9{left:44%;top:76%}.n10{left:65%;top:74%}.n11{left:82%;top:72%}
 .brain-feed{display:flex;flex-direction:column;gap:10px}.feed-title{font-size:22px;font-weight:900}
 .thought{border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.04);padding:12px;border-radius:14px;color:#dbeafe;animation:fade .5s ease}
 .thought small{display:block;color:var(--muted);margin-top:5px}.thought b{color:#9bd3ff}
@@ -1767,11 +2468,11 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 
 <header>
   <div class="logo-wrap">
-    <div class="app-icon">C<span style="font-size:0.65em;vertical-align:super">Δ</span></div>
+    <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
     <div><h1>${esc(settings.appName)}</h1><div class="subtitle">CORDΞLIUS · Trading · Intelligence · Law · Alfredo AI</div></div>
   </div>
   <nav>
-    <a href="#home">Inicio</a><a href="#vigilar">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#intelligence">Intelligence</a><a href="#radar">Trading AI</a><a href="#portfolio">Portafolio</a><a href="#quiver">Quiver</a><a href="#chart">Graficas</a><a href="#alfredo">Alfredo AI</a><a href="#modulos">Law / Help</a><a href="#system">Sistema</a>
+    <a href="#home">Inicio</a><a href="#health">Health</a><a href="#vigilar">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#intelligence">Intelligence</a><a href="#radar">Trading AI</a><a href="#portfolio">Portafolio</a><a href="#quiver">Quiver</a><a href="#chart">Graficas</a><a href="#alfredo">Alfredo AI</a><a href="#modulos">Law / Help</a><a href="#system">Sistema</a>
   </nav>
 </header>
 
@@ -1783,18 +2484,16 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </div>
 
 <a id="home"></a>
-<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-bottom:8px">
-  <a href="#portfolio" style="text-decoration:none"><div class="card" style="border-color:rgba(59,157,255,.35);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,0,0,0))"><div class="label">Trading</div><div class="big blue" style="font-size:26px">Portafolio</div><div class="muted">Activos · Scan Diario · Quiver · Bot ficticio</div></div></a>
-  <a href="#intelligence" style="text-decoration:none"><div class="card" style="border-color:rgba(0,255,153,.35);background:linear-gradient(135deg,rgba(0,255,153,.08),rgba(0,0,0,0))"><div class="label">Intelligence</div><div class="big green" style="font-size:26px">Radar</div><div class="muted">Intel manual · Trading político · Market Radar</div></div></a>
-  <a href="#modulos" style="text-decoration:none"><div class="card" style="border-color:rgba(255,211,92,.35);background:linear-gradient(135deg,rgba(255,211,92,.08),rgba(0,0,0,0))"><div class="label">Law</div><div class="big yellow" style="font-size:26px">Cordelius Law</div><div class="muted">Cuaderno jurídico · casos · apuntes (próximo)</div></div></a>
-  <a href="#alfredo" style="text-decoration:none"><div class="card" style="border-color:rgba(129,140,248,.35);background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(0,0,0,0))"><div class="label">Alfredo AI</div><div class="big" style="font-size:26px;color:#818cf8">Asistente</div><div class="muted">Preguntas · análisis educativo · chat</div></div></a>
-</div>
-
-<div class="grid">
-  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;var estado=cp>45?"AGRESIVO":(cp<20?"DEFENSIVO":"NEUTRAL");var ec=estado==="AGRESIVO"?"#ff4d6d":(estado==="DEFENSIVO"?"#00ff99":"#ffd35c");function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card"><div class="label">Estado general</div><div class="big" style="color:${ec}">${estado}</div><div class="muted">Cripto ${cp.toFixed(0)}% · educativo, no asesoria</div></div><div class="card"><div class="label">Exposicion por plataforma</div><div>GBM ${pp(gbm)}</div><div>Plata ${pp(plata)}</div><div>Bitso ${pp(bitso)}</div></div><div class="card"><div class="label">Exposicion por divisa</div><div>USD ${pp(plata)}</div><div>MXN ${pp(gbm+bitso)}</div><div>Cripto ${pp(bitso)}</div></div><div class="card"><div class="label">Tipo de cambio</div><div class="big">$${FX_USD_MXN.toFixed(2)}</div><div class="muted">USD a MXN · .env USD_MXN o fallback · ${nowMX()}</div></div>`;})()}<div class="card"><div class="label">Patrimonio total estimado</div><div class="big green glow">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div>
-  <div class="card"><div class="label">Regimen</div><div class="big" style="color:${reg.color}">${esc(reg.label)}</div><div class="muted">${pct(reg.avg)} · ${esc(reg.detail)}</div></div>
-  <div class="card"><div class="label">Mejor score</div><div class="big green">${esc(best.symbol)}</div><div>${esc(best.signal)} · ${best.score}/100</div></div>
-  <div class="card"><div class="label">Mas debil</div><div class="big red">${esc(worst.symbol)}</div><div>${esc(worst.signal)} · ${worst.score}/100</div></div>
+${renderDailyBrief()}
+${renderExecutiveHub(pv, reg)}
+${renderMorningReport()}
+<a id="health"></a>
+${renderHealthReadinessPanel()}
+<div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
+  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
 
 <a id="chart"></a><h2>Graficas — portafolio + TradingView</h2>
@@ -1814,8 +2513,12 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
     <span class="btn" style="font-size:13px;padding:6px 14px">Abrir chat ▾</span>
   </summary>
   <div style="padding:16px 20px 20px">
-    <div class="muted" style="margin-bottom:12px;font-size:13px">Preguntas útiles: "riesgo", "que vendo", "comprar", "vigilar", "quiver", "radar", "intel", "bot"  ·  Apaga Thinking Mode para no gastar Claude.</div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+      ${["Qué vigilar hoy","Morning report con salud","Modo operativo hoy","Analiza mi portafolio","Stocks externos calientes","Congreso e insiders"].map(q =>
+        `<button onclick="document.querySelector('[name=q]').value='${q}'" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
+      ).join("")}
+    </div>
+    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
     <div style="max-height:480px;overflow-y:auto;margin-top:12px">
       ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
     </div>
@@ -1823,7 +2526,15 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </details></div>
 
 <a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
-${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-top:22px">${esc(k)}</h2>${renderPortfolioRows(list)}`).join("")}
+${(function(){
+  const bySource = {};
+  for (const a of assets) { bySource[a.source] = bySource[a.source] || []; bySource[a.source].push(a); }
+  return Object.entries(bySource).map(([src, list]) =>
+    renderAccountSummary(src, list)
+    + `<h2 style="font-size:18px;margin:6px 0 8px;color:#9fb3c8">${esc(src)} · ${[...new Set(list.map(a => a.category))].join(", ")}</h2>`
+    + renderPortfolioRows(list)
+  ).join("");
+})()}
 
 <h2>Ranking Alfredo — score · riesgo · señal educativa</h2>
 <div class="ranking">${ranked.map((a, i) => {
@@ -1851,25 +2562,15 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
 
 <a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
-<a id="bot"></a><h2>Trading AI ficticio — laboratorio</h2>
-<div class="grid">
-  ${renderBotMetricCards()}
-</div>
-<div class="panel">
-  <a class="btn" href="/bot/start">Start</a> <a class="btn" href="/bot/pause">Pause</a> <a class="btn" href="/bot/reset">Reset</a>
-  <p class="muted">PAPER TRADING / SIMULACION — NO USA DINERO REAL. Simula tendencia, score, riesgo, tamano y salida.</p>
-  ${spark(bot.equityHistory, { key: "v", color: "#00ff99", height: 240 })}
-</div>
-<h2>Posiciones simuladas</h2>
-<div class="panel table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${botTables.posRows}</tbody></table></div>
-<h2>Bitacora del bot</h2>
-<div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razon</th></tr></thead><tbody>${botTables.histRows}</tbody></table></div>
+<a id="bot"></a><h2>Trading AI — Paper Mode · Laboratorio ficticio</h2>
+${renderTradingAIStatus()}
+${renderPaperTradingPanel()}
 
-<a id="vigilar"></a><h2>Trading AI — Radar externo · Stocks calientes</h2>
-${renderExternalRadar()}
+<a id="vigilar"></a><h2>Radar Externo — Stocks calientes por sector</h2>
+${renderExternalRadarBySector()}
 
-<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
-${renderQuiverPanel()}
+<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos · Políticos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
+${renderQuiverIntelligencePanel()}
 
 <a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
 
@@ -1934,6 +2635,9 @@ ${(function(){
     + (hot.length ? '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Score</th><th>Quiver</th><th>Señal</th></tr></thead><tbody>' + hotRows + '</tbody></table></div>' : '<div class="muted">Sin señales activas en watchlist.</div>')
     + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
 })()}
+
+<a id="autopilot"></a><h2>Autopilot — Estado del sistema · Automatización</h2>
+${renderAutopilotPanel()}
 
 <a id="modulos"></a><h2>Modulos Cordelius (proximamente)</h2><div class="grid"><div class="card"><div class="label">Cordelius Health</div><div class="big" style="color:#818cf8">Proximamente</div><div class="muted">WHOOP API: sueno, HRV, recuperacion, habitos (pendiente)</div></div><div class="card"><div class="label">Cordelius Law</div><div class="big" style="color:#ffd35c">Proximamente</div><div class="muted">Cuaderno juridico, apuntes, casos (pendiente)</div></div><div class="card"><div class="label">Cordelius Intelligence</div><div class="big" style="color:#3b9dff">Grok / X manual</div><div class="muted">Pegar analisis de X o Grok (pendiente P2)</div></div><div class="card"><div class="label">Asia / China Tech</div><div class="big" style="color:#00ff99">Radar</div><div class="muted">Chips, cobre, IA, energia (pendiente, sin fuente)</div></div><div class="card"><div class="label">Alpaca</div><div class="big" style="color:#ffd35c">Pendiente</div><div class="muted">Solo paper trading futuro, sin ordenes reales</div></div></div><a id="system"></a><h2>Sistema</h2>
 <div class="grid">
@@ -2102,6 +2806,92 @@ const server = http.createServer(async (req, res) => {
   if (path === "/api/intelligence") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(computeIntelligence()));
+  }
+  if (path === "/api/daily-brief") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeDailyNewsletter()));
+  }
+  if (path === "/api/market-intelligence") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    const pi = computePortfolioIntelligence();
+    const emi = computeExternalMarketIntelligence();
+    const qi = computeQuiverIntelligence();
+    const st = computeSectorThemes();
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), portfolio: pi, external: emi, quiver: qi, sectors: st }));
+  }
+  if (path === "/api/external-radar") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeExternalMarketIntelligence()));
+  }
+  if (path === "/api/paper/status") {
+    const idea = computeTradeIdea();
+    const m = botMetrics();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), paperMode: true, realTrading: false, alpacaConnected: false, alpacaStatus: "PENDIENTE", idea, botMetrics: m, disclaimer: "PAPER TRADING / SIMULACION — NO USA DINERO REAL" }));
+  }
+  if (path === "/api/morning-report") {
+    const nl = computeDailyNewsletter();
+    const pv = portfolioValue();
+    const idea = computeTradeIdea();
+    const qi = computeQuiverIntelligence();
+    const h = computeHealthReadiness();
+    const m = botMetrics();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      date: nl.date,
+      greeting: nl.greeting,
+      summary: nl.fullSummary,
+      newsletterLines: nl.lines,
+      portfolio: {
+        totalValueMXN: pv.totalValueMXN,
+        totalCostMXN: pv.totalCostMXN,
+        totalGainMXN: pv.totalGainMXN,
+        totalGainPct: pv.totalGainPct,
+        assetCount: pv.assets.length
+      },
+      tradeIdea: idea,
+      healthReadiness: h,
+      operatingMode: h.operatingMode,
+      quiver: { configured: qi.configured },
+      paperMode: { active: true, realTrading: false, alpacaConnected: false, botMetrics: m },
+      autopilot: {
+        serverOnline: true,
+        paperMode: true,
+        realTrading: false,
+        whoop: WHOOP_CONFIGURED,
+        quiver: quiverData.configured,
+        alpaca: false
+      },
+      nextActions: [
+        h.configured ? "Revisar recovery score en WHOOP" : "Conectar WHOOP para readiness",
+        idea.hasIdea ? `Evaluar idea paper: ${idea.type} en ${idea.symbol}` : "Sin trade idea activa hoy",
+        quiverData.configured ? "Revisar actividad Quiver" : "Agregar QUIVER_API_KEY para datos institucionales"
+      ],
+      automation: {
+        scripts: ["health_check.sh", "restart_safe.sh", "morning_report.sh", "final_check.sh"],
+        reportsDir: "reports/",
+        cloudReady: true,
+        disclaimer: "PAPER TRADING / EDUCATIVO — SIN ORDENES REALES"
+      }
+    }));
+  }
+  if (path === "/api/health-readiness") {
+    const h = computeHealthReadiness();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: h.ok,
+      configured: h.configured,
+      source: h.source,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      strain: h.strain,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      operatingMode: h.operatingMode,
+      educationalNote: h.educationalNote
+    }));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
