@@ -43,6 +43,7 @@ let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
+let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
 const FX_USD_MXN = Number(process.env.USD_MXN) || 18.50;
 
@@ -216,48 +217,90 @@ function savePortfolioPoint() {
   saveJSON(HISTORY_FILE, portfolioHistory);
 }
 
-// ---- CHART SVG TIPO TRADINGVIEW (con eje, max, min, area) ----
+// ---- CHART SVG — ejes visibles, tooltips, tabla de datos ----
 function spark(data, opts = {}) {
   const key = opts.key || "total";
   const color = opts.color || "#3b9dff";
   const height = opts.height || 260;
-  let vals = (data || []).map(x => typeof x === "number" ? x : Number(x[key])).filter(Number.isFinite);
-  if (vals.length < 2) vals = [0, 1, 0.7, 1.4, 1.1, 1.8, 1.55];
+  const showTable = opts.showTable !== false; // default true for big charts
+  let rawData = (data || []).map(x => typeof x === "number" ? { v: x, t: null } : { v: Number(x[key]), t: x.t || null }).filter(d => Number.isFinite(d.v));
+  if (rawData.length < 2) rawData = [0.92, 0.96, 0.87, 1.05, 1.0, 1.1, 1.06, 1.18, 1.14, 1.22].map(v => ({ v, t: null }));
+  const vals = rawData.map(d => d.v);
   const min = Math.min(...vals), max = Math.max(...vals);
-  const padTop = 28, padBottom = 34, plotH = height - padTop - padBottom;
-  const gid = "g" + Math.floor(Math.random() * 999999);
-  const xy = vals.map((v, i) => {
-    const x = 56 + (i / Math.max(1, vals.length - 1)) * 900;
-    const y = padTop + (1 - ((v - min) / (max - min || 1))) * plotH;
-    return [x, y];
-  });
-  const pts = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
-  const area = "56," + (height - padBottom) + " " + pts + " 956," + (height - padBottom);
+  const range = max - min || 1;
+  const padTop = 28, padBottom = 40, padLeft = 72, plotH = height - padTop - padBottom;
+  const plotW = 940;
+  const gid = "g" + Math.floor(Math.random() * 9999999);
+  const xy = rawData.map((d, i) => ({
+    x: padLeft + (i / Math.max(1, rawData.length - 1)) * plotW,
+    y: padTop + (1 - ((d.v - min) / range)) * plotH,
+    v: d.v, t: d.t
+  }));
+  const pts = xy.map(p => p.x.toFixed(1) + "," + p.y.toFixed(1)).join(" ");
+  const area = padLeft + "," + (height - padBottom) + " " + pts + " " + (padLeft + plotW) + "," + (height - padBottom);
   const last = vals[vals.length - 1], first = vals[0];
   const delta = first ? ((last - first) / Math.abs(first)) * 100 : 0;
+  const fmtV = v => v >= 10000 ? "$" + (v / 1000).toFixed(1) + "k" : v >= 100 ? v.toFixed(0) : v.toFixed(2);
+
+  // Y-axis: 5 horizontal gridlines with labels
+  const yTicks = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = min + (i / 4) * range;
+    const y = padTop + (1 - (i / 4)) * plotH;
+    yTicks.push(`<line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${padLeft + plotW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.07)"/>`);
+    yTicks.push(`<text x="${padLeft - 5}" y="${(y + 5).toFixed(1)}" fill="#9fb3c8" font-size="15" text-anchor="end">${fmtV(v)}</text>`);
+  }
+
+  // X-axis: up to 7 date labels
+  const xTicks = [];
+  const xStep = Math.ceil(rawData.length / 6);
+  rawData.forEach((d, i) => {
+    if (i % xStep !== 0 && i !== rawData.length - 1) return;
+    const p = xy[i];
+    const label = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric" }) : String(i + 1);
+    xTicks.push(`<text x="${p.x.toFixed(1)}" y="${height - 6}" fill="#9fb3c8" font-size="13" text-anchor="middle">${label}</text>`);
+  });
+
+  // Dots with SVG <title> tooltips
   const dots = xy.map((p, i) => {
-    if (i !== vals.length - 1 && i !== 0 && i % Math.ceil(vals.length / 6) !== 0) return "";
-    return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="5" fill="${color}"/>`;
+    if (i !== 0 && i !== rawData.length - 1 && i % Math.ceil(rawData.length / 8) !== 0) return "";
+    const tooltip = (p.t ? new Date(p.t).toLocaleDateString("es-MX") + " · " : "") + fmtV(p.v).replace("$", "$");
+    return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${color}" stroke="#02040a" stroke-width="2"><title>${tooltip}</title></circle>`;
   }).join("");
-  return `<div class="chart-wrap"><svg viewBox="0 0 1020 ${height}" class="chart">
-    <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
-      <stop offset="0%" stop-color="${color}" stop-opacity=".35"/>
-      <stop offset="100%" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
-    <line x1="56" y1="${height - padBottom}" x2="956" y2="${height - padBottom}" stroke="rgba(255,255,255,.16)"/>
-    <line x1="56" y1="${padTop}" x2="56" y2="${height - padBottom}" stroke="rgba(255,255,255,.16)"/>
-    <text x="58" y="22" fill="#9fb3c8" font-size="20">Max ${max.toFixed(2)}</text>
-    <text x="58" y="${height - 8}" fill="#9fb3c8" font-size="20">Min ${min.toFixed(2)}</text>
-    <text x="780" y="24" fill="${delta >= 0 ? "#00ff99" : "#ff4d6d"}" font-size="22">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%</text>
-    <polygon points="${area}" fill="url(#${gid})"/>
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-    ${dots}</svg></div>`;
+
+  // Recent values table (last 6 points)
+  let tableHtml = "";
+  if (showTable && rawData.some(d => d.t != null) && rawData.length >= 3) {
+    const recent = rawData.slice(-6);
+    const rows = recent.map(d => {
+      const dateStr = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+      return `<tr><td style="color:var(--muted);font-size:11px;padding:4px 8px">${dateStr}</td><td style="font-weight:700;text-align:right;padding:4px 8px">${fmtV(d.v)}</td></tr>`;
+    }).join("");
+    tableHtml = `<div style="overflow-x:auto;margin-top:6px"><table style="width:auto;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table></div>`;
+  }
+
+  return `<div class="chart-wrap">
+<svg viewBox="0 0 ${padLeft + plotW + 20} ${height}" class="chart" style="overflow:visible">
+  <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
+    <stop offset="0%" stop-color="${color}" stop-opacity=".32"/>
+    <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+  </linearGradient></defs>
+  <line x1="${padLeft}" y1="${height - padBottom}" x2="${padLeft + plotW}" y2="${height - padBottom}" stroke="rgba(255,255,255,.18)"/>
+  <line x1="${padLeft}" y1="${padTop}" x2="${padLeft}" y2="${height - padBottom}" stroke="rgba(255,255,255,.18)"/>
+  ${yTicks.join("")}
+  ${xTicks.join("")}
+  <text x="${padLeft + plotW / 2}" y="22" fill="${delta >= 0 ? "#00ff99" : "#ff4d6d"}" font-size="17" text-anchor="middle" font-weight="bold">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%</text>
+  <polygon points="${area}" fill="url(#${gid})"/>
+  <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  ${dots}
+</svg>${tableHtml}</div>`;
 }
 
 function miniSpark(symbol, color = "#3b9dff") {
   const seed = seedFor(symbol);
   const vals = []; let v = 50 + (seed % 25);
   for (let i = 0; i < 20; i++) { v += Math.sin((i + seed) / 2) * 2 + ((seed % 7) - 3) * 0.18; vals.push(v); }
-  return spark(vals, { color, height: 115 });
+  return spark(vals, { color, height: 115, showTable: false });
 }
 
 async function fetchNews() {
@@ -331,8 +374,19 @@ async function fetchQuiverData() {
     quiverData.congressional = filterByPortfolio(cong.status === "fulfilled" ? cong.value : null, "Ticker");
     quiverData.insider = filterByPortfolio(ins.status === "fulfilled" ? ins.value : null, "Ticker");
     quiverData.contracts = filterByPortfolio(gov.status === "fulfilled" ? gov.value : null, "Ticker");
+    // Save full unfiltered data for external radar (capped at 300/dataset for memory)
+    function normalizeFull(arr, tickerField) {
+      if (!Array.isArray(arr)) return [];
+      return arr.slice(0, 300).map(x => ({
+        ...x, symbol: (x[tickerField] || "").toUpperCase(),
+        daysAgo: x.Date ? Math.floor((ts - new Date(x.Date).getTime()) / 86400000) : null
+      })).filter(x => x.symbol);
+    }
+    quiverDataFull.congressional = normalizeFull(cong.status === "fulfilled" ? cong.value : null, "Ticker");
+    quiverDataFull.insider = normalizeFull(ins.status === "fulfilled" ? ins.value : null, "Ticker");
+    quiverDataFull.contracts = normalizeFull(gov.status === "fulfilled" ? gov.value : null, "Ticker");
     quiverData.lastFetch = ts;
-    console.log("Quiver OK:", quiverData.congressional.length, "congreso,", quiverData.insider.length, "insiders,", quiverData.contracts.length, "contratos");
+    console.log("Quiver OK:", quiverData.congressional.length, "congreso,", quiverData.insider.length, "insiders,", quiverData.contracts.length, "contratos (full:", quiverDataFull.congressional.length, "cong)");
   } catch (e) {
     quiverData.error = e.message;
     console.log("Quiver error:", e.message);
@@ -456,10 +510,14 @@ function computeDailyScan() {
 }
 
 function computeQuiverTrending() {
+  // Use full unfiltered data if available, else fall back to portfolio-filtered data
+  const srcCong = quiverDataFull.congressional.length > 0 ? quiverDataFull.congressional : quiverData.congressional;
+  const srcIns  = quiverDataFull.insider.length > 0 ? quiverDataFull.insider : quiverData.insider;
+  const srcCon  = quiverDataFull.contracts.length > 0 ? quiverDataFull.contracts : quiverData.contracts;
   const all = [
-    ...quiverData.congressional.map(x => ({ ...x, _ds: "congressional" })),
-    ...quiverData.insider.map(x => ({ ...x, _ds: "insider" })),
-    ...quiverData.contracts.map(x => ({ ...x, _ds: "contracts" }))
+    ...srcCong.map(x => ({ ...x, _ds: "congressional" })),
+    ...srcIns.map(x => ({ ...x, _ds: "insider" })),
+    ...srcCon.map(x => ({ ...x, _ds: "contracts" }))
   ];
   const byTicker = {};
   for (const m of all) {
@@ -978,13 +1036,39 @@ function brainHtml() {
 function renderPortfolioRows(assets) {
   return assets.map(a => {
     const z = a.zones; const act = alfredoAction(a); const ind = a.ind;
+    const units = a.units || 0;
+    // Per-unit prices
+    const avgBuyMXN = units > 0 ? a.costMXN / units : 0;
+    const avgBuyUSD = (a.currency === "USD" && units > 0) ? (a.costManual / units) : null;
+    const curPriceMXN = units > 0 ? a.valueMXN / units : 0;
+    const curPriceUSD = (a.currency === "USD" && units > 0) ? (a.liveValue / units) : null;
+    const avgLabel = a.currency === "USD"
+      ? (avgBuyUSD != null ? money(avgBuyUSD, "USD") + " (≈ " + money(avgBuyMXN) + ")" : "no disponible")
+      : (avgBuyMXN > 0 ? money(avgBuyMXN) : "no disponible");
+    const curLabel = a.currency === "USD"
+      ? (curPriceUSD != null ? money(curPriceUSD, "USD") + " (≈ " + money(curPriceMXN) + ")" : "-")
+      : money(curPriceMXN);
+    const isCrypto = a.type === "crypto";
+    const unitsLabel = isCrypto ? Number(units).toFixed(units < 1 ? 8 : 4) + " " + a.symbol : units + " accs";
     return `<details class="asset-row">
       <summary>
-        <div class="asset-main">${logoHtml(a)}<div><b>${esc(a.display)}</b><span>${esc(a.name)}</span><em>${esc(a.source)} · ${esc(a.category)} · ${a.units} u</em></div></div>
-        <div class="asset-money"><b>${a.currency === "USD" ? money(a.liveValue, "USD") : money(a.liveValue, "MXN")}</b>${a.currency === "USD" ? `<div class="muted" style="font-size:12px">~ ${money(a.valueMXN)}</div>` : ""}<span class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)} · ${money(a.gainMXN)}</span></div>
+        <div class="asset-main">${logoHtml(a)}<div><b>${esc(a.display)}</b><span>${esc(a.name)}</span><em>${esc(a.source)} · ${esc(a.category)} · ${unitsLabel}</em></div></div>
+        <div class="asset-money">
+          <b>${a.currency === "USD" ? money(a.liveValue, "USD") : money(a.liveValue, "MXN")}</b>
+          ${a.currency === "USD" ? `<div class="muted" style="font-size:12px">≈ ${money(a.valueMXN)}</div>` : ""}
+          <span class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)} · ${money(a.gainMXN)}</span>
+        </div>
       </summary>
       <div class="asset-detail">
         <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
+        <div class="detail-grid" style="margin-bottom:14px">
+          <div><span>Cantidad</span><b>${unitsLabel}</b></div>
+          <div><span>Costo original</span><b>${money(a.costMXN)}</b></div>
+          <div><span>Valor actual</span><b>${money(a.valueMXN)}</b></div>
+          <div><span>Ganancia MXN</span><b class="${a.gainMXN >= 0 ? "green" : "red"}">${money(a.gainMXN)}</b></div>
+          <div><span>Promedio compra</span><b>${avgLabel}</b></div>
+          <div><span>Precio actual</span><b>${curLabel}</b></div>
+        </div>
         <div class="ind-row">
           <div class="ind"><span>RSI</span><b class="${ind.rsi > 70 ? "red" : ind.rsi < 30 ? "green" : ""}">${ind.rsi}</b></div>
           <div class="ind"><span>MACD</span><b class="${ind.macd >= 0 ? "green" : "red"}">${ind.macd}</b></div>
@@ -992,9 +1076,11 @@ function renderPortfolioRows(assets) {
           <div class="ind"><span>Tendencia</span><b>${ind.trend}</b></div>
           <div class="ind"><span>Volatilidad</span><b>${ind.volatility}</b></div>
           <div class="ind"><span>Score IA</span><b>${a.score}/100</b></div>
+          <div class="ind"><span>Riesgo</span><b class="${a.risk === "ALTO" ? "red" : a.risk === "BAJO" ? "green" : "yellow"}">${a.risk}</b></div>
+          <div class="ind"><span>Señal</span><b style="font-size:12px">${esc(a.signal)}</b></div>
         </div>
         <div class="alfredo-score" style="border-color:${act.color}55">
-          <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Alfredo Score ${act.score}/100</span></div>
+          <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Score ${act.score}/100</span></div>
           <ul>${act.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
         </div>
         <div class="detail-grid">
@@ -1168,6 +1254,66 @@ function renderIntelByAsset() {
   return '<h3 style="margin:24px 0 10px;font-size:16px;color:#9fb3c8">Intel relacionado con mis activos</h3>'
     + '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">'
     + cards
+    + '</div>';
+}
+
+function renderExternalRadar() {
+  const trending = computeQuiverTrending();
+  const radar = computeMarketRadar();
+  const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
+
+  // Merge external tickers from quiver trending + radar watchlist
+  const extQuiver = trending.topTickers.filter(t => !portfolioSymbols.has(t.symbol)).slice(0, 8);
+  const extRadar = radar.watchlist.filter(t => !t.inPortfolio && (t.quiverSignals > 0 || MARKET_WATCHLIST.includes(t.symbol))).slice(0, 8);
+
+  const merged = new Map();
+  extQuiver.forEach(t => merged.set(t.symbol, { symbol: t.symbol, quiverTotal: t.total, buys: t.buys, sales: t.sales, politicianCount: t.politicianCount, latestDate: t.latestDate, fromRadar: false }));
+  extRadar.forEach(t => {
+    const e = merged.get(t.symbol) || { symbol: t.symbol, quiverTotal: 0, buys: 0, sales: 0, politicianCount: 0, latestDate: null, fromRadar: true };
+    e.fromRadar = true;
+    e.quiverTotal = e.quiverTotal || t.quiverSignals;
+    merged.set(t.symbol, e);
+  });
+
+  const items = [...merged.values()].sort((a, b) => b.quiverTotal - a.quiverTotal).slice(0, 10);
+
+  if (!items.length) {
+    return '<div class="panel" style="max-width:1280px;margin:0 auto 8px"><div class="muted">Radar externo: sin datos Quiver activos. Con QUIVER_API_KEY verás stocks calientes del Congreso que no están en tu portafolio.</div></div>';
+  }
+
+  function externalSignal(t) {
+    if (t.buys > 0 && t.buys > t.sales * 1.2) return { label: "Bullish", color: "#00ff99", reason: t.buys + " compras políticas" + (t.politicianCount > 1 ? " · " + t.politicianCount + " políticos" : "") };
+    if (t.sales > 0 && t.sales > t.buys * 1.2) return { label: "Risk/Venta", color: "#ff4d6d", reason: t.sales + " ventas políticas" + (t.politicianCount > 1 ? " · " + t.politicianCount + " políticos" : "") };
+    if (t.quiverTotal >= 3) return { label: "Watch", color: "#ffd35c", reason: t.quiverTotal + " registros Quiver · compras y ventas mixtas" };
+    if (t.fromRadar) return { label: "Radar IA", color: "#3b9dff", reason: "en watchlist IA · sin posición propia" };
+    return { label: "Neutral", color: "#9fb3c8", reason: "datos limitados" };
+  }
+
+  const rows = items.map(t => {
+    const sig = externalSignal(t);
+    const dateStr = t.latestDate ? new Date(t.latestDate).toLocaleDateString("es-MX", { month: "short", day: "numeric" }) : "";
+    return '<tr>'
+      + '<td><b>' + esc(t.symbol) + '</b></td>'
+      + '<td style="color:' + sig.color + ';font-weight:800">' + esc(sig.label) + '</td>'
+      + '<td>' + t.quiverTotal + '</td>'
+      + '<td><span style="color:#00ff99">' + (t.buys || 0) + ' C</span> · <span style="color:#ff4d6d">' + (t.sales || 0) + ' V</span></td>'
+      + '<td class="muted" style="font-size:12px">' + esc(sig.reason) + '</td>'
+      + '<td class="muted" style="font-size:12px">' + dateStr + '</td>'
+      + '</tr>';
+  }).join("");
+
+  // Also show top politicians
+  const politRows = trending.mostActivePoliticians.slice(0, 5).map(p =>
+    '<tr><td><b>' + esc(p.name) + '</b></td><td class="muted">' + esc(p.party) + '</td><td>' + p.trades + '</td><td style="font-size:12px;color:var(--muted)">' + p.tickers.slice(0, 5).join(", ") + '</td></tr>'
+  ).join("");
+
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;max-width:1280px;margin:0 auto 8px">'
+    + '<div class="panel"><div class="label" style="margin-bottom:10px">Stocks externos calientes · Quiver + Radar</div>'
+    + '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Señal</th><th>Total</th><th>C/V</th><th>Razón</th><th>Fecha</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<div class="muted" style="font-size:12px;margin-top:8px">Educativo · NO en tu portafolio · solo vigilancia · datos Quiver con retraso hasta 45d</div></div>'
+    + (politRows ? '<div class="panel"><div class="label" style="margin-bottom:10px">Políticos más activos (Congreso)</div>'
+      + '<div class="table-wrap"><table><thead><tr><th>Nombre</th><th>Partido</th><th>Trades</th><th>Tickers</th></tr></thead><tbody>' + politRows + '</tbody></table></div>'
+      + '<div class="muted" style="font-size:12px;margin-top:8px">Fuente: Quiver Quant · datos educativos · retraso hasta 45 días</div></div>' : '')
     + '</div>';
 }
 
@@ -1553,19 +1699,50 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 
 <a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
-<a id="alfredo"></a><h2>Alfredo AI — asistente interno</h2>
-<div class="panel"><details class="chat-details">
-  <summary>Mostrar / esconder chat de Alfredo AI</summary>
-  <div class="muted">Apaga Thinking Mode arriba para no gastar Claude. Si esta OFF, responde en modo local.</div>
-  <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo: riesgo, vender, comprar, noticias, bot..." autocomplete="off"><button class="btn">Preguntar</button></form>
-  ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
+<a id="alfredo"></a><h2>Alfredo AI — asistente educativo</h2>
+<div class="panel" style="padding:0"><details class="chat-details">
+  <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:rgba(59,157,255,.07);border-radius:24px;user-select:none">
+    <span style="display:flex;align-items:center;gap:12px">
+      <span style="width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,#3b9dff,#00ff99);display:grid;place-items:center;font-size:18px;font-weight:900">AI</span>
+      <span><b>Alfredo AI</b> <span class="muted" style="font-size:13px">· preguntas sobre tu portafolio · educativo</span></span>
+    </span>
+    <span class="btn" style="font-size:13px;padding:6px 14px">Abrir chat ▾</span>
+  </summary>
+  <div style="padding:16px 20px 20px">
+    <div class="muted" style="margin-bottom:12px;font-size:13px">Preguntas útiles: "riesgo", "que vendo", "comprar", "vigilar", "quiver", "radar", "intel", "bot"  ·  Apaga Thinking Mode para no gastar Claude.</div>
+    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <div style="max-height:480px;overflow-y:auto;margin-top:12px">
+      ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
+    </div>
+  </div>
 </details></div>
 
 <a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
 ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-top:22px">${esc(k)}</h2>${renderPortfolioRows(list)}`).join("")}
 
-<h2>Ranking Alfredo con zonas educativas</h2>
-<div class="ranking">${ranked.map((a, i) => `<div class="rank"><div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted">${esc(a.source)} · ${esc(a.risk)} · ${esc(a.signal)}</div></div><div><div class="bar"><span style="width:${a.score}%"></span></div><div class="muted">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · Venta ${a.currency === "USD" ? money(a.zones.sell, "USD") : money(a.zones.sell)}</div></div><div><b>${a.score}/100</b></div></div>`).join("")}</div>
+<h2>Ranking Alfredo — score · riesgo · señal educativa</h2>
+<div class="ranking">${ranked.map((a, i) => {
+  const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length + quiverData.insider.filter(x => x.symbol === a.symbol).length;
+  const bullish = a.score >= 65 && a.ind.momentum >= 0;
+  const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
+  const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
+  const sigColor = bullish ? "#00ff99" : bearish ? "#ff4d6d" : "#ffd35c";
+  const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
+    a.score < 30 ? "No promediar — revisar tesis" :
+    a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
+  return `<div class="rank" style="grid-template-columns:auto 1fr auto">
+    <div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted" style="font-size:12px">${esc(a.source)} · ${esc(a.risk)}</div>${qCount > 0 ? `<div style="color:#00ff99;font-size:11px">Q×${qCount}</div>` : ""}</div>
+    <div>
+      <div class="bar"><span style="width:${a.score}%"></span></div>
+      <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap">
+        <span style="color:${sigColor};font-size:12px;font-weight:700">${sigLabel}</span>
+        <span class="muted" style="font-size:12px">${esc(a.signal)}</span>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:3px">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · ${esc(eduAction)}</div>
+    </div>
+    <div style="text-align:right"><b style="font-size:20px">${a.score}/100</b><div class="${a.gainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(a.gainPct)}</div></div>
+  </div>`;
+}).join("")}</div>
 
 <a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
@@ -1583,7 +1760,10 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
 <h2>Bitacora del bot</h2>
 <div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razon</th></tr></thead><tbody>${botTables.histRows}</tbody></table></div>
 
-<a id="vigilar"></a><a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
+<a id="vigilar"></a><h2>Trading AI — Radar externo · Stocks calientes</h2>
+${renderExternalRadar()}
+
+<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
 ${renderQuiverPanel()}
 
 <a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
