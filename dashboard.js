@@ -1259,6 +1259,83 @@ const server = http.createServer(async (req, res) => {
       contracts: quiverData.contracts
     }));
   }
+  if (req.url === "/api/quiver/matches") {
+    const allMatches = [
+      ...quiverData.congressional.map(x => ({ ...x, dataset: "congressional" })),
+      ...quiverData.insider.map(x => ({ ...x, dataset: "insider" })),
+      ...quiverData.contracts.map(x => ({ ...x, dataset: "contracts" }))
+    ].sort((a, b) => (a.daysAgo == null ? 999 : a.daysAgo) - (b.daysAgo == null ? 999 : b.daysAgo));
+    const tickers = [...new Set(allMatches.map(x => x.symbol))];
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true, ts: Date.now(),
+      configured: quiverData.configured,
+      quiverCount: quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length,
+      matchCount: allMatches.length,
+      tickers,
+      matches: allMatches
+    }));
+  }
+  if (req.url === "/api/daily-scan") {
+    const pv = portfolioValue();
+    const reg = marketRegime();
+    const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+    const totalMXN = pv.totalValueMXN || 1;
+    const bitsoMXN = pv.assets.filter(a => a.source === "Bitso").reduce((s, a) => s + a.valueMXN, 0);
+    const plataMXN = pv.assets.filter(a => a.source === "Plata").reduce((s, a) => s + a.valueMXN, 0);
+    const gbmMXN = pv.assets.filter(a => a.source === "GBM").reduce((s, a) => s + a.valueMXN, 0);
+    const bitsoPct = (bitsoMXN / totalMXN) * 100;
+    const watchList = ranked.slice().reverse()
+      .filter(a => a.score < 45 || a.gainPct < -10)
+      .slice(0, 6)
+      .map(a => ({
+        symbol: a.symbol, score: a.score, signal: a.signal,
+        gainPct: +a.gainPct.toFixed(2), risk: a.risk,
+        reason: a.score < 35 ? "score critico" : a.gainPct < -15 ? "perdida significativa" : "score debil"
+      }));
+    const quiverAlerts = [
+      ...quiverData.congressional.slice(0, 8).map(x => ({ ...x, dataset: "congressional" })),
+      ...quiverData.insider.slice(0, 8).map(x => ({ ...x, dataset: "insider" }))
+    ];
+    const scan = {
+      ok: true, ts: Date.now(),
+      date: new Date().toLocaleDateString("es-MX"),
+      regime: { label: reg.label, avg: +reg.avg.toFixed(2), detail: reg.detail },
+      portfolio: {
+        totalMXN: +pv.totalValueMXN.toFixed(2),
+        gainPct: +pv.totalGainPct.toFixed(2),
+        gainMXN: +pv.totalGainMXN.toFixed(2),
+        assets: pv.assets.length
+      },
+      concentration: {
+        bitso_pct: +bitsoPct.toFixed(1),
+        plata_pct: +(plataMXN / totalMXN * 100).toFixed(1),
+        gbm_pct: +(gbmMXN / totalMXN * 100).toFixed(1),
+        alert: bitsoPct > 45,
+        message: bitsoPct > 45
+          ? "Cripto/Bitso " + bitsoPct.toFixed(0) + "% del portafolio — concentracion alta"
+          : "Concentracion aceptable"
+      },
+      watchList,
+      topScores: ranked.slice(0, 5).map(a => ({
+        symbol: a.symbol, score: a.score, signal: a.signal, gainPct: +a.gainPct.toFixed(2)
+      })),
+      quiver: {
+        configured: quiverData.configured,
+        matchCount: quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length,
+        alerts: quiverAlerts
+      },
+      intel: {
+        count: intelItems.length,
+        recent: intelItems.slice(0, 3).map(x => ({
+          mood: x.mood, affected: x.affected, time: x.time,
+          snippet: String(x.text || "").slice(0, 150)
+        }))
+      }
+    };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(scan));
+  }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
