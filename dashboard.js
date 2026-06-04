@@ -1092,7 +1092,7 @@ ${renderQuiverPanel()}
 <a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
 <a id="alfredo"></a><h2>Alfredo AI — asistente interno</h2>
-<div class="panel"><details class="chat-details" open>
+<div class="panel"><details class="chat-details">
   <summary>Mostrar / esconder chat de Alfredo AI</summary>
   <div class="muted">Apaga Thinking Mode arriba para no gastar Claude. Si esta OFF, responde en modo local.</div>
   <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo: vigilar hoy, analiza portafolio, riesgo, comprar, bot..." autocomplete="off"><button class="btn">Preguntar</button></form>
@@ -1440,6 +1440,245 @@ function buildScanData(pvData, matchesData) {
   };
 }
 
+
+
+// === MEGA_BACKEND_ENDPOINTS_FIX_V1 ===
+const MARKET_WATCHLIST = [
+  "NVDA","TSLA","AMD","META","GOOGL","AMZN","AAPL","MSFT","PLTR","NFLX",
+  "SMCI","COIN","MSTR","SOFI","HOOD","RIVN","NIO","BABA","UNH","LLY",
+  "AVGO","QQQ","SPY"
+];
+
+async function localJson(path){
+  try{
+    const r = await fetch("http://127.0.0.1:3000" + path);
+    const text = await r.text();
+    if (!text || text.trim().startsWith("<")) return null;
+    return JSON.parse(text);
+  }catch(e){
+    return null;
+  }
+}
+
+function txKind(tx){
+  const t = String(tx || "").toLowerCase();
+  if (t.includes("purchase") || t.includes("buy")) return "BUY";
+  if (t.includes("sale") || t.includes("sell")) return "SALE";
+  return "OTHER";
+}
+
+function safeNum(x){
+  const n = Number(String(x ?? "0").replace(/[^0-9.\-]/g,""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getAllQuiverItemsFromMemory(matchesPayload){
+  let arr = [];
+
+  try{
+    if (typeof quiverCache !== "undefined") {
+      if (Array.isArray(quiverCache)) arr = quiverCache;
+      else if (Array.isArray(quiverCache.data)) arr = quiverCache.data;
+      else if (Array.isArray(quiverCache.items)) arr = quiverCache.items;
+      else if (Array.isArray(quiverCache.quiver)) arr = quiverCache.quiver;
+    }
+  }catch(e){}
+
+  if (!arr.length) {
+    arr = matchesPayload?.portfolioMatches?.items || matchesPayload?.items || [];
+  }
+
+  return Array.isArray(arr) ? arr : [];
+}
+
+function compactTickerRow(ticker, items){
+  let buys = 0, sales = 0, others = 0, amount = 0, latestDate = "";
+  const politicians = {};
+
+  for (const it of items) {
+    const k = txKind(it.Transaction || it.transaction);
+    if (k === "BUY") buys++;
+    else if (k === "SALE") sales++;
+    else others++;
+
+    amount += safeNum(it.Amount || it.amount);
+    const d = it.TransactionDate || it.date || it.ReportDate || "";
+    if (String(d) > String(latestDate)) latestDate = d;
+
+    const p = it.Representative || it.politician || it.Politician || "Desconocido";
+    politicians[p] = (politicians[p] || 0) + 1;
+  }
+
+  return {
+    ticker,
+    count: items.length,
+    buys,
+    sales,
+    others,
+    latestDate,
+    totalReportedMin: Math.round(amount),
+    mostActivePoliticians: Object.entries(politicians)
+      .sort((a,b)=>b[1]-a[1])
+      .slice(0,5)
+      .map(([name,count])=>({name,count}))
+  };
+}
+
+async function computeQuiverTrending(){
+  const matchesPayload = await localJson("/api/quiver/matches?t=" + Date.now());
+  const raw = getAllQuiverItemsFromMemory(matchesPayload);
+
+  const byTicker = {};
+  const byPolitician = {};
+  const latestTrades = [];
+
+  for (const it of raw) {
+    const ticker = String(it.Ticker || it.ticker || "").trim().toUpperCase();
+    if (!ticker) continue;
+
+    byTicker[ticker] ||= [];
+    byTicker[ticker].push(it);
+
+    const politician = it.Representative || it.politician || it.Politician || "Desconocido";
+    byPolitician[politician] = (byPolitician[politician] || 0) + 1;
+
+    latestTrades.push({
+      ticker,
+      politician,
+      transaction: it.Transaction || it.transaction || "",
+      kind: txKind(it.Transaction || it.transaction),
+      amount: it.Amount || it.amount || it.Range || "",
+      date: it.TransactionDate || it.date || it.ReportDate || "",
+      description: it.Description || it.description || ""
+    });
+  }
+
+  const rows = Object.entries(byTicker)
+    .map(([ticker,items]) => compactTickerRow(ticker, items))
+    .sort((a,b)=>b.count-a.count);
+
+  return {
+    ok: true,
+    ts: Date.now(),
+    quiverCount: raw.length || matchesPayload?.quiverCount || 0,
+    source: raw.length ? "quiverCache/full-or-fallback" : "portfolioMatchesFallback",
+    topTickers: rows.slice(0,15),
+    topBuys: rows.slice().sort((a,b)=>b.buys-a.buys).slice(0,15),
+    topSales: rows.slice().sort((a,b)=>b.sales-a.sales).slice(0,15),
+    topByAmount: rows.slice().sort((a,b)=>b.totalReportedMin-a.totalReportedMin).slice(0,15),
+    mostActivePoliticians: Object.entries(byPolitician)
+      .sort((a,b)=>b[1]-a[1])
+      .slice(0,15)
+      .map(([name,count])=>({name,count})),
+    latestTrades: latestTrades
+      .sort((a,b)=>String(b.date).localeCompare(String(a.date)))
+      .slice(0,30),
+    portfolioMatches: matchesPayload?.portfolioMatches || null
+  };
+}
+
+async function computeMarketRadar(){
+  const trending = await computeQuiverTrending();
+  const portfolio = await localJson("/api/portfolio?t=" + Date.now());
+
+  const assets = portfolio?.assets || [];
+  const owned = new Set(assets.map(a => String(a.symbol || "").toUpperCase()));
+  const trendMap = {};
+  for (const r of trending.topTickers || []) trendMap[r.ticker] = r;
+
+  const watchlist = MARKET_WATCHLIST.map(ticker => {
+    const q = trendMap[ticker] || null;
+    const asset = assets.find(a => String(a.symbol || "").toUpperCase() === ticker) || null;
+    const inPortfolio = owned.has(ticker);
+    const heatScore =
+      (q ? Math.min(60, q.count * 4) : 0) +
+      (inPortfolio ? 25 : 0) +
+      (q?.buys > q?.sales ? 10 : 0) +
+      (["NVDA","TSLA","AMD","AAPL","MSFT","PLTR","META","AMZN"].includes(ticker) ? 5 : 0);
+
+    return {
+      ticker,
+      inPortfolio,
+      quiverCount: q?.count || 0,
+      buys: q?.buys || 0,
+      sales: q?.sales || 0,
+      others: q?.others || 0,
+      latestDate: q?.latestDate || null,
+      portfolioScore: asset?.score ?? null,
+      portfolioSignal: asset?.signal ?? null,
+      gainPct: asset?.gainPct ?? null,
+      heatScore
+    };
+  }).sort((a,b)=>b.heatScore-a.heatScore);
+
+  const hotTickers = watchlist.slice(0,12);
+  const portfolioOverlap = watchlist.filter(x=>x.inPortfolio).slice(0,12);
+  const quiverTrending = watchlist.filter(x=>x.quiverCount > 0).slice(0,12);
+
+  return {
+    ok: true,
+    ts: Date.now(),
+    watchlist,
+    watchlistCount: MARKET_WATCHLIST.length,
+    hotTickers,
+    portfolioOverlap,
+    quiverTrending,
+    educationalSummary:
+      "Radar educativo: combina watchlist popular, Quiver/congreso y tu portafolio. No compra ni vende; prioriza que vigilar."
+  };
+}
+
+async function computeIntelligence(){
+  const daily = await localJson("/api/daily-scan?t=" + Date.now());
+  const radar = await computeMarketRadar();
+  const trending = await computeQuiverTrending();
+  const intel = await localJson("/api/intel?t=" + Date.now());
+
+  const portfolioImpacts = [
+    daily?.topRisk?.symbol && {type:"risk", symbol:daily.topRisk.symbol, note:"Mayor riesgo del scan diario"},
+    daily?.topOpportunity?.symbol && {type:"opportunity", symbol:daily.topOpportunity.symbol, note:"Mejor oportunidad del scan diario"},
+    daily?.biggestWinner?.symbol && {type:"winner", symbol:daily.biggestWinner.symbol, note:"Mayor ganador del portafolio"},
+    daily?.biggestLoser?.symbol && {type:"loser", symbol:daily.biggestLoser.symbol, note:"Mayor perdedor del portafolio"}
+  ].filter(Boolean);
+
+  return {
+    ok: true,
+    ts: Date.now(),
+    modules: {
+      dailyScan: !!daily?.ok,
+      quiverTrending: !!trending?.ok,
+      marketRadar: !!radar?.ok,
+      manualIntel: true
+    },
+    dailyScan: daily ? {
+      portfolioValue: daily.portfolioValue,
+      portfolioGainPct: daily.portfolioGainPct,
+      regime: daily.regime,
+      topRisk: daily.topRisk,
+      topOpportunity: daily.topOpportunity,
+      concentrationRisk: daily.concentrationRisk,
+      cryptoExposurePct: daily.cryptoExposurePct,
+      educationalSummary: daily.educationalSummary
+    } : null,
+    quiverTrending: {
+      quiverCount: trending.quiverCount,
+      topTickers: trending.topTickers?.slice(0,10),
+      mostActivePoliticians: trending.mostActivePoliticians?.slice(0,10),
+      latestTrades: trending.latestTrades?.slice(0,10)
+    },
+    marketRadar: {
+      watchlistCount: radar.watchlistCount,
+      hotTickers: radar.hotTickers?.slice(0,10),
+      portfolioOverlap: radar.portfolioOverlap?.slice(0,10)
+    },
+    intelItems: intel?.items || intel?.intel || intel || [],
+    portfolioImpacts,
+    educationalSummary:
+      "Cordelius Intelligence une scan diario, Quiver, radar de mercado y análisis manual pegado. Uso educativo, no asesoría financiera."
+  };
+}
+// === END MEGA_BACKEND_ENDPOINTS_FIX_V1 ===
+
 async function computeDailyScanSafe() {
   let quiver  = { count: 0, items: [] };
   let matches = { count: 0, tickers: [], items: [], grouped: {} };
@@ -1488,7 +1727,41 @@ const server = http.createServer(async (req, res) => {
 
   
 
-  if (req.url === "/api/daily-scan") {
+  
+  if (req.url === "/api/quiver/trending") {
+    try {
+      const payload = await computeQuiverTrending();
+      res.writeHead(200, {"Content-Type":"application/json; charset=utf-8"});
+      return res.end(JSON.stringify(payload));
+    } catch (e) {
+      res.writeHead(500, {"Content-Type":"application/json; charset=utf-8"});
+      return res.end(JSON.stringify({ok:false,error:e.message}));
+    }
+  }
+
+  if (req.url === "/api/market-radar") {
+    try {
+      const payload = await computeMarketRadar();
+      res.writeHead(200, {"Content-Type":"application/json; charset=utf-8"});
+      return res.end(JSON.stringify(payload));
+    } catch (e) {
+      res.writeHead(500, {"Content-Type":"application/json; charset=utf-8"});
+      return res.end(JSON.stringify({ok:false,error:e.message}));
+    }
+  }
+
+  if (req.url === "/api/intelligence") {
+    try {
+      const payload = await computeIntelligence();
+      res.writeHead(200, {"Content-Type":"application/json; charset=utf-8"});
+      return res.end(JSON.stringify(payload));
+    } catch (e) {
+      res.writeHead(500, {"Content-Type":"application/json; charset=utf-8"});
+      return res.end(JSON.stringify({ok:false,error:e.message}));
+    }
+  }
+
+if (req.url === "/api/daily-scan") {
     try {
       const payload = await computeDailyScanSafe();
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
