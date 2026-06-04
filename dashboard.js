@@ -971,6 +971,50 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
 </div>
 
 <div class="disclaimer">Cordelius Trading es educativo. No es asesoria financiera. El bot es 100% ficticio (paper trading) y no se conecta a ningun exchange real.</div>
+
+<div id="quiver-live-card" style="
+  position:fixed;
+  right:16px;
+  bottom:16px;
+  z-index:9999;
+  max-width:360px;
+  padding:14px;
+  border:1px solid rgba(0,255,153,.25);
+  border-radius:18px;
+  background:rgba(2,4,10,.88);
+  backdrop-filter:blur(12px);
+  box-shadow:0 0 30px rgba(0,255,153,.12);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+">
+  <div style="font-size:12px;color:#9fb3c8;margin-bottom:4px;">QUiVER x PORTAFOLIO</div>
+  <div id="quiver-live-title" style="font-size:20px;font-weight:800;color:#00ff99;">Cargando...</div>
+  <div id="quiver-live-body" style="font-size:13px;color:#eaf6ff;margin-top:8px;line-height:1.35;"></div>
+</div>
+
+<script>
+(async function(){
+  try {
+    const r = await fetch('/api/quiver/matches');
+    const j = await r.json();
+
+    const title = document.getElementById('quiver-live-title');
+    const body = document.getElementById('quiver-live-body');
+
+    const count = j.portfolioMatches?.count || 0;
+    const tickers = j.portfolioMatches?.tickers || [];
+
+    title.textContent = count + ' matches políticos';
+    body.innerHTML =
+      '<b>Quiver:</b> ' + (j.quiverCount || 0) + ' registros<br>' +
+      '<b>Tickers:</b> ' + (tickers.length ? tickers.slice(0,8).join(', ') : 'Sin matches') + '<br>' +
+      '<span style="color:#9fb3c8">Cruce real contra tu portafolio.</span>';
+  } catch(e) {
+    document.getElementById('quiver-live-title').textContent = 'Quiver error';
+    document.getElementById('quiver-live-body').textContent = e.message;
+  }
+})();
+</script>
+
 </body></html>`;
 }
 
