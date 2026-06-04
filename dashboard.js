@@ -730,7 +730,9 @@ function renderIntelPanel() {
     + '</form>'
     + '<p class="muted">Modo manual: pega texto externo y Cordelius lo cruza contra tus activos. No opera dinero real.</p>'
     + '</div>'
-    + '<div class="panel">' + filterBar + rows + '</div>'
+    + '<div class="panel">' + filterBar + rows
+    + (items.length > 20 ? '<div class="muted" style="text-align:center;padding:10px 0;font-size:13px">Mostrando 20 de ' + items.length + ' analisis &mdash; borra los mas antiguos para ver los recientes arriba.</div>' : '')
+    + '</div>'
     + renderIntelByAsset();
 }
 
@@ -1167,8 +1169,18 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), ...pv }));
   }
   if (req.url === "/api/intel") {
+    const intelSummary = {
+      total: intelItems.length,
+      positivo: intelItems.filter(x => x.mood === "POSITIVO").length,
+      negativo: intelItems.filter(x => x.mood === "NEGATIVO").length,
+      neutral: intelItems.filter(x => x.mood === "NEUTRAL").length,
+      byAsset: intelItems.reduce((acc, x) => {
+        (x.affected || []).forEach(sym => { acc[sym] = (acc[sym] || 0) + 1; });
+        return acc;
+      }, {})
+    };
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, items: intelItems }));
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, summary: intelSummary, items: intelItems }));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
