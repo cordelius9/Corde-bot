@@ -1017,6 +1017,30 @@ const server = http.createServer(async (req, res) => {
     addThought("Bot reiniciado desde cero.", "scan"); saveJSON(BOT_FILE, bot);
     res.writeHead(302, { Location: "/#bot" }); return res.end();
   }
+  if (req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), uptime: Math.floor(process.uptime()) }));
+  }
+  if (req.url === "/api/status") {
+    const pv = portfolioValue();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true, ts: Date.now(), uptime: Math.floor(process.uptime()),
+      portfolio: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct, assets: pv.assets.length },
+      bot: { running: bot.running, cash: bot.cash, trades: bot.tradesCount },
+      intel: { count: intelItems.length },
+      settings: { thinkingEnabled: settings.thinkingEnabled, theme: settings.themeMode }
+    }));
+  }
+  if (req.url === "/api/portfolio") {
+    const pv = portfolioValue();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), ...pv }));
+  }
+  if (req.url === "/api/intel") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, items: intelItems }));
+  }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });

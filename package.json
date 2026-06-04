@@ -1,0 +1,21 @@
+{
+  "name": "corde-bot",
+  "version": "1.0.0",
+  "description": "Cordelius Trading — educational portfolio dashboard with Claude AI",
+  "main": "dashboard.js",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node dashboard.js",
+    "bot": "node bot.js",
+    "sim": "node trading_ai.js",
+    "check": "node --check dashboard.js && node --check bot.js && node --check trading_ai.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.34.0",
+    "dotenv": "^16.4.7",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
