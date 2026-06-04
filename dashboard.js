@@ -1001,6 +1001,154 @@ async function handleIntel(req, res) {
   });
 }
 
+
+// Quiver real fetcher: intenta leer datos de Quiver usando QUIVER_API_KEY.
+async function fetchQuiverDataReal() {
+  if (!QUIVER_API_KEY) {
+    return {
+      ok: true,
+      configured: false,
+      count: 0,
+      items: [],
+      message: "QUIVER_API_KEY not configured"
+    };
+  }
+
+  const url = "https://api.quiverquant.com/beta/live/congresstrading";
+
+  try {
+    const r = await fetch(url, {
+      headers: {
+        "X-API-KEY": QUIVER_API_KEY,
+        "Accept": "application/json",
+        "User-Agent": "Cordelius-Trading/1.0"
+      }
+    });
+
+    const text = await r.text();
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        ok: false,
+        configured: true,
+        count: 0,
+        items: [],
+        source: url,
+        status: r.status,
+        message: "Quiver returned non-JSON response",
+        error: text.slice(0, 300)
+      };
+    }
+
+    const arr = Array.isArray(data)
+      ? data
+      : data && Array.isArray(data.data)
+        ? data.data
+        : [];
+
+    const normalized = arr.slice(0, 1000).map((x, i) => {
+      const ticker =
+        x.Ticker || x.ticker || x.Symbol || x.symbol || x.Stock || x.stock || "";
+
+      const politician =
+        x.Representative || x.representative ||
+        x.Senator || x.senator ||
+        x.Name || x.name ||
+        x.Politician || x.politician || "";
+
+      const transaction =
+        x.Transaction || x.transaction ||
+        x.Type || x.type ||
+        x.Action || x.action || "";
+
+      const amount =
+        x.Amount || x.amount ||
+        x.Range || x.range ||
+        x.Value || x.value || "";
+
+      const date =
+        x.TransactionDate || x.transactionDate ||
+        x.Date || x.date ||
+        x.ReportDate || x.reportDate || "";
+
+      return {
+        id: i + 1,
+        ticker,
+        politician,
+        transaction,
+        amount,
+        date,
+        raw: x
+      };
+    });
+
+    return {
+      ok: true,
+      configured: true,
+      ts: Date.now(),
+      source: url,
+      authMode: "X-API-KEY",
+      status: r.status,
+      count: normalized.length,
+      items: normalized,
+      message: normalized.length ? "Quiver congressional trading loaded" : "Quiver responded but returned 0 rows"
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      configured: true,
+      count: 0,
+      items: [],
+      source: url,
+      message: "Quiver fetch failed",
+      error: e.message
+    };
+  }
+}
+
+
+
+function matchQuiverToPortfolio(quiverPayload) {
+  const myPortfolio =
+    (typeof portfolio !== "undefined" && Array.isArray(portfolio)) ? portfolio :
+    (typeof PORTFOLIO !== "undefined" && Array.isArray(PORTFOLIO)) ? PORTFOLIO :
+    (typeof ASSETS !== "undefined" && Array.isArray(ASSETS)) ? ASSETS :
+    (typeof assets !== "undefined" && Array.isArray(assets)) ? assets :
+    [];
+
+  const items = Array.isArray(quiverPayload?.items) ? quiverPayload.items : [];
+  const myTickers = new Set(myPortfolio.map(a => String(a.symbol || "").toUpperCase()));
+
+  const matches = items
+    .filter(x => myTickers.has(String(x.ticker || "").toUpperCase()))
+    .map(x => {
+      const ticker = String(x.ticker || "").toUpperCase();
+      const asset = myPortfolio.find(a => String(a.symbol || "").toUpperCase() === ticker);
+      return {
+        ticker,
+        assetName: asset?.name || "",
+        source: asset?.source || "",
+        category: asset?.category || "",
+        politician: x.politician || x.raw?.Representative || x.Representative || "",
+        transaction: x.transaction || x.raw?.Transaction || x.Transaction || "",
+        amount: x.amount || x.raw?.Amount || x.Amount || x.raw?.Range || x.Range || "",
+        date: x.date || x.raw?.TransactionDate || x.TransactionDate || "",
+        raw: x.raw || x
+      };
+    });
+
+  const tickers = [...new Set(matches.map(x => x.ticker))];
+
+  return {
+    count: matches.length,
+    tickers,
+    items: matches.slice(0, 50)
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && req.url === "/intel") return handleIntel(req, res);
@@ -1039,13 +1187,20 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.url === "/api/quiver") {
+    const payload = await fetchQuiverDataReal();
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(payload));
+  }
+
+  if (req.url === "/api/quiver/matches") {
+    const quiver = await fetchQuiverDataReal();
+    const matches = matchQuiverToPortfolio(quiver);
     const payload = {
       ok: true,
-      configured: !!QUIVER_API_KEY,
       ts: Date.now(),
-      count: 0,
-      items: [],
-      message: QUIVER_API_KEY ? "QUIVER_API_KEY configured but fetchQuiverData not implemented yet" : "QUIVER_API_KEY not configured"
+      quiverConfigured: !!QUIVER_API_KEY,
+      quiverCount: quiver.count || 0,
+      portfolioMatches: matches
     };
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     return res.end(JSON.stringify(payload));
