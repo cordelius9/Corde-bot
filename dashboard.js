@@ -899,20 +899,43 @@ async function alfredoReply(question) {
   const best = ranked[0], worst = ranked[ranked.length - 1];
   const botEq = botValue(), botPnl = botEq - bot.initialCapital;
   let reply = "";
+  const qCount = quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length;
   if (q.includes("riesgo")) {
     const high = pv.assets.filter(a => a.risk === "ALTO" || a.risk === "MEDIO/ALTO");
-    reply = `Tu riesgo principal esta en ${high.map(a => a.symbol).join(", ")}. El regimen esta ${reg.label}. No es que esten mal, son los que mas pueden moverse fuerte.`;
-  } else if (q.includes("vender")) {
-    reply = `Primero revisaria ${worst.symbol}: score ${worst.score}, senal ${worst.signal}, rendimiento ${pct(worst.gainPct)}. No es vender automatico, es vigilarlo mas.`;
+    const cryptoPct = (pv.assets.filter(a => a.type === "crypto").reduce((s,a) => s+a.valueMXN, 0) / (pv.totalValueMXN||1) * 100).toFixed(0);
+    reply = `Tu riesgo principal esta en ${high.map(a => a.symbol).join(", ")}. Cripto ${cryptoPct}% del portafolio. Regimen ${reg.label}. Los de mayor riesgo pueden moverse fuerte en ambas direcciones.`;
+  } else if (q.includes("vender") || q.includes("vendo") || q.includes("que vendo")) {
+    const losers = ranked.filter(a => a.gainPct < -10 || a.score < 35).slice(0, 3);
+    reply = `Para revisar primero: ${losers.length ? losers.map(a => `${a.symbol} (score ${a.score}, ${pct(a.gainPct)})`).join(", ") : worst.symbol + " (score " + worst.score + ")"}. Evaluar tesis, no venta automatica.`;
   } else if (q.includes("comprar") || q.includes("compro")) {
     const ideas = ranked.filter(a => a.signal.includes("BUY") || a.signal.includes("MOMENTUM")).slice(0, 4);
-    reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia, noticia y tamano pequeno.` : "No veo compra clara ahorita. Mercado neutral: mejor paciencia que forzar entrada.";
+    reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia y tamano pequeno.` : "No veo compra clara. Mercado " + reg.label + ": mejor paciencia.";
+  } else if (q.includes("vigilar") || q.includes("analiza") || q.includes("que harias")) {
+    const scan = computeDailyScan();
+    const alerts = scan.riskAlerts.slice(0,3).map(a => a.message).join("; ");
+    const actions = scan.educationalActions.slice(0,2).map(a => `${a.priority}: ${a.symbol} — ${a.action}`).join(". ");
+    reply = `Scan: ${alerts || "sin alertas criticas"}. Acciones sugeridas: ${actions || "mantener y monitorear"}.`;
+  } else if (q.includes("quiver") || q.includes("politico") || q.includes("congreso") || q.includes("insider")) {
+    if (qCount > 0) {
+      const top = [...quiverData.congressional, ...quiverData.insider].slice(0,3).map(m => `${(m.symbol||m.Ticker||"").toUpperCase()} (${m.Representative||m.Name||""})`).join(", ");
+      reply = `Quiver tiene ${qCount} registros en tus activos. Recientes: ${top}. Datos educativos, retraso hasta 45 dias.`;
+    } else {
+      reply = "Sin datos Quiver activos. Agrega QUIVER_API_KEY en .env para ver trading politico e insider.";
+    }
+  } else if (q.includes("radar") || q.includes("mercado") || q.includes("watchlist")) {
+    const radar = computeMarketRadar();
+    const hot = radar.hotTickers.slice(0,4).map(t => t.symbol).join(", ");
+    reply = `Market Radar activo: ${MARKET_WATCHLIST.length} tickers monitoreados. Mas activos ahora: ${hot || "sin señales destacadas"}. ${radar.portfolioOverlap.length} de tu portafolio en el radar.`;
+  } else if (q.includes("intel") || q.includes("inteligencia") || q.includes("grok")) {
+    const positivos = intelItems.filter(x => x.mood === "POSITIVO").length;
+    const negativos = intelItems.filter(x => x.mood === "NEGATIVO").length;
+    reply = `Cordelius Intelligence: ${intelItems.length} items. ${positivos} positivos, ${negativos} negativos. Tickers cubiertos: ${[...new Set(intelItems.flatMap(x => x.affected||[]))].slice(0,6).join(", ") || "sin items aun"}.`;
   } else if (q.includes("noticia")) {
     reply = `Hay ${news.length} noticias cargadas. Las cruzo contra tus activos para mostrar impacto probable por ticker.`;
   } else if (q.includes("bot")) {
     reply = `El bot ficticio tiene equity ${money(botEq)}, P&L ${money(botPnl)} y ${bot.tradesCount} operaciones. Laboratorio, no piloto automatico real.`;
   } else {
-    reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol}; mas debil: ${worst.symbol}.`;
+    reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
   const ai = await askClaude(question, reply, pv, reg, botEq, botPnl);
   if (ai) reply = ai;
@@ -1415,10 +1438,10 @@ header{max-width:1280px;margin:auto;padding:30px 0 14px;position:sticky;top:0;z-
 .app-icon:before{content:"";position:absolute;inset:11px;border-radius:20px;border:1px solid rgba(255,255,255,.5)}
 h1{font-size:48px;margin:0;letter-spacing:.5px;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 30px rgba(255,211,92,.2)}
 .subtitle{color:var(--muted);font-size:15px;margin-top:4px}
-nav{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;overflow-x:auto;-webkit-overflow-scrolling:touch}
 nav a,.btn{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);text-decoration:none;border-radius:14px;padding:11px 16px;font-weight:700;cursor:pointer;transition:.2s}
 .btn:hover,nav a:hover{background:rgba(59,157,255,.14);border-color:#3b9dff}
-.grid{max-width:1280px;margin:16px auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.grid{max-width:1280px;margin:16px auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}
 .card,.panel,.msg,.asset-row,.news-card,.brain-card{background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:0 16px 50px rgba(0,0,0,.3);backdrop-filter:blur(16px)}
 .card{padding:20px;transition:.25s}.card:hover{transform:translateY(-2px);border-color:rgba(59,157,255,.4)}
 .label{color:var(--muted);font-size:12px;letter-spacing:.14em;text-transform:uppercase}
@@ -1493,12 +1516,11 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 
 <header>
   <div class="logo-wrap">
-    <div class="app-icon">A</div>
-    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">Alfredo AI · portafolio real · noticias inteligentes · cerebro de trading simulado</div></div>
+    <div class="app-icon">C<span style="font-size:0.65em;vertical-align:super">Δ</span></div>
+    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">CORDΞLIUS · Trading · Intelligence · Law · Alfredo AI</div></div>
   </div>
   <nav>
-    <a href="#portfolio">Portafolio</a><a href="#alfredo">Alfredo AI</a><a href="#brain">Cerebro</a>
-    <a href="#chart">Grafica</a><a href="#news">Noticias</a><a href="#bot">Bot Ficticio</a><a href="#quiver">Quiver</a><a href="#scan">Scan Diario</a><a href="#system">Sistema</a>
+    <a href="#home">Inicio</a><a href="#vigilar">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#intelligence">Intelligence</a><a href="#radar">Trading AI</a><a href="#portfolio">Portafolio</a><a href="#quiver">Quiver</a><a href="#chart">Graficas</a><a href="#alfredo">Alfredo AI</a><a href="#modulos">Law / Help</a><a href="#system">Sistema</a>
   </nav>
 </header>
 
@@ -1509,6 +1531,14 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <span class="switch">Claude: <b class="${ANTHROPIC_API_KEY ? "green" : "yellow"}">${ANTHROPIC_API_KEY ? "OK" : "SIN KEY"}</b></span>
 </div>
 
+<a id="home"></a>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-bottom:8px">
+  <a href="#portfolio" style="text-decoration:none"><div class="card" style="border-color:rgba(59,157,255,.35);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,0,0,0))"><div class="label">Trading</div><div class="big blue" style="font-size:26px">Portafolio</div><div class="muted">Activos · Scan Diario · Quiver · Bot ficticio</div></div></a>
+  <a href="#intelligence" style="text-decoration:none"><div class="card" style="border-color:rgba(0,255,153,.35);background:linear-gradient(135deg,rgba(0,255,153,.08),rgba(0,0,0,0))"><div class="label">Intelligence</div><div class="big green" style="font-size:26px">Radar</div><div class="muted">Intel manual · Trading político · Market Radar</div></div></a>
+  <a href="#modulos" style="text-decoration:none"><div class="card" style="border-color:rgba(255,211,92,.35);background:linear-gradient(135deg,rgba(255,211,92,.08),rgba(0,0,0,0))"><div class="label">Law</div><div class="big yellow" style="font-size:26px">Cordelius Law</div><div class="muted">Cuaderno jurídico · casos · apuntes (próximo)</div></div></a>
+  <a href="#alfredo" style="text-decoration:none"><div class="card" style="border-color:rgba(129,140,248,.35);background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(0,0,0,0))"><div class="label">Alfredo AI</div><div class="big" style="font-size:26px;color:#818cf8">Asistente</div><div class="muted">Preguntas · análisis educativo · chat</div></div></a>
+</div>
+
 <div class="grid">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;var estado=cp>45?"AGRESIVO":(cp<20?"DEFENSIVO":"NEUTRAL");var ec=estado==="AGRESIVO"?"#ff4d6d":(estado==="DEFENSIVO"?"#00ff99":"#ffd35c");function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card"><div class="label">Estado general</div><div class="big" style="color:${ec}">${estado}</div><div class="muted">Cripto ${cp.toFixed(0)}% · educativo, no asesoria</div></div><div class="card"><div class="label">Exposicion por plataforma</div><div>GBM ${pp(gbm)}</div><div>Plata ${pp(plata)}</div><div>Bitso ${pp(bitso)}</div></div><div class="card"><div class="label">Exposicion por divisa</div><div>USD ${pp(plata)}</div><div>MXN ${pp(gbm+bitso)}</div><div>Cripto ${pp(bitso)}</div></div><div class="card"><div class="label">Tipo de cambio</div><div class="big">$${FX_USD_MXN.toFixed(2)}</div><div class="muted">USD a MXN · .env USD_MXN o fallback · ${nowMX()}</div></div>`;})()}<div class="card"><div class="label">Patrimonio total estimado</div><div class="big green glow">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div>
   <div class="card"><div class="label">Regimen</div><div class="big" style="color:${reg.color}">${esc(reg.label)}</div><div class="muted">${pct(reg.avg)} · ${esc(reg.detail)}</div></div>
@@ -1516,7 +1546,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <div class="card"><div class="label">Mas debil</div><div class="big red">${esc(worst.symbol)}</div><div>${esc(worst.signal)} · ${worst.score}/100</div></div>
 </div>
 
-<a id="chart"></a><h2>Grafica avanzada del portafolio</h2>
+<a id="chart"></a><h2>Graficas — portafolio + TradingView</h2>
 <div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted">Eje, max, min, area y variacion. Se guarda en ${esc(HISTORY_FILE)}.</div></div>
 <h2>Chart profesional (${esc(best.symbol)}) — TradingView</h2>
 <div class="tv-embed"><iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&hidesidetoolbar=0&saveimage=0&studies=RSI@tv-basicstudies,MACD@tv-basicstudies" style="width:100%;height:100%;border:0"></iframe></div>
@@ -1524,7 +1554,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 <a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
 <a id="alfredo"></a><h2>Alfredo AI — asistente interno</h2>
-<div class="panel"><details class="chat-details" open>
+<div class="panel"><details class="chat-details">
   <summary>Mostrar / esconder chat de Alfredo AI</summary>
   <div class="muted">Apaga Thinking Mode arriba para no gastar Claude. Si esta OFF, responde en modo local.</div>
   <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo: riesgo, vender, comprar, noticias, bot..." autocomplete="off"><button class="btn">Preguntar</button></form>
@@ -1553,12 +1583,72 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
 <h2>Bitacora del bot</h2>
 <div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razon</th></tr></thead><tbody>${botTables.histRows}</tbody></table></div>
 
-<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
+<a id="vigilar"></a><a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
 ${renderQuiverPanel()}
 
 <a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
 
 <a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
+
+<a id="intelligence"></a><h2>Cordelius Intelligence — Radar político · Intel manual</h2>
+${(function(){
+  const intel = computeIntelligence();
+  const trending = computeQuiverTrending();
+  const topTickerChips = intel.impactedTickers.slice(0,8).map(t =>
+    '<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(0,255,153,.3);border-radius:10px;padding:4px 10px;font-size:12px;margin:3px;background:rgba(0,255,153,.06)">'
+    + '<b>' + esc(t.symbol) + '</b> '
+    + '<span style="color:' + (t.sentiment==="POSITIVO"?"#00ff99":"#ff4d6d") + '">' + esc(t.sentiment) + '</span>'
+    + ' ×' + t.intelCount + '</span>'
+  ).join("");
+  const politRows = intel.politicalTrading.slice(0,8).map(m => {
+    const tx = (m.transaction||"").toLowerCase();
+    const txColor = /buy|purchase/.test(tx) ? "#00ff99" : /sale|sell/.test(tx) ? "#ff4d6d" : "#ffd166";
+    return '<tr><td><b>' + esc(m.symbol) + '</b></td><td style="color:' + txColor + ';font-weight:800">' + esc(m.transaction||"").toUpperCase().slice(0,8) + '</td><td>' + esc(m.who) + (m.party?" ("+esc(m.party)+")":"") + '</td><td class="muted" style="font-size:12px">' + esc(m.date||"") + '</td></tr>';
+  }).join("");
+  const topIntelHtml = intel.topics.slice(0,3).map(t =>
+    '<div style="border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.03);border-radius:14px;padding:14px;margin-bottom:10px">'
+    + '<span style="display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:900;background:' + (t.mood==="POSITIVO"?"rgba(0,255,153,.2)":t.mood==="NEGATIVO"?"rgba(255,77,109,.2)":"rgba(255,211,92,.15)") + ';color:' + (t.mood==="POSITIVO"?"#00ff99":t.mood==="NEGATIVO"?"#ff4d6d":"#ffd35c") + ';margin-bottom:8px">' + esc(t.mood) + '</span> '
+    + (t.affected.length ? '<span class="muted" style="font-size:12px">' + t.affected.join(", ") + '</span>' : "")
+    + '<div style="color:#dbeafe;margin-top:6px;font-size:14px">' + esc(t.text) + '</div>'
+    + '<small class="muted">' + esc(t.time||"") + '</small></div>'
+  ).join("");
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;max-width:1280px;margin:0 auto 8px">'
+    + '<div class="panel"><div class="label" style="margin-bottom:8px">Intel manual · tickers impactados</div>'
+    + (topTickerChips ? '<div style="margin-bottom:12px">' + topTickerChips + '</div>' : '<div class="muted">Sin intel manual todavía.</div>')
+    + topIntelHtml
+    + '<a href="#intel" class="btn" style="display:inline-block;margin-top:8px;font-size:13px">Ver todo Intel ↓</a></div>'
+    + '<div class="panel"><div class="label" style="margin-bottom:8px">Trading político (Quiver · congreso)</div>'
+    + (trending.configured && politRows
+      ? '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Tipo</th><th>Quien</th><th>Fecha</th></tr></thead><tbody>' + politRows + '</tbody></table></div>'
+      : '<div class="muted">Sin datos Quiver — agrega QUIVER_API_KEY en .env.</div>')
+    + '<div class="muted" style="font-size:12px;margin-top:8px">Educativo. Retraso típico hasta 45 días.</div></div>'
+    + '</div>';
+})()}
+
+<a id="radar"></a><h2>Trading AI — Market Radar</h2>
+${(function(){
+  const radar = computeMarketRadar();
+  const hot = radar.hotTickers.slice(0,10);
+  const chips = MARKET_WATCHLIST.map(sym => {
+    const t = radar.watchlist.find(x => x.symbol === sym);
+    const active = t && (t.quiverSignals > 0 || (t.score != null && t.score > 60));
+    return '<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid '+(active?"rgba(0,255,153,.5)":"rgba(120,160,210,.15)")+';border-radius:8px;padding:4px 9px;font-size:12px;margin:2px;background:'+(t&&t.inPortfolio?"rgba(59,157,255,.1)":active?"rgba(0,255,153,.06)":"transparent")+'">'
+      + '<b>' + esc(sym) + '</b>'
+      + (t && t.inPortfolio ? ' <span style="color:#3b9dff;font-size:10px">●</span>' : '')
+      + (t && t.quiverSignals > 0 ? ' <span style="color:#00ff99;font-size:10px">Q'+t.quiverSignals+'</span>' : '')
+      + '</span>';
+  }).join("");
+  const hotRows = hot.map(t =>
+    '<tr><td><b>' + esc(t.symbol) + '</b>' + (t.inPortfolio?' <span style="color:#3b9dff;font-size:11px">PORT</span>':'') + '</td>'
+    + '<td>' + (t.score!=null?t.score+"/100":"-") + '</td>'
+    + '<td style="color:' + (t.quiverSignals>0?"#00ff99":"var(--muted)") + '">' + (t.quiverSignals||"-") + '</td>'
+    + '<td style="font-size:12px;color:var(--muted)">' + esc(t.signal||"-") + '</td></tr>'
+  ).join("");
+  return '<div class="panel" style="max-width:1280px;margin:0 auto 8px"><div class="label" style="margin-bottom:10px">Watchlist · azul = en portafolio · verde = señal Quiver</div>'
+    + '<div style="margin-bottom:14px">' + chips + '</div>'
+    + (hot.length ? '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Score</th><th>Quiver</th><th>Señal</th></tr></thead><tbody>' + hotRows + '</tbody></table></div>' : '<div class="muted">Sin señales activas en watchlist.</div>')
+    + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
+})()}
 
 <a id="modulos"></a><h2>Modulos Cordelius (proximamente)</h2><div class="grid"><div class="card"><div class="label">Cordelius Health</div><div class="big" style="color:#818cf8">Proximamente</div><div class="muted">WHOOP API: sueno, HRV, recuperacion, habitos (pendiente)</div></div><div class="card"><div class="label">Cordelius Law</div><div class="big" style="color:#ffd35c">Proximamente</div><div class="muted">Cuaderno juridico, apuntes, casos (pendiente)</div></div><div class="card"><div class="label">Cordelius Intelligence</div><div class="big" style="color:#3b9dff">Grok / X manual</div><div class="muted">Pegar analisis de X o Grok (pendiente P2)</div></div><div class="card"><div class="label">Asia / China Tech</div><div class="big" style="color:#00ff99">Radar</div><div class="muted">Chips, cobre, IA, energia (pendiente, sin fuente)</div></div><div class="card"><div class="label">Alpaca</div><div class="big" style="color:#ffd35c">Pendiente</div><div class="muted">Solo paper trading futuro, sin ordenes reales</div></div></div><a id="system"></a><h2>Sistema</h2>
 <div class="grid">
