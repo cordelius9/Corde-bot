@@ -74,6 +74,8 @@ const TV_SYMBOL = {
   ETH: "BINANCE:ETHUSDT", BCH: "BINANCE:BCHUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
 };
 
+const MARKET_WATCHLIST = ["NVDA","TSLA","AMD","META","GOOGL","AMZN","AAPL","MSFT","PLTR","NFLX","SMCI","COIN","MSTR","SOFI","HOOD","RIVN","NIO","BABA","UNH","LLY","AVGO","QQQ","SPY"];
+
 let bot = loadJSON(BOT_FILE, {
   initialCapital: 1000, cash: 1000, positions: {}, history: [], equityHistory: [], thoughts: [],
   running: true, totalRealizedPnl: 0, maxDrawdown: 0, tradesCount: 0, lastTick: null
@@ -453,6 +455,173 @@ function computeDailyScan() {
   };
 }
 
+function computeQuiverTrending() {
+  const all = [
+    ...quiverData.congressional.map(x => ({ ...x, _ds: "congressional" })),
+    ...quiverData.insider.map(x => ({ ...x, _ds: "insider" })),
+    ...quiverData.contracts.map(x => ({ ...x, _ds: "contracts" }))
+  ];
+  const byTicker = {};
+  for (const m of all) {
+    const sym = (m.symbol || m.Ticker || "").toUpperCase();
+    if (!sym) continue;
+    if (!byTicker[sym]) byTicker[sym] = { symbol: sym, total: 0, buys: 0, sales: 0, others: 0, amount: 0, politicians: new Set(), latestDate: null };
+    byTicker[sym].total++;
+    const tx = (m.Transaction || m.TransactionType || m.transaction || "").toLowerCase();
+    if (/buy|purchase|bought/.test(tx)) byTicker[sym].buys++;
+    else if (/sale|sell|sold/.test(tx)) byTicker[sym].sales++;
+    else byTicker[sym].others++;
+    const amt = parseFloat(m.Amount || m.amount || m.Value || 0) || 0;
+    byTicker[sym].amount += amt;
+    const who = m.Representative || m.Name || m.name || m.Politician || "";
+    if (who) byTicker[sym].politicians.add(who);
+    if (m.Date && (!byTicker[sym].latestDate || m.Date > byTicker[sym].latestDate)) byTicker[sym].latestDate = m.Date;
+  }
+
+  const tickers = Object.values(byTicker).map(t => ({
+    symbol: t.symbol,
+    total: t.total, buys: t.buys, sales: t.sales, others: t.others,
+    totalAmount: +t.amount.toFixed(2),
+    politicianCount: t.politicians.size,
+    latestDate: t.latestDate,
+    inPortfolio: PORTFOLIO.some(a => a.symbol === t.symbol)
+  })).sort((a, b) => b.total - a.total);
+
+  const politicianMap = {};
+  for (const m of quiverData.congressional) {
+    const who = m.Representative || m.Politician || m.Name || "";
+    if (!who) continue;
+    if (!politicianMap[who]) politicianMap[who] = { name: who, party: m.Party || "", trades: 0, tickers: new Set() };
+    politicianMap[who].trades++;
+    const sym = (m.symbol || m.Ticker || "").toUpperCase();
+    if (sym) politicianMap[who].tickers.add(sym);
+  }
+  const mostActivePoliticians = Object.values(politicianMap)
+    .map(p => ({ name: p.name, party: p.party, trades: p.trades, tickers: [...p.tickers] }))
+    .sort((a, b) => b.trades - a.trades).slice(0, 10);
+
+  const latestTrades = all.slice().sort((a, b) => {
+    const da = a.Date || ""; const db = b.Date || "";
+    return da < db ? 1 : da > db ? -1 : 0;
+  }).slice(0, 20).map(m => ({
+    symbol: (m.symbol || m.Ticker || "").toUpperCase(),
+    dataset: m._ds,
+    transaction: m.Transaction || m.TransactionType || m.transaction || "",
+    who: m.Representative || m.Name || m.name || m.Politician || "",
+    party: m.Party || "",
+    amount: m.Amount || m.amount || m.Value || "",
+    date: m.Date || ""
+  }));
+
+  return {
+    ok: true, ts: Date.now(),
+    configured: quiverData.configured,
+    quiverCount: all.length,
+    topTickers: tickers.slice(0, 20),
+    topBuys: tickers.filter(t => t.buys > 0).sort((a, b) => b.buys - a.buys).slice(0, 10),
+    topSales: tickers.filter(t => t.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 10),
+    topByAmount: tickers.filter(t => t.totalAmount > 0).sort((a, b) => b.totalAmount - a.totalAmount).slice(0, 10),
+    mostActivePoliticians,
+    latestTrades
+  };
+}
+
+function computeMarketRadar() {
+  const pv = portfolioValue();
+  const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
+  const quiverTickers = new Set([
+    ...quiverData.congressional.map(x => (x.symbol || x.Ticker || "").toUpperCase()),
+    ...quiverData.insider.map(x => (x.symbol || x.Ticker || "").toUpperCase()),
+    ...quiverData.contracts.map(x => (x.symbol || x.Ticker || "").toUpperCase())
+  ].filter(Boolean));
+
+  const watchlist = MARKET_WATCHLIST.map(sym => {
+    const inPort = portfolioSymbols.has(sym);
+    const portAsset = inPort ? pv.assets.find(a => a.symbol === sym) : null;
+    const qCount = [
+      ...quiverData.congressional.filter(x => (x.symbol || x.Ticker || "").toUpperCase() === sym),
+      ...quiverData.insider.filter(x => (x.symbol || x.Ticker || "").toUpperCase() === sym),
+      ...quiverData.contracts.filter(x => (x.symbol || x.Ticker || "").toUpperCase() === sym)
+    ].length;
+    return {
+      symbol: sym,
+      inPortfolio: inPort,
+      score: portAsset ? portAsset.score : null,
+      signal: portAsset ? portAsset.signal : null,
+      gainPct: portAsset ? +portAsset.gainPct.toFixed(2) : null,
+      quiverSignals: qCount,
+      inQuiver: quiverTickers.has(sym)
+    };
+  });
+
+  const hotTickers = watchlist.filter(t => t.quiverSignals > 0 || (t.score != null && t.score > 65))
+    .sort((a, b) => (b.quiverSignals + (b.score || 0) / 10) - (a.quiverSignals + (a.score || 0) / 10));
+
+  const portfolioOverlap = watchlist.filter(t => t.inPortfolio);
+
+  const summaryLines = [];
+  summaryLines.push(`Radar de ${MARKET_WATCHLIST.length} activos del mercado.`);
+  if (hotTickers.length > 0) summaryLines.push(`${hotTickers.length} activo(s) con señales Quiver o score alto: ${hotTickers.slice(0, 5).map(t => t.symbol).join(", ")}.`);
+  summaryLines.push(`${portfolioOverlap.length} activos del radar están en tu portafolio.`);
+  summaryLines.push("EDUCATIVO: no es asesoría de inversión.");
+
+  return {
+    ok: true, ts: Date.now(),
+    watchlist,
+    hotTickers: hotTickers.slice(0, 10),
+    internetMentionsProxy: hotTickers.slice(0, 8).map(t => ({ symbol: t.symbol, score: t.quiverSignals * 2 + (t.score || 0) })),
+    quiverTrending: hotTickers.filter(t => t.quiverSignals > 0).slice(0, 10),
+    portfolioOverlap,
+    educationalSummary: summaryLines.join(" ")
+  };
+}
+
+function computeIntelligence() {
+  const pv = portfolioValue();
+  const radar = computeMarketRadar();
+  const trending = computeQuiverTrending();
+
+  const topics = intelItems.slice(0, 10).map(x => ({
+    text: String(x.text || "").slice(0, 200),
+    mood: x.mood,
+    affected: x.affected || [],
+    time: x.time
+  }));
+
+  const impactedTickers = [...new Set(intelItems.flatMap(x => x.affected || []))].map(sym => {
+    const asset = pv.assets.find(a => a.symbol === sym);
+    const intelCount = intelItems.filter(x => (x.affected || []).includes(sym)).length;
+    const moods = intelItems.filter(x => (x.affected || []).includes(sym)).map(x => x.mood);
+    const sentiment = moods.filter(m => m === "POSITIVO").length > moods.filter(m => m === "NEGATIVO").length ? "POSITIVO" : "NEGATIVO";
+    return { symbol: sym, intelCount, sentiment, score: asset ? asset.score : null, inPortfolio: !!asset };
+  }).sort((a, b) => b.intelCount - a.intelCount);
+
+  const portfolioImpacts = pv.assets.map(a => {
+    const myIntel = intelItems.filter(x => (x.affected || []).includes(a.symbol));
+    return {
+      symbol: a.symbol, score: a.score, signal: a.signal, gainPct: +a.gainPct.toFixed(2),
+      intelCount: myIntel.length,
+      intelMoods: myIntel.map(x => x.mood),
+      quiverSignals: trending.topTickers.find(t => t.symbol === a.symbol)?.total || 0
+    };
+  }).filter(x => x.intelCount > 0 || x.quiverSignals > 0);
+
+  const summaryLines = [`${intelItems.length} items de inteligencia manual.`];
+  if (trending.quiverCount > 0) summaryLines.push(`${trending.quiverCount} registros Quiver: congreso, insiders, contratos.`);
+  if (impactedTickers.length > 0) summaryLines.push(`Tickers más mencionados: ${impactedTickers.slice(0, 4).map(t => t.symbol).join(", ")}.`);
+  summaryLines.push("EDUCATIVO.");
+
+  return {
+    ok: true, ts: Date.now(),
+    topics,
+    impactedTickers: impactedTickers.slice(0, 15),
+    politicalTrading: trending.latestTrades.slice(0, 10),
+    marketRadar: radar.hotTickers.slice(0, 10),
+    portfolioImpacts,
+    educationalSummary: summaryLines.join(" ")
+  };
+}
+
 function classifyNews(n) {
   const text = `${n.headline || ""} ${n.summary || ""} ${n.source || ""}`.toLowerCase();
   let type = "MERCADO";
@@ -510,28 +679,40 @@ function addThought(text, level = "info") {
   bot.thoughts = bot.thoughts.slice(0, 40);
 }
 
-// Pensamientos institucionales mas ricos
-function institutionalThoughts(pv, reg) {
+function generateLiveThought(pv, reg) {
   const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
   const top = ranked[0], bottom = ranked[ranked.length - 1];
-  const lines = [
-    `Escaneando ${pv.assets.length} activos en GBM, Plata y Bitso.`,
-    `Regimen ${reg.label} (${pct(reg.avg)}): ${reg.detail}`,
-    `Mayor score: ${top.symbol} (${top.score}/100), RSI ${top.ind.rsi}, tendencia ${top.ind.trend.toLowerCase()}.`,
-    `Mas debil: ${bottom.symbol} (${bottom.score}/100), momentum ${bottom.ind.momentum}.`,
-    `Probabilidad alcista estimada ${top.symbol}: ${Math.min(85, top.score + 8)}%.`,
-    `Revisando flujo institucional y volatilidad relativa.`,
-    `Calculando score de confianza por sector (tech, energia, cripto).`
-  ];
-  const pick = lines[Math.floor(Math.random() * lines.length)];
-  addThought(pick, "scan");
+  const totalMXN = pv.totalValueMXN || 1;
+  const cryptoPct = (pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0) / totalMXN * 100).toFixed(0);
+  const losers = pv.assets.filter(a => a.gainPct < -10);
+  const winners = pv.assets.filter(a => a.gainPct > 50);
+  const highScore = pv.assets.filter(a => a.score >= 70);
+  const qCount = quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length;
+
+  const pool = [
+    { text: `Portafolio ${money(pv.totalValueMXN)} · rendimiento ${pct(pv.totalGainPct)} · regimen ${reg.label}.`, level: "scan" },
+    { text: `Mejor score hoy: ${top.symbol} (${top.score}/100) · RSI ${top.ind.rsi} · señal ${top.signal}.`, level: "scan" },
+    { text: `Activo mas debil: ${bottom.symbol} (score ${bottom.score}/100, ${pct(bottom.gainPct)}) · tendencia ${bottom.ind.trend.toLowerCase()}.`, level: "risk" },
+    { text: `Cripto representa ${cryptoPct}% del portafolio · ${cryptoPct > 45 ? "RIESGO ALTO — concentracion elevada" : "dentro de rango aceptable"}.`, level: cryptoPct > 45 ? "risk" : "scan" },
+    { text: `Regimen ${reg.label}: ${reg.detail} · promedio ${pct(reg.avg)}.`, level: "scan" },
+    losers.length ? { text: `${losers.length} activo(s) en drawdown mayor -10%: ${losers.map(a => a.symbol).join(", ")}.`, level: "risk" } : null,
+    winners.length ? { text: `${winners.map(a => a.symbol).join(", ")} acumula(n) +50% o mas · evaluar toma parcial educativa.`, level: "sell" } : null,
+    highScore.length ? { text: `Señales positivas: ${highScore.map(a => a.symbol + " " + a.score + "/100").join(", ")}.`, level: "buy" } : null,
+    qCount > 0 ? { text: `Quiver: ${qCount} registros institucionales en activos del portafolio · congreso, insiders, contratos.`, level: "scan" } : null,
+    { text: `Momentum dominante del portafolio: ${reg.avg >= 0 ? "positivo" : "negativo"} · ${pv.assets.filter(a => a.ind.momentum > 0).length}/${pv.assets.length} activos con momentum alcista.`, level: reg.avg >= 0 ? "buy" : "risk" },
+    { text: `${pv.assets.filter(a => a.signal.includes("BUY")).length} señales BUY activas · ${pv.assets.filter(a => a.signal.includes("TOMAR")).length} señales de toma de ganancia.`, level: "scan" },
+    intelItems.length > 0 ? { text: `${intelItems.length} items en Cordelius Intelligence · ${intelItems.filter(x => x.mood === "POSITIVO").length} positivos, ${intelItems.filter(x => x.mood === "NEGATIVO").length} negativos.`, level: "scan" } : null,
+  ].filter(Boolean);
+
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  addThought(pick.text, pick.level);
 }
 
 function botTick() {
   if (!bot.running) { addThought("Bot pausado: monitoreo visual activo, sin compras simuladas.", "warn"); saveJSON(BOT_FILE, bot); return; }
   const pv = portfolioValue();
   const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
-  institutionalThoughts(pv, marketRegime());
+  generateLiveThought(pv, marketRegime());
 
   for (const a of ranked.slice(0, 5)) {
     const priceMXN = a.valueMXN / Math.max(a.units, 1e-8);
@@ -1534,6 +1715,18 @@ const server = http.createServer(async (req, res) => {
   if (path === "/api/daily-scan") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(computeDailyScan()));
+  }
+  if (path === "/api/quiver/trending") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeQuiverTrending()));
+  }
+  if (path === "/api/market-radar") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeMarketRadar()));
+  }
+  if (path === "/api/intelligence") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeIntelligence()));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
