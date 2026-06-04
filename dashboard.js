@@ -6,6 +6,7 @@ const PORT = process.env.PORT || 3000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
+const QUIVER_CACHE_MS = 2 * 60 * 60 * 1000;
 
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
@@ -41,6 +42,7 @@ let news = [];
 let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
+let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 
 const FX_USD_MXN = Number(process.env.USD_MXN) || 18.50;
 
@@ -275,6 +277,64 @@ async function fetchNews() {
     ];
   }
   news = out.slice(0, 30).map(n => ({ ...n, classification: classifyNews(n), impacted: impactedAssets(n) }));
+}
+
+// ---- QUIVER QUANT — datos institucionales (F3a.1) ----
+async function fetchQuiverData() {
+  if (!QUIVER_API_KEY) { quiverData.configured = false; return; }
+  if (Date.now() - quiverData.lastFetch < QUIVER_CACHE_MS) return;
+  quiverData.configured = true;
+  quiverData.error = null;
+
+  function quiverGet(path) {
+    return new Promise(resolve => {
+      const r = https.request({
+        hostname: "api.quiverquant.com", path, method: "GET",
+        headers: { "Authorization": "Token " + QUIVER_API_KEY, "Accept": "application/json" },
+        timeout: 12000
+      }, res => {
+        if (res.statusCode === 429) { quiverData.error = "Rate limit (429)"; return resolve(null); }
+        if (res.statusCode === 401) { quiverData.error = "API key invalida (401)"; return resolve(null); }
+        let d = "";
+        res.on("data", c => d += c);
+        res.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+      });
+      r.on("error", () => resolve(null));
+      r.on("timeout", () => { r.destroy(); resolve(null); });
+      r.end();
+    });
+  }
+
+  try {
+    const [cong, ins, gov] = await Promise.allSettled([
+      quiverGet("/beta/live/congresstrading"),
+      quiverGet("/beta/live/insiders"),
+      quiverGet("/beta/live/govcontracts")
+    ]);
+
+    const ts = Date.now();
+    function filterByPortfolio(arr, tickerField) {
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .filter(x => PORTFOLIO.some(a => a.symbol === (x[tickerField] || "").toUpperCase()))
+        .map(x => ({
+          ...x,
+          symbol: (x[tickerField] || "").toUpperCase(),
+          inPortfolio: true,
+          daysAgo: x.Date ? Math.floor((ts - new Date(x.Date).getTime()) / 86400000) : null
+        }))
+        .slice(0, 50);
+    }
+
+    quiverData.congressional = filterByPortfolio(cong.status === "fulfilled" ? cong.value : null, "Ticker");
+    quiverData.insider = filterByPortfolio(ins.status === "fulfilled" ? ins.value : null, "Ticker");
+    quiverData.contracts = filterByPortfolio(gov.status === "fulfilled" ? gov.value : null, "Ticker");
+    quiverData.lastFetch = ts;
+    console.log("Quiver OK:", quiverData.congressional.length, "congreso,", quiverData.insider.length, "insiders,", quiverData.contracts.length, "contratos");
+  } catch (e) {
+    quiverData.error = e.message;
+    console.log("Quiver error:", e.message);
+  }
 }
 
 function classifyNews(n) {
@@ -1160,6 +1220,7 @@ const server = http.createServer(async (req, res) => {
       portfolio: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct, assets: pv.assets.length },
       bot: { running: bot.running, cash: bot.cash, trades: bot.tradesCount },
       intel: { count: intelItems.length },
+      quiver: { configured: quiverData.configured, congressional: quiverData.congressional.length, insider: quiverData.insider.length, contracts: quiverData.contracts.length },
       settings: { thinkingEnabled: settings.thinkingEnabled, theme: settings.themeMode }
     }));
   }
@@ -1181,6 +1242,22 @@ const server = http.createServer(async (req, res) => {
     };
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, summary: intelSummary, items: intelItems }));
+  }
+  if (req.url === "/api/quiver") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true, configured: quiverData.configured, error: quiverData.error || null,
+      summary: {
+        congressional: quiverData.congressional.length,
+        insider: quiverData.insider.length,
+        contracts: quiverData.contracts.length,
+        lastFetch: quiverData.lastFetch,
+        cacheAgeMinutes: quiverData.lastFetch ? Math.floor((Date.now() - quiverData.lastFetch) / 60000) : null
+      },
+      congressional: quiverData.congressional,
+      insider: quiverData.insider,
+      contracts: quiverData.contracts
+    }));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
@@ -1214,6 +1291,13 @@ async function boot() {
     try { savePortfolioPoint(); } catch (e) { console.log("savePortfolioPoint omitido:", e.message); }
     try { botTick(); } catch (e) { console.log("botTick omitido:", e.message); }
 
+    try {
+      await Promise.race([
+        fetchQuiverData(),
+        new Promise(resolve => setTimeout(resolve, 10000))
+      ]);
+    } catch (e) { console.log("fetchQuiverData boot omitido:", e.message); }
+
     setInterval(async () => {
       try {
         await Promise.race([
@@ -1238,6 +1322,15 @@ async function boot() {
         console.log("fetchNews interval omitido:", e.message);
       }
     }, 1000 * 60 * 12);
+
+    setInterval(async () => {
+      try {
+        await Promise.race([
+          fetchQuiverData(),
+          new Promise(resolve => setTimeout(resolve, 10000))
+        ]);
+      } catch (e) {}
+    }, QUIVER_CACHE_MS);
   }, 500);
 }
 boot();
@@ -1249,3 +1342,5 @@ boot();
 /* CORDELIUS_P2_INTEL_APPLIED */
 
 /* CORDELIUS_CLAUDE_SMART_APPLIED */
+
+/* CORDELIUS_F3A1_APPLIED */
