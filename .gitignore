@@ -22,6 +22,7 @@ dashboard_backup_*.js
 dashboard_FINAL_ESTABLE_*.js
 dashboard_OK_PUBLICO_*.js
 dashboard_broken_before_recovery_*.js
+bot_backup_*.js
 patch_*.js
 insertar
 reemplazar
