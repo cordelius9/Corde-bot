@@ -224,7 +224,12 @@ function spark(data, opts = {}) {
   const height = opts.height || 260;
   const showTable = opts.showTable !== false; // default true for big charts
   let rawData = (data || []).map(x => typeof x === "number" ? { v: x, t: null } : { v: Number(x[key]), t: x.t || null }).filter(d => Number.isFinite(d.v));
-  if (rawData.length < 2) rawData = [0.92, 0.96, 0.87, 1.05, 1.0, 1.1, 1.06, 1.18, 1.14, 1.22].map(v => ({ v, t: null }));
+  if (rawData.length < 2) {
+    return `<div class="chart-wrap" style="min-height:${height}px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(255,255,255,.03);border:1px solid rgba(120,160,210,.1);border-radius:14px;gap:8px;padding:20px">
+      <div style="font-size:32px">📊</div>
+      <div style="color:var(--muted);font-size:13px;text-align:center">Sin historial suficiente<br><small>Los datos aparecerán después del primer refresh automático</small></div>
+    </div>`;
+  }
   const vals = rawData.map(d => d.v);
   const min = Math.min(...vals), max = Math.max(...vals);
   const range = max - min || 1;
@@ -958,9 +963,47 @@ async function alfredoReply(question) {
   const botEq = botValue(), botPnl = botEq - bot.initialCapital;
   let reply = "";
   const qCount = quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length;
-  if (q.includes("riesgo")) {
+
+  // Detect specific portfolio ticker mentioned in question
+  const mentionedAsset = pv.assets.find(a =>
+    q.includes(a.symbol.toLowerCase()) ||
+    (a.name && a.name.toLowerCase().split(" ").some(w => w.length > 3 && q.includes(w.toLowerCase())))
+  );
+
+  const isAboutCost = q.includes("cuanto") || q.includes("cuánto") || q.includes("cuanta") ||
+    q.includes("cuánta") || q.includes("promedio") || q.includes("invert") ||
+    q.includes("costo") || q.includes("comi") || q.includes("compré") || q.includes("compre");
+
+  if (isAboutCost && mentionedAsset) {
+    const a = mentionedAsset;
+    const units = a.units || 0;
+    const avgBuyMXN = units > 0 ? a.costMXN / units : 0;
+    const avgBuyUSD = (a.currency === "USD" && units > 0) ? (a.costManual / units) : null;
+    const curPriceMXN = units > 0 ? a.valueMXN / units : 0;
+    const curPriceUSD = (a.currency === "USD" && units > 0) ? (a.liveValue / units) : null;
+    const unitsStr = a.type === "crypto" ? Number(units).toFixed(units < 1 ? 8 : 4) + " " + a.symbol : units + " acciones";
+    const avgStr = a.currency === "USD" && avgBuyUSD != null ? money(avgBuyUSD, "USD") + " (≈ " + money(avgBuyMXN) + ")" : money(avgBuyMXN);
+    const curStr = a.currency === "USD" && curPriceUSD != null ? money(curPriceUSD, "USD") + " (≈ " + money(curPriceMXN) + ")" : money(curPriceMXN);
+    reply = `${a.display} — ${a.name} (${a.source}):
+• Cantidad: ${unitsStr}
+• Costo original: ${money(a.costMXN)}
+• Promedio de compra: ${avgStr} por unidad
+• Precio actual: ${curStr} por unidad
+• Valor actual: ${money(a.valueMXN)}
+• Ganancia: ${money(a.gainMXN)} (${pct(a.gainPct)})
+• Riesgo: ${a.risk} · Score: ${a.score}/100
+EDUCATIVO — no es asesoría financiera.`;
+  } else if (isAboutCost && !mentionedAsset) {
+    // General "promedio de compra" for top assets by value
+    const top = pv.assets.slice().sort((a, b) => b.valueMXN - a.valueMXN).slice(0, 6);
+    reply = `Resumen de costos (mayor valor primero):\n` + top.map(a => {
+      const u = a.units || 0;
+      const avg = u > 0 ? money(a.costMXN / u) : "n/d";
+      return `• ${a.symbol}: costo ${money(a.costMXN)} · promedio ${avg}/u · ahora ${money(a.valueMXN)} (${pct(a.gainPct)})`;
+    }).join("\n") + "\nEDUCATIVO — no asesoría financiera.";
+  } else if (q.includes("riesgo")) {
     const high = pv.assets.filter(a => a.risk === "ALTO" || a.risk === "MEDIO/ALTO");
-    const cryptoPct = (pv.assets.filter(a => a.type === "crypto").reduce((s,a) => s+a.valueMXN, 0) / (pv.totalValueMXN||1) * 100).toFixed(0);
+    const cryptoPct = (pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0) / (pv.totalValueMXN || 1) * 100).toFixed(0);
     reply = `Tu riesgo principal esta en ${high.map(a => a.symbol).join(", ")}. Cripto ${cryptoPct}% del portafolio. Regimen ${reg.label}. Los de mayor riesgo pueden moverse fuerte en ambas direcciones.`;
   } else if (q.includes("vender") || q.includes("vendo") || q.includes("que vendo")) {
     const losers = ranked.filter(a => a.gainPct < -10 || a.score < 35).slice(0, 3);
@@ -968,26 +1011,42 @@ async function alfredoReply(question) {
   } else if (q.includes("comprar") || q.includes("compro")) {
     const ideas = ranked.filter(a => a.signal.includes("BUY") || a.signal.includes("MOMENTUM")).slice(0, 4);
     reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia y tamano pequeno.` : "No veo compra clara. Mercado " + reg.label + ": mejor paciencia.";
-  } else if (q.includes("vigilar") || q.includes("analiza") || q.includes("que harias")) {
+  } else if (q.includes("vigilar") || q.includes("analiza") || q.includes("que harias") || q.includes("hoy")) {
     const scan = computeDailyScan();
-    const alerts = scan.riskAlerts.slice(0,3).map(a => a.message).join("; ");
-    const actions = scan.educationalActions.slice(0,2).map(a => `${a.priority}: ${a.symbol} — ${a.action}`).join(". ");
-    reply = `Scan: ${alerts || "sin alertas criticas"}. Acciones sugeridas: ${actions || "mantener y monitorear"}.`;
-  } else if (q.includes("quiver") || q.includes("politico") || q.includes("congreso") || q.includes("insider")) {
-    if (qCount > 0) {
-      const top = [...quiverData.congressional, ...quiverData.insider].slice(0,3).map(m => `${(m.symbol||m.Ticker||"").toUpperCase()} (${m.Representative||m.Name||""})`).join(", ");
-      reply = `Quiver tiene ${qCount} registros en tus activos. Recientes: ${top}. Datos educativos, retraso hasta 45 dias.`;
-    } else {
-      reply = "Sin datos Quiver activos. Agrega QUIVER_API_KEY en .env para ver trading politico e insider.";
-    }
-  } else if (q.includes("radar") || q.includes("mercado") || q.includes("watchlist")) {
+    const alerts = scan.riskAlerts.slice(0, 3).map(a => a.message).join("; ");
+    const actions = scan.educationalActions.slice(0, 2).map(a => `${a.priority}: ${a.symbol} — ${a.action}`).join(". ");
     const radar = computeMarketRadar();
-    const hot = radar.hotTickers.slice(0,4).map(t => t.symbol).join(", ");
-    reply = `Market Radar activo: ${MARKET_WATCHLIST.length} tickers monitoreados. Mas activos ahora: ${hot || "sin señales destacadas"}. ${radar.portfolioOverlap.length} de tu portafolio en el radar.`;
+    const extHot = radar.hotTickers.filter(t => !t.inPortfolio).slice(0, 3).map(t => t.symbol).join(", ");
+    reply = `Scan portafolio: ${alerts || "sin alertas criticas"}. Acciones: ${actions || "mantener y monitorear"}.${extHot ? " Externos a vigilar: " + extHot + " (watchlist IA)." : ""}`;
+  } else if (q.includes("externo") || q.includes("stocks externos") || q.includes("afuera") || q.includes("watchlist")) {
+    const radar = computeMarketRadar();
+    const ext = radar.hotTickers.filter(t => !t.inPortfolio).slice(0, 6);
+    const trend = computeQuiverTrending();
+    const extQ = trend.topTickers.filter(t => !PORTFOLIO.some(a => a.symbol === t.symbol)).slice(0, 4);
+    if (ext.length || extQ.length) {
+      const extList = ext.map(t => `${t.symbol}${t.quiverSignals > 0 ? " (Q×" + t.quiverSignals + ")" : ""}`).join(", ");
+      const qList = extQ.map(t => `${t.symbol} (${t.buys}C/${t.sales}V)`).join(", ");
+      reply = `Radar IA: ${extList || "sin señales"}. ${qList ? "Quiver externos: " + qList + "." : ""} No estan en tu portafolio — solo vigilancia educativa.`;
+    } else {
+      reply = `Watchlist: ${MARKET_WATCHLIST.slice(0, 8).join(", ")}. Con QUIVER_API_KEY verias cuales compran/venden politicos. EDUCATIVO.`;
+    }
+  } else if (q.includes("quiver") || q.includes("politico") || q.includes("congreso") || q.includes("insider") || q.includes("senador") || q.includes("diputado")) {
+    if (qCount > 0) {
+      const top = [...quiverData.congressional, ...quiverData.insider].slice(0, 3).map(m => `${(m.symbol || m.Ticker || "").toUpperCase()} (${m.Representative || m.Name || "politico"})`).join(", ");
+      const trend = computeQuiverTrending();
+      const topPols = trend.mostActivePoliticians.slice(0, 2).map(p => `${p.name} (${p.trades} trades)`).join(", ");
+      reply = `Quiver: ${qCount} registros en tus activos. Recientes: ${top}.${topPols ? " Más activos: " + topPols + "." : ""} Datos educativos, retraso hasta 45 dias.`;
+    } else {
+      reply = "Sin datos Quiver activos. Agrega QUIVER_API_KEY en .env para ver trading politico e insider en tus acciones USA.";
+    }
+  } else if (q.includes("radar") || q.includes("mercado")) {
+    const radar = computeMarketRadar();
+    const hot = radar.hotTickers.slice(0, 4).map(t => t.symbol).join(", ");
+    reply = `Market Radar: ${MARKET_WATCHLIST.length} tickers monitoreados. Mas activos ahora: ${hot || "sin señales destacadas"}. ${radar.portfolioOverlap.length} de tu portafolio en el radar.`;
   } else if (q.includes("intel") || q.includes("inteligencia") || q.includes("grok")) {
     const positivos = intelItems.filter(x => x.mood === "POSITIVO").length;
     const negativos = intelItems.filter(x => x.mood === "NEGATIVO").length;
-    reply = `Cordelius Intelligence: ${intelItems.length} items. ${positivos} positivos, ${negativos} negativos. Tickers cubiertos: ${[...new Set(intelItems.flatMap(x => x.affected||[]))].slice(0,6).join(", ") || "sin items aun"}.`;
+    reply = `Cordelius Intelligence: ${intelItems.length} items. ${positivos} positivos, ${negativos} negativos. Tickers cubiertos: ${[...new Set(intelItems.flatMap(x => x.affected || []))].slice(0, 6).join(", ") || "sin items aun"}.`;
   } else if (q.includes("noticia")) {
     reply = `Hay ${news.length} noticias cargadas. Las cruzo contra tus activos para mostrar impacto probable por ticker.`;
   } else if (q.includes("bot")) {
@@ -1258,6 +1317,7 @@ function renderIntelByAsset() {
 }
 
 function renderExternalRadar() {
+  const pv = portfolioValue();
   const trending = computeQuiverTrending();
   const radar = computeMarketRadar();
   const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
@@ -1278,7 +1338,22 @@ function renderExternalRadar() {
   const items = [...merged.values()].sort((a, b) => b.quiverTotal - a.quiverTotal).slice(0, 10);
 
   if (!items.length) {
-    return '<div class="panel" style="max-width:1280px;margin:0 auto 8px"><div class="muted">Radar externo: sin datos Quiver activos. Con QUIVER_API_KEY verás stocks calientes del Congreso que no están en tu portafolio.</div></div>';
+    // No Quiver data — show MARKET_WATCHLIST with portfolio status as chip grid
+    const chips = MARKET_WATCHLIST.map(sym => {
+      const inPort = PORTFOLIO.some(a => a.symbol === sym);
+      const portAsset = inPort ? pv.assets.find(a => a.symbol === sym) : null;
+      const color = inPort ? "#3b9dff" : "#64748b";
+      return '<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid ' + color + '55;border-radius:8px;padding:4px 10px;font-size:12px;margin:3px;background:' + color + '0a">'
+        + '<b>' + esc(sym) + '</b>'
+        + (inPort ? '<span style="color:#3b9dff;font-size:10px;margin-left:2px">●</span>' : '')
+        + (portAsset ? '<span style="color:' + (portAsset.gainPct >= 0 ? "#00ff99" : "#ff4d6d") + ';font-size:10px"> ' + (portAsset.gainPct >= 0 ? "+" : "") + portAsset.gainPct.toFixed(0) + '%</span>' : '')
+        + '</span>';
+    }).join("");
+    return '<div class="panel" style="max-width:1280px;margin:0 auto 8px">'
+      + '<div class="label" style="margin-bottom:10px">Watchlist — azul = en mi portafolio</div>'
+      + '<div style="margin-bottom:12px">' + chips + '</div>'
+      + '<div class="muted" style="font-size:12px">Con <b>QUIVER_API_KEY</b> en .env verás cuáles compran/venden políticos del Congreso y cuáles están más calientes. Actualmente: solo watchlist de radar IA.</div>'
+      + '</div>';
   }
 
   function externalSignal(t) {
@@ -1451,6 +1526,36 @@ function renderDailyScanCard() {
       + '</div>'
       + (scan.educationalSummary ? '<div style="margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);color:#c7dff7;font-size:13px;line-height:1.6">'
         + '<b style="color:#3b9dff;font-size:11px;letter-spacing:.08em">RESUMEN EDUCATIVO</b><br>' + esc(scan.educationalSummary) + '</div>' : '')
+      + (function() {
+        // External stocks watchlist section inside scan card
+        const radar = computeMarketRadar();
+        const extItems = MARKET_WATCHLIST.slice(0, 15).map(sym => {
+          const inPort = PORTFOLIO.some(a => a.symbol === sym);
+          const portA = inPort ? portfolioValue().assets.find(a => a.symbol === sym) : null;
+          const qSig = radar.watchlist.find(t => t.symbol === sym);
+          return {
+            symbol: sym, inPortfolio: inPort,
+            gainPct: portA ? portA.gainPct : null,
+            score: portA ? portA.score : null,
+            signal: portA ? portA.signal : null,
+            quiverSignals: qSig ? qSig.quiverSignals : 0
+          };
+        });
+        const chips = extItems.map(t => {
+          const c = t.inPortfolio ? "#3b9dff" : t.quiverSignals > 0 ? "#00ff99" : "#64748b";
+          return '<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid '+ c +'44;border-radius:8px;padding:3px 9px;font-size:11px;margin:2px;background:'+ c +'0a">'
+            + '<b>' + esc(t.symbol) + '</b>'
+            + (t.inPortfolio ? '<span style="color:#3b9dff;font-size:9px"> ●PORT</span>' : '')
+            + (t.quiverSignals > 0 ? '<span style="color:#00ff99;font-size:9px"> Q' + t.quiverSignals + '</span>' : '')
+            + (t.gainPct != null ? '<span style="color:' + (t.gainPct >= 0 ? "#00ff99" : "#ff4d6d") + ';font-size:9px"> ' + (t.gainPct >= 0 ? "+" : "") + t.gainPct.toFixed(0) + '%</span>' : '')
+            + '</span>';
+        }).join('');
+        return '<div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(120,160,210,.1)">'
+          + '<div class="label" style="margin-bottom:8px">Externos a vigilar · azul=en portafolio · verde=señal Quiver</div>'
+          + '<div>' + chips + '</div>'
+          + '<div class="muted" style="font-size:11px;margin-top:6px">EDUCATIVO — ninguno de estos es recomendación de compra/venta. Solo vigilancia informada.</div>'
+          + '</div>';
+      })()
       + '</div>';
   } catch (e) {
     return '<div class="panel"><div class="muted">Scan diario no disponible: ' + esc(String(e.message || "error")) + '</div></div>';
