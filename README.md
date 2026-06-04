@@ -69,6 +69,21 @@ El dashboard estará disponible en:
 
 ---
 
+## Automatización (Mega 7)
+
+Scripts en `scripts/`:
+
+```bash
+bash scripts/health_check.sh     # Verifica /health, tail de log si falla
+bash scripts/restart_safe.sh     # stop → start → sleep 4 → health check
+bash scripts/morning_report.sh   # Consulta endpoints, guarda JSON en reports/
+bash scripts/final_check.sh      # git status + sintaxis + health + secrets — antes de push
+```
+
+Ver [AUTOMATION.md](AUTOMATION.md) para guía completa: inicio automático en Termux, watchdog, migración a cloud.
+
+---
+
 ## Endpoints de la API
 
 | Método | Ruta | Descripción |
@@ -78,6 +93,11 @@ El dashboard estará disponible en:
 | `GET` | `/api/status` | Estado completo (portafolio, bot, intel) |
 | `GET` | `/api/portfolio` | Portafolio completo con todos los activos en JSON |
 | `GET` | `/api/intel` | Items de Intel con resumen de moods y tickers |
+| `GET` | `/api/daily-brief` | Newsletter diario con saludo y líneas de resumen |
+| `GET` | `/api/morning-report` | Reporte matutino completo: portafolio, idea, Quiver, automation |
+| `GET` | `/api/market-intelligence` | Inteligencia de mercado: portafolio + externo + Quiver + sectores |
+| `GET` | `/api/external-radar` | Radar externo: stocks calientes por sector |
+| `GET` | `/api/paper/status` | Estado Paper Mode: idea, bot metrics, disclaimer |
 | `POST` | `/ask` | Pregunta a Alfredo AI (body: `q=texto`) |
 | `POST` | `/intel` | Agrega item de Intel (body: `intel=texto`) |
 | `POST` | `/intel/delete` | Borra item Intel por hash (body: `id=hash`) |
@@ -127,6 +147,12 @@ Corde-bot/
 ├── dashboard.js          # App principal (Node.js HTTP server)
 ├── bot.js                # Bot Telegram + Claude AI
 ├── trading_ai.js         # Simulador de trading ficticio (port 3001)
+├── scripts/
+│   ├── health_check.sh   # Verifica /health, tail de log si falla
+│   ├── restart_safe.sh   # Reinicio seguro: stop → start → health
+│   ├── morning_report.sh # Consulta endpoints, guarda JSON en reports/
+│   └── final_check.sh    # Validación antes de git push
+├── reports/              # Reportes auto-generados (en .gitignore)
 ├── start.sh              # Iniciar dashboard en background
 ├── stop.sh               # Detener dashboard
 ├── status.sh             # Ver estado + tail del log
@@ -134,6 +160,7 @@ Corde-bot/
 ├── watchdog.sh           # Reinicio automático si el proceso cae
 ├── package.json          # Dependencias y scripts npm
 ├── .env.example          # Template de variables de entorno
+├── AUTOMATION.md         # Guía de automatización (Termux + cloud)
 ├── CLAUDE.md             # Guía para agentes AI
 ├── README.md             # Esta documentación
 └── .gitignore            # Archivos excluidos de git

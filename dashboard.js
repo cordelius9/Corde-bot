@@ -1283,6 +1283,22 @@ EDUCATIVO — no es asesoría financiera.`;
     reply = idea.hasIdea
       ? `Paper Mode — ${idea.type}: ${idea.symbol} — ${idea.reason}. Confianza: ${idea.confidence}. Falta para operar real: ${idea.missingData}. Alpaca: pendiente de conexión. NO hay trading real.`
       : "Paper Mode activo. Sin idea de trade destacada ahora. Bot simulado: equity " + money(botEq) + ", P&L " + money(botPnl) + ". Alpaca: pendiente. NO hay trading real.";
+  } else if (q.includes("morning report") || q.includes("reporte diario") || q.includes("reporte mañana") || q.includes("reporte manana")) {
+    const nl = computeDailyNewsletter();
+    const idea = computeTradeIdea();
+    reply = `Morning Report — ${nl.date}. ${nl.lines.slice(0,3).join(" ")} ${idea.hasIdea ? "Idea: " + idea.type + " " + idea.symbol + " — " + idea.reason + "." : "Sin idea de trade destacada."} Endpoint: GET /api/morning-report`;
+  } else if (q.includes("automatiz") || q.includes("autopilot") || q.includes("auto pilot")) {
+    reply = `Automatización Cordelius — Scripts disponibles: health_check.sh (verifica /health), restart_safe.sh (reinicio seguro), morning_report.sh (guarda JSON en reports/), final_check.sh (valida antes de push). Usa bash scripts/health_check.sh desde ~/corde-bot. Cloud: conceptualmente listo para migrar a VPS/Railway. NO hay trading real ni órdenes automáticas.`;
+  } else if (q.includes("estado del sistema") || q.includes("system status") || (q.includes("health") && !q.includes("healthcare"))) {
+    reply = `Sistema Cordelius — Servidor: ONLINE (si ves esto). Paper Mode: ON. Real Trading: OFF. Alpaca: PENDIENTE. Quiver: ${quiverData.configured ? "ON" : "pendiente API key"}. Bot ficticio: equity ${money(botEq)}, P&L ${money(botPnl)}. Revisa /health para JSON completo.`;
+  } else if (q.includes("cloud") || q.includes("nube") || q.includes("migrar") || q.includes("vps") || q.includes("servidor")) {
+    reply = `Cloud / Migración — Cordelius puede migrar a VPS (Railway, Render, Fly.io) o servidor propio. Scripts de automatización ya preparados en scripts/. Requeriría: .env en variables de entorno del host, PM2 o systemd para proceso, HTTPS con reverse proxy. Sin Alpaca real no hay riesgo financiero. Actualmente: Termux/Android.`;
+  } else if (q.includes("termux") || q.includes("android") || q.includes("watchdog")) {
+    reply = `Termux — Cordelius corre en Termux (Android). Scripts: ./start.sh, ./stop.sh, ./watchdog.sh (reinicio automático si cae). Para inicio automático al boot: Termux:Boot (app separada) + script en ~/.termux/boot/. Sin Termux:Boot, iniciar manualmente tras reiniciar Android.`;
+  } else if (q.includes("paper status") || q.includes("estado paper") || q.includes("bot status")) {
+    const idea = computeTradeIdea();
+    const m = botMetrics();
+    reply = `Paper Status — Bot ficticio: ${bot.running ? "ACTIVO" : "PAUSADO"}. Equity: ${money(botEq)}. P&L: ${money(botPnl)}. Trades: ${m.totalTrades}. Ratio: ${m.winRatio}%. Trade idea: ${idea.hasIdea ? idea.type + " " + idea.symbol : "sin señal"}. Alpaca: PENDIENTE. NO hay dinero real.`;
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
@@ -2155,6 +2171,87 @@ function renderPaperTradingPanel() {
   </div>`;
 }
 
+function renderMorningReport() {
+  const nl = computeDailyNewsletter();
+  const idea = computeTradeIdea();
+  const lines = nl.lines.slice(0, 4);
+  const ideaHtml = idea.hasIdea
+    ? `<div style="margin-top:12px;padding:10px 14px;background:rgba(0,255,153,.06);border:1px solid rgba(0,255,153,.18);border-radius:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99">IDEA PAPER</span>
+        <b>${esc(idea.symbol)}</b>
+        <span style="color:#00ff99;font-weight:700">${esc(idea.type)}</span>
+        <span class="muted" style="font-size:12px">${esc(idea.reason)}</span>
+        <span style="font-size:11px;color:#9fb3c8">confianza: ${esc(idea.confidence)}</span>
+      </div>`
+    : `<div style="margin-top:12px;padding:8px 14px;background:rgba(120,160,210,.05);border-radius:10px;color:#9fb3c8;font-size:13px">Sin idea de trade destacada hoy.</div>`;
+  return `<div style="max-width:1280px;margin:0 auto 16px">
+    <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04)">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Morning Report — ${esc(nl.date)}</div>
+      <div style="font-size:15px;color:#dbeafe;font-weight:600;margin-bottom:12px">${esc(nl.greeting)}</div>
+      <ul style="margin:0;padding-left:18px;list-style:disc">
+        ${lines.map(l => `<li style="margin-bottom:6px;color:#c8d8f0;font-size:13px">${esc(l)}</li>`).join("")}
+      </ul>
+      ${ideaHtml}
+      <div style="margin-top:14px;padding-top:10px;border-top:1px solid rgba(120,160,210,.08);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <a href="/api/morning-report" target="_blank" style="font-size:12px;color:#3b9dff;text-decoration:none;border:1px solid rgba(59,157,255,.25);border-radius:99px;padding:5px 12px">API JSON</a>
+        <span class="muted" style="font-size:11px">Generado: ${esc(nowMX())}</span>
+        <span class="muted" style="font-size:11px">• bash scripts/morning_report.sh para guardar en reports/</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderAutopilotPanel() {
+  const isOnline = true;
+  const paperActive = true;
+  return `<div style="max-width:1280px;margin:0 auto 16px">
+    <div class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.04)">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Autopilot — Estado del sistema</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
+        <div style="background:rgba(0,255,153,.07);border:1px solid rgba(0,255,153,.18);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#00ff99;margin-bottom:4px">SERVIDOR</div>
+          <div style="font-size:18px;font-weight:900;color:#00ff99">ON</div>
+          <div class="muted" style="font-size:11px">Cordelius OS</div>
+        </div>
+        <div style="background:rgba(255,211,92,.07);border:1px solid rgba(255,211,92,.18);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#ffd35c;margin-bottom:4px">CLOUDFLARE</div>
+          <div style="font-size:18px;font-weight:900;color:#ffd35c">MANUAL</div>
+          <div class="muted" style="font-size:11px">bash tunnel.sh</div>
+        </div>
+        <div style="background:rgba(0,255,153,.07);border:1px solid rgba(0,255,153,.18);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#00ff99;margin-bottom:4px">PAPER MODE</div>
+          <div style="font-size:18px;font-weight:900;color:#00ff99">ON</div>
+          <div class="muted" style="font-size:11px">Sin dinero real</div>
+        </div>
+        <div style="background:rgba(255,77,109,.07);border:1px solid rgba(255,77,109,.18);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#ff4d6d;margin-bottom:4px">REAL TRADING</div>
+          <div style="font-size:18px;font-weight:900;color:#ff4d6d">OFF</div>
+          <div class="muted" style="font-size:11px">No conectado</div>
+        </div>
+        <div style="background:${quiverData.configured ? "rgba(0,255,153,.07)" : "rgba(255,211,92,.07)"};border:1px solid ${quiverData.configured ? "rgba(0,255,153,.18)" : "rgba(255,211,92,.18)"};border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:${quiverData.configured ? "#00ff99" : "#ffd35c"};margin-bottom:4px">QUIVER</div>
+          <div style="font-size:18px;font-weight:900;color:${quiverData.configured ? "#00ff99" : "#ffd35c"}">${quiverData.configured ? "ON" : "—"}</div>
+          <div class="muted" style="font-size:11px">${quiverData.configured ? "Datos en vivo" : "Agrega API key"}</div>
+        </div>
+        <div style="background:rgba(129,140,248,.07);border:1px solid rgba(129,140,248,.18);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#818cf8;margin-bottom:4px">ALPACA</div>
+          <div style="font-size:18px;font-weight:900;color:#818cf8">PENDIENTE</div>
+          <div class="muted" style="font-size:11px">Paper solo (F3)</div>
+        </div>
+      </div>
+      <div style="border-top:1px solid rgba(120,160,210,.08);padding-top:10px">
+        <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS DE AUTOMATIZACIÓN</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${["health_check.sh","restart_safe.sh","morning_report.sh","final_check.sh"].map(s =>
+            `<span style="border:1px solid rgba(129,140,248,.25);border-radius:99px;padding:4px 12px;font-size:12px;font-family:monospace;color:#818cf8">bash scripts/${esc(s)}</span>`
+          ).join("")}
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px">Próximo paso: Termux:Boot para inicio automático — ver AUTOMATION.md</div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -2283,6 +2380,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 
 <a id="home"></a>
 ${renderDailyBrief()}
+${renderMorningReport()}
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-bottom:8px">
   <a href="#portfolio" style="text-decoration:none"><div class="card" style="border-color:rgba(59,157,255,.35);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,0,0,0))"><div class="label">Trading</div><div class="big blue" style="font-size:26px">Portafolio</div><div class="muted">Activos · Scan Diario · Quiver · Bot ficticio</div></div></a>
   <a href="#intelligence" style="text-decoration:none"><div class="card" style="border-color:rgba(0,255,153,.35);background:linear-gradient(135deg,rgba(0,255,153,.08),rgba(0,0,0,0))"><div class="label">Intelligence</div><div class="big green" style="font-size:26px">Radar</div><div class="muted">Intel manual · Trading político · Market Radar</div></div></a>
@@ -2436,6 +2534,9 @@ ${(function(){
     + (hot.length ? '<div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Score</th><th>Quiver</th><th>Señal</th></tr></thead><tbody>' + hotRows + '</tbody></table></div>' : '<div class="muted">Sin señales activas en watchlist.</div>')
     + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
 })()}
+
+<a id="autopilot"></a><h2>Autopilot — Estado del sistema · Automatización</h2>
+${renderAutopilotPanel()}
 
 <a id="modulos"></a><h2>Modulos Cordelius (proximamente)</h2><div class="grid"><div class="card"><div class="label">Cordelius Health</div><div class="big" style="color:#818cf8">Proximamente</div><div class="muted">WHOOP API: sueno, HRV, recuperacion, habitos (pendiente)</div></div><div class="card"><div class="label">Cordelius Law</div><div class="big" style="color:#ffd35c">Proximamente</div><div class="muted">Cuaderno juridico, apuntes, casos (pendiente)</div></div><div class="card"><div class="label">Cordelius Intelligence</div><div class="big" style="color:#3b9dff">Grok / X manual</div><div class="muted">Pegar analisis de X o Grok (pendiente P2)</div></div><div class="card"><div class="label">Asia / China Tech</div><div class="big" style="color:#00ff99">Radar</div><div class="muted">Chips, cobre, IA, energia (pendiente, sin fuente)</div></div><div class="card"><div class="label">Alpaca</div><div class="big" style="color:#ffd35c">Pendiente</div><div class="muted">Solo paper trading futuro, sin ordenes reales</div></div></div><a id="system"></a><h2>Sistema</h2>
 <div class="grid">
@@ -2626,6 +2727,38 @@ const server = http.createServer(async (req, res) => {
     const m = botMetrics();
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), paperMode: true, realTrading: false, alpacaConnected: false, alpacaStatus: "PENDIENTE", idea, botMetrics: m, disclaimer: "PAPER TRADING / SIMULACION — NO USA DINERO REAL" }));
+  }
+  if (path === "/api/morning-report") {
+    const nl = computeDailyNewsletter();
+    const pv = portfolioValue();
+    const idea = computeTradeIdea();
+    const qi = computeQuiverIntelligence();
+    const m = botMetrics();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      date: nl.date,
+      greeting: nl.greeting,
+      summary: nl.fullSummary,
+      newsletterLines: nl.lines,
+      portfolio: {
+        totalValueMXN: pv.totalValueMXN,
+        totalCostMXN: pv.totalCostMXN,
+        totalGainMXN: pv.totalGainMXN,
+        totalGainPct: pv.totalGainPct,
+        assetCount: pv.assets.length
+      },
+      tradeIdea: idea,
+      quiver: { configured: qi.configured },
+      paperMode: { active: true, realTrading: false, alpacaConnected: false, botMetrics: m },
+      automation: {
+        scripts: ["health_check.sh", "restart_safe.sh", "morning_report.sh", "final_check.sh"],
+        reportsDir: "reports/",
+        cloudReady: true,
+        disclaimer: "PAPER TRADING / EDUCATIVO — SIN ORDENES REALES"
+      }
+    }));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());

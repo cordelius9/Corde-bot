@@ -26,6 +26,12 @@ Todo el "trading" es **simulado/ficticio** — ningún broker real recibe órden
 ./status.sh    # Verifica si está corriendo + tail del log
 ./tunnel.sh    # Inicia Cloudflare Tunnel para exposición pública
 ./watchdog.sh  # Loop de reinicio automático si el proceso cae
+
+# Automatización (Mega 7 — ver AUTOMATION.md)
+bash scripts/health_check.sh     # Verifica /health
+bash scripts/restart_safe.sh     # Reinicio seguro con health check
+bash scripts/morning_report.sh   # Reporte matutino → reports/
+bash scripts/final_check.sh      # Validación antes de push
 ```
 
 ## Variables de entorno requeridas
@@ -168,7 +174,10 @@ git status --short
 | P7 | `bot.js` usaba `claude-haiku-4-5` sin sufijo de fecha | ✅ RESUELTO en F2b |
 | P8 | `.gitignore` con entradas duplicadas y basura | ✅ RESUELTO en F2d |
 | P9 | Intel: sin deduplicación ni filtros | ✅ RESUELTO en F2a/F2c |
-| F3a | Quiver Quant: congressional + insider trading | 🔲 PENDIENTE |
+| M5 | UI Cordelius OS / Jarvis: Daily Brief, brain 16 nodos, paper panel | ✅ RESUELTO en Mega 5 |
+| M6 | Market intelligence engine: Quiver, external radar, newsletter | ✅ RESUELTO en Mega 6 |
+| M7 | Automatización: scripts, morning report, autopilot panel | ✅ RESUELTO en Mega 7 |
+| F3a | Quiver Quant: congressional + insider trading (API live) | 🔲 PENDIENTE |
 | F3b | Alertas push vía Telegram | 🔲 PENDIENTE |
 | F3c | Portfolio editable en runtime sin tocar código | 🔲 PENDIENTE |
 

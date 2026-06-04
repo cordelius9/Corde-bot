@@ -34,3 +34,12 @@ node_modules/
 
 # Directorios de runtime
 runtime/
+
+# Reportes automáticos (generados por scripts/)
+reports/*.json
+reports/*.log
+reports/*.txt
+
+# Temporales
+*.tmp
+tmp/
