@@ -337,6 +337,110 @@ async function fetchQuiverData() {
   }
 }
 
+// ---- SCAN DIARIO — lógica pura (reutilizada por /api/daily-scan y renderDailyScanCard) ----
+function computeDailyScan() {
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  const totalMXN = pv.totalValueMXN || 1;
+
+  const bitsoMXN = pv.assets.filter(a => a.source === "Bitso").reduce((s, a) => s + a.valueMXN, 0);
+  const plataMXN = pv.assets.filter(a => a.source === "Plata").reduce((s, a) => s + a.valueMXN, 0);
+  const gbmMXN   = pv.assets.filter(a => a.source === "GBM").reduce((s, a) => s + a.valueMXN, 0);
+  const bitsoPct = (bitsoMXN / totalMXN) * 100;
+
+  const portfolioSummary = {
+    totalMXN: +pv.totalValueMXN.toFixed(2), gainPct: +pv.totalGainPct.toFixed(2),
+    gainMXN: +pv.totalGainMXN.toFixed(2), assets: pv.assets.length,
+    regime: reg.label, regimeDetail: reg.detail,
+    concentration: {
+      bitso_pct: +bitsoPct.toFixed(1),
+      plata_pct: +(plataMXN / totalMXN * 100).toFixed(1),
+      gbm_pct:   +(gbmMXN   / totalMXN * 100).toFixed(1),
+      alert: bitsoPct > 45
+    }
+  };
+
+  const allQuiverMatches = [
+    ...quiverData.congressional.map(x => ({ ...x, dataset: "congressional" })),
+    ...quiverData.insider.map(x => ({ ...x, dataset: "insider" })),
+    ...quiverData.contracts.map(x => ({ ...x, dataset: "contracts" }))
+  ];
+
+  const quiverByTicker = {};
+  for (const m of allQuiverMatches) {
+    const sym = m.symbol || "";
+    if (!sym) continue;
+    if (!quiverByTicker[sym]) quiverByTicker[sym] = { congressional: 0, insider: 0, contracts: 0, total: 0, recentDays: null };
+    quiverByTicker[sym][m.dataset] = (quiverByTicker[sym][m.dataset] || 0) + 1;
+    quiverByTicker[sym].total++;
+    if (m.daysAgo != null && (quiverByTicker[sym].recentDays === null || m.daysAgo < quiverByTicker[sym].recentDays)) {
+      quiverByTicker[sym].recentDays = m.daysAgo;
+    }
+  }
+  const topQuiverTickers = Object.entries(quiverByTicker)
+    .sort((a, b) => b[1].total - a[1].total).slice(0, 10)
+    .map(([sym, data]) => ({ symbol: sym, ...data }));
+
+  const quiverSummary = {
+    configured: quiverData.configured, total: allQuiverMatches.length,
+    congressional: quiverData.congressional.length, insider: quiverData.insider.length,
+    contracts: quiverData.contracts.length, topTickers: topQuiverTickers,
+    lastFetch: quiverData.lastFetch
+  };
+
+  const cryptoSyms  = pv.assets.filter(a => a.type === "crypto").map(a => a.symbol);
+  const techSyms    = ["MSFT","AAPL","PLTR","IREN","SSYS","PATH","NFLX"];
+  const energySyms  = ["GEV","AEP","COPX"];
+  const healthSyms  = ["UNH"];
+  const techMatches   = allQuiverMatches.filter(x => techSyms.includes(x.symbol)).length;
+  const energyMatches = allQuiverMatches.filter(x => energySyms.includes(x.symbol)).length;
+  const healthMatches = allQuiverMatches.filter(x => healthSyms.includes(x.symbol)).length;
+
+  const marketThemes = [];
+  if (techMatches > 3)   marketThemes.push({ theme: "Tech / AI Infrastructure",   strength: techMatches > 12   ? "FUERTE" : "MODERADO",   quiverSignals: techMatches,   tickers: techSyms.filter(s => pv.assets.find(a => a.symbol === s)) });
+  if (energyMatches > 1) marketThemes.push({ theme: "Energia / Grid / Cobre",      strength: energyMatches > 6  ? "FUERTE" : "MODERADO",   quiverSignals: energyMatches, tickers: energySyms });
+  if (healthMatches > 0) marketThemes.push({ theme: "Healthcare / Regulacion",     strength: healthMatches > 4  ? "FUERTE" : "BAJO",       quiverSignals: healthMatches, tickers: healthSyms });
+  if (bitsoPct > 40)     marketThemes.push({ theme: "Cripto concentrado",          strength: "ALTO RIESGO",    quiverSignals: 0,            tickers: cryptoSyms, alert: true });
+  if (!marketThemes.length) marketThemes.push({ theme: "Sin temas dominantes",     strength: "NEUTRAL",        quiverSignals: 0,            tickers: [] });
+
+  const tickerHighlights = ranked.map(a => {
+    const qm = allQuiverMatches.filter(x => x.symbol === a.symbol);
+    return { symbol: a.symbol, score: a.score, signal: a.signal, gainPct: +a.gainPct.toFixed(2), risk: a.risk,
+      quiverMatches: qm.length, quiverDatasets: [...new Set(qm.map(x => x.dataset))],
+      ind: { rsi: a.ind.rsi, trend: a.ind.trend, momentum: +a.ind.momentum } };
+  });
+
+  const riskAlerts = [];
+  if (bitsoPct > 45) riskAlerts.push({ level: "ALTO", type: "CONCENTRACION", message: "Cripto/Bitso " + bitsoPct.toFixed(0) + "% del portafolio — riesgo alto", tickers: cryptoSyms });
+  for (const a of pv.assets) {
+    if (a.gainPct < -15 && a.risk === "ALTO") riskAlerts.push({ level: "ALTO", type: "DRAWDOWN", message: a.symbol + " perdida " + a.gainPct.toFixed(1) + "% con riesgo alto", tickers: [a.symbol] });
+    if (a.score < 30) riskAlerts.push({ level: "CRITICO", type: "SCORE_CRITICO", message: a.symbol + " score " + a.score + "/100 — revisar", tickers: [a.symbol] });
+    if (a.gainPct > 80 && a.ind.momentum > 0) riskAlerts.push({ level: "OPORTUNIDAD", type: "TOMA_GANANCIA", message: a.symbol + " +" + a.gainPct.toFixed(0) + "% acumulado — posible toma parcial educativa", tickers: [a.symbol] });
+  }
+  const insiderSales = quiverData.insider.filter(x => (x.TransactionType || x.transaction || "").toLowerCase().includes("sale"));
+  if (insiderSales.length > 0) riskAlerts.push({ level: "ATENCION", type: "INSIDER_SALE", message: insiderSales.length + " ventas de insiders en tus activos (Quiver)", tickers: [...new Set(insiderSales.map(x => x.symbol))] });
+
+  const educationalActions = [];
+  for (const a of pv.assets.filter(a => a.score < 40 || a.gainPct < -12).slice(0, 3)) {
+    educationalActions.push({ priority: "VIGILAR", symbol: a.symbol, action: "Revisar tesis: " + a.signal + " · ganancia " + a.gainPct.toFixed(1) + "%", score: a.score, gainPct: +a.gainPct.toFixed(2) });
+  }
+  for (const a of pv.assets.filter(a => a.gainPct > 50 && a.score > 55).slice(0, 2)) {
+    educationalActions.push({ priority: "CONSIDERAR", symbol: a.symbol, action: "Ganancia +" + a.gainPct.toFixed(0) + "% — evaluar toma parcial educativa", score: a.score, gainPct: +a.gainPct.toFixed(2) });
+  }
+  if (bitsoPct > 45) educationalActions.push({ priority: "RIESGO", symbol: "PORTAFOLIO", action: "Bitso " + bitsoPct.toFixed(0) + "% — concentracion alta; considerar rebalanceo gradual", score: null, gainPct: null });
+  if (!educationalActions.length) educationalActions.push({ priority: "OK", symbol: "PORTAFOLIO", action: "Sin alertas criticas. Regimen " + reg.label + ". Mantener y monitorear.", score: null, gainPct: null });
+
+  return {
+    ok: true, ts: Date.now(), date: new Date().toLocaleDateString("es-MX"),
+    portfolioSummary, quiverSummary, marketThemes, tickerHighlights,
+    riskAlerts: riskAlerts.slice(0, 10),
+    educationalActions: educationalActions.slice(0, 6),
+    rawMatchesLimited: allQuiverMatches.slice(0, 20),
+    intel: { count: intelItems.length, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
+  };
+}
+
 function classifyNews(n) {
   const text = `${n.headline || ""} ${n.summary || ""} ${n.source || ""}`.toLowerCase();
   let type = "MERCADO";
@@ -851,6 +955,78 @@ function renderIntelByAsset() {
     + '</div>';
 }
 
+function renderDailyScanCard() {
+  try {
+    const scan = computeDailyScan();
+    const ps = scan.portfolioSummary;
+    const qs = scan.quiverSummary;
+    const alerts  = scan.riskAlerts.slice(0, 3);
+    const actions = scan.educationalActions.slice(0, 3);
+    const themes  = scan.marketThemes.slice(0, 4);
+
+    const riskLevel = alerts.some(a => a.level === "CRITICO") ? "CRITICO"
+      : alerts.some(a => a.level === "ALTO")    ? "ALTO"
+      : alerts.some(a => a.level === "ATENCION") ? "ATENCION" : "NORMAL";
+    const riskColor = (riskLevel === "CRITICO" || riskLevel === "ALTO") ? "#ff4d6d"
+      : riskLevel === "ATENCION" ? "#ffd166" : "#00ff99";
+
+    const alertRows = alerts.map(a => {
+      const lc = (a.level === "CRITICO" || a.level === "ALTO") ? "#ff4d6d" : a.level === "ATENCION" ? "#ffd166" : "#00ff99";
+      return '<div style="border-left:3px solid ' + lc + ';padding:8px 12px;margin:6px 0;background:rgba(255,255,255,.03);border-radius:0 10px 10px 0">'
+        + '<b style="color:' + lc + ';font-size:12px">' + esc(a.level) + '</b> ' + esc(a.message) + '</div>';
+    }).join("") || '<div class="muted" style="font-size:13px">Sin alertas criticas.</div>';
+
+    const actionRows = actions.map(a => {
+      const pc = a.priority === "RIESGO" ? "#ff4d6d" : a.priority === "VIGILAR" ? "#ffd166" : a.priority === "CONSIDERAR" ? "#3b9dff" : "#00ff99";
+      return '<div style="border-left:3px solid ' + pc + ';padding:8px 12px;margin:6px 0;background:rgba(255,255,255,.03);border-radius:0 10px 10px 0">'
+        + '<b style="color:' + pc + ';font-size:12px">' + esc(a.priority) + '</b> <b>' + esc(a.symbol) + '</b> — <span class="muted">' + esc(a.action) + '</span></div>';
+    }).join("") || '<div class="muted" style="font-size:13px">Sin acciones pendientes.</div>';
+
+    const themeChips = themes.map(t => {
+      const tc = t.alert ? "#ff4d6d" : t.strength === "FUERTE" ? "#00ff99" : t.strength === "MODERADO" ? "#3b9dff" : "#ffd166";
+      return '<span style="display:inline-block;padding:5px 12px;border-radius:999px;border:1px solid ' + tc + '44;background:' + tc + '18;color:' + tc + ';font-size:12px;font-weight:700;margin:3px">'
+        + esc(t.theme) + ' <small style="opacity:.8">' + esc(t.strength) + (t.quiverSignals ? ' · ' + t.quiverSignals + ' señales' : '') + '</small></span>';
+    }).join("");
+
+    const topTickers = (qs.topTickers || []).slice(0, 5).map(t =>
+      '<span style="background:rgba(59,157,255,.15);border:1px solid rgba(59,157,255,.3);border-radius:8px;padding:3px 9px;font-size:12px;margin:2px;display:inline-block">'
+      + esc(t.symbol) + ' <b>×' + t.total + '</b></span>'
+    ).join("") || '<span class="muted" style="font-size:13px">Sin datos Quiver aun (agrega QUIVER_API_KEY en .env)</span>';
+
+    return '<div class="panel" style="border-color:rgba(59,157,255,.35)">'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">'
+      + '<div>'
+      + '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">'
+      + '<div style="font-size:22px;font-weight:900;background:linear-gradient(90deg,#00ff99,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">SCAN DIARIO</div>'
+      + '<div style="padding:4px 12px;border-radius:999px;border:1px solid ' + riskColor + '55;background:' + riskColor + '18;color:' + riskColor + ';font-size:12px;font-weight:800">' + esc(riskLevel) + '</div>'
+      + '<div class="muted" style="font-size:12px">' + esc(scan.date) + ' · ' + esc(ps.regime) + '</div>'
+      + '</div>'
+      + '<div class="label" style="margin-bottom:8px">Temas de mercado detectados</div>'
+      + '<div style="margin-bottom:14px">' + (themeChips || '<span class="muted">Sin datos suficientes</span>') + '</div>'
+      + '<div class="label" style="margin-bottom:8px">Señales Quiver en tu portafolio</div>'
+      + '<div style="margin-bottom:6px">' + topTickers + '</div>'
+      + '<div class="muted" style="font-size:12px;margin-top:6px">' + qs.total + ' matches totales · ' + qs.congressional + ' congreso · ' + qs.insider + ' insiders · ' + qs.contracts + ' contratos</div>'
+      + '</div>'
+      + '<div>'
+      + '<div class="label" style="margin-bottom:8px">Top alertas</div>'
+      + alertRows
+      + '<div class="label" style="margin:14px 0 8px">Acciones educativas</div>'
+      + actionRows
+      + '</div>'
+      + '</div>'
+      + '<div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(120,160,210,.1);display:flex;gap:18px;flex-wrap:wrap;align-items:center">'
+      + '<div><span class="label">Patrimonio</span> <b class="' + (ps.gainPct >= 0 ? 'green' : 'red') + '">' + money(ps.totalMXN) + '</b> <span class="muted">' + pct(ps.gainPct) + '</span></div>'
+      + '<div><span class="label">Bitso/Cripto</span> <b class="' + (ps.concentration.alert ? 'red' : 'green') + '">' + ps.concentration.bitso_pct + '%</b>'
+        + (ps.concentration.alert ? '<span style="color:#ff4d6d;font-size:11px;margin-left:4px">⚠ ALTO</span>' : '') + '</div>'
+      + '<div><span class="label">Intel cargado</span> <b>' + scan.intel.count + '</b></div>'
+      + '<a href="/api/daily-scan" target="_blank" style="color:#9fb3c8;font-size:12px;text-decoration:none;margin-left:auto">Ver JSON →</a>'
+      + '</div>'
+      + '</div>';
+  } catch (e) {
+    return '<div class="panel"><div class="muted">Scan diario no disponible: ' + esc(String(e.message || "error")) + '</div></div>';
+  }
+}
+
 function renderNews() {
   if (!news.length) return `<div class="muted">Cargando noticias...</div>`;
   return news.map(n => {
@@ -1061,7 +1237,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   </div>
   <nav>
     <a href="#portfolio">Portafolio</a><a href="#alfredo">Alfredo AI</a><a href="#brain">Cerebro</a>
-    <a href="#chart">Grafica</a><a href="#news">Noticias</a><a href="#bot">Bot Ficticio</a><a href="#quiver">Quiver</a><a href="#system">Sistema</a>
+    <a href="#chart">Grafica</a><a href="#news">Noticias</a><a href="#bot">Bot Ficticio</a><a href="#quiver">Quiver</a><a href="#scan">Scan Diario</a><a href="#system">Sistema</a>
   </nav>
 </header>
 
@@ -1122,6 +1298,8 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
   <div class="quiver-item"><div class="label">Uso pensado</div><p>Detectar compras de politicos, contratos, lobbying y cruzarlo contra tus activos.</p></div>
   <div class="quiver-item"><div class="label">Activos sensibles</div><p>MSFT, AAPL, UNH, AEP, GEV, COPX, PLTR reaccionan a regulacion y gasto publico.</p></div>
 </div>
+
+<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
 
 <a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
 
@@ -1277,64 +1455,8 @@ const server = http.createServer(async (req, res) => {
     }));
   }
   if (req.url === "/api/daily-scan") {
-    const pv = portfolioValue();
-    const reg = marketRegime();
-    const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
-    const totalMXN = pv.totalValueMXN || 1;
-    const bitsoMXN = pv.assets.filter(a => a.source === "Bitso").reduce((s, a) => s + a.valueMXN, 0);
-    const plataMXN = pv.assets.filter(a => a.source === "Plata").reduce((s, a) => s + a.valueMXN, 0);
-    const gbmMXN = pv.assets.filter(a => a.source === "GBM").reduce((s, a) => s + a.valueMXN, 0);
-    const bitsoPct = (bitsoMXN / totalMXN) * 100;
-    const watchList = ranked.slice().reverse()
-      .filter(a => a.score < 45 || a.gainPct < -10)
-      .slice(0, 6)
-      .map(a => ({
-        symbol: a.symbol, score: a.score, signal: a.signal,
-        gainPct: +a.gainPct.toFixed(2), risk: a.risk,
-        reason: a.score < 35 ? "score critico" : a.gainPct < -15 ? "perdida significativa" : "score debil"
-      }));
-    const quiverAlerts = [
-      ...quiverData.congressional.slice(0, 8).map(x => ({ ...x, dataset: "congressional" })),
-      ...quiverData.insider.slice(0, 8).map(x => ({ ...x, dataset: "insider" }))
-    ];
-    const scan = {
-      ok: true, ts: Date.now(),
-      date: new Date().toLocaleDateString("es-MX"),
-      regime: { label: reg.label, avg: +reg.avg.toFixed(2), detail: reg.detail },
-      portfolio: {
-        totalMXN: +pv.totalValueMXN.toFixed(2),
-        gainPct: +pv.totalGainPct.toFixed(2),
-        gainMXN: +pv.totalGainMXN.toFixed(2),
-        assets: pv.assets.length
-      },
-      concentration: {
-        bitso_pct: +bitsoPct.toFixed(1),
-        plata_pct: +(plataMXN / totalMXN * 100).toFixed(1),
-        gbm_pct: +(gbmMXN / totalMXN * 100).toFixed(1),
-        alert: bitsoPct > 45,
-        message: bitsoPct > 45
-          ? "Cripto/Bitso " + bitsoPct.toFixed(0) + "% del portafolio — concentracion alta"
-          : "Concentracion aceptable"
-      },
-      watchList,
-      topScores: ranked.slice(0, 5).map(a => ({
-        symbol: a.symbol, score: a.score, signal: a.signal, gainPct: +a.gainPct.toFixed(2)
-      })),
-      quiver: {
-        configured: quiverData.configured,
-        matchCount: quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length,
-        alerts: quiverAlerts
-      },
-      intel: {
-        count: intelItems.length,
-        recent: intelItems.slice(0, 3).map(x => ({
-          mood: x.mood, affected: x.affected, time: x.time,
-          snippet: String(x.text || "").slice(0, 150)
-        }))
-      }
-    };
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify(scan));
+    return res.end(JSON.stringify(computeDailyScan()));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
