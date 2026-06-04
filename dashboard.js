@@ -431,11 +431,23 @@ function computeDailyScan() {
   if (bitsoPct > 45) educationalActions.push({ priority: "RIESGO", symbol: "PORTAFOLIO", action: "Bitso " + bitsoPct.toFixed(0) + "% — concentracion alta; considerar rebalanceo gradual", score: null, gainPct: null });
   if (!educationalActions.length) educationalActions.push({ priority: "OK", symbol: "PORTAFOLIO", action: "Sin alertas criticas. Regimen " + reg.label + ". Mantener y monitorear.", score: null, gainPct: null });
 
+  const summaryLines = [];
+  if (bitsoPct > 60) summaryLines.push("Concentracion cripto muy alta (" + bitsoPct.toFixed(0) + "%). Bitso domina el portafolio — revisa exposicion.");
+  else if (bitsoPct > 45) summaryLines.push("Cripto/Bitso sobre 45% (" + bitsoPct.toFixed(0) + "%) — vigilar correlacion en caidas.");
+  if (allQuiverMatches.length > 0) summaryLines.push(allQuiverMatches.length + " senales institucionales en tus activos (Quiver: congreso, insiders, contratos).");
+  const topAsset = ranked[0], bottomAsset = ranked[ranked.length - 1];
+  summaryLines.push("Mejor posicion: " + topAsset.symbol + " (score " + topAsset.score + "/100, " + (topAsset.gainPct >= 0 ? "+" : "") + topAsset.gainPct.toFixed(0) + "%).");
+  summaryLines.push("Activo a vigilar: " + bottomAsset.symbol + " (score " + bottomAsset.score + "/100, " + bottomAsset.gainPct.toFixed(1) + "%).");
+  summaryLines.push("Regimen: " + reg.label + ". " + reg.detail);
+  summaryLines.push("EDUCATIVO: no es asesoria financiera.");
+  const educationalSummary = summaryLines.join(" ");
+
   return {
     ok: true, ts: Date.now(), date: new Date().toLocaleDateString("es-MX"),
     portfolioSummary, quiverSummary, marketThemes, tickerHighlights,
     riskAlerts: riskAlerts.slice(0, 10),
     educationalActions: educationalActions.slice(0, 6),
+    educationalSummary,
     rawMatchesLimited: allQuiverMatches.slice(0, 20),
     intel: { count: intelItems.length, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
   };
@@ -955,6 +967,72 @@ function renderIntelByAsset() {
     + '</div>';
 }
 
+function renderQuiverPanel() {
+  if (!quiverData.configured) {
+    return '<div class="quiver-box">'
+      + '<div class="quiver-item"><div class="label">Estado</div><div class="big yellow">PENDIENTE</div><p class="muted">Agrega QUIVER_API_KEY en .env para conectar datos de congreso, insiders y contratos.</p></div>'
+      + '<div class="quiver-item"><div class="label">Activos cubiertos</div><p>MSFT, AAPL, PLTR, UNH, AEP, GEV, COPX, NFLX — acciones USA rastreadas por Quiver.</p></div>'
+      + '<div class="quiver-item"><div class="label">No cubiertos</div><p>BBVA (MX), XRP, BTC, ETH y cripto no aparecen en datos de Quiver.</p></div>'
+      + '</div>';
+  }
+  if (quiverData.error) {
+    return '<div class="panel"><div class="muted">Quiver error: ' + esc(quiverData.error) + '</div></div>';
+  }
+
+  const allM = [
+    ...quiverData.congressional.map(x => ({ ...x, _ds: "congressional" })),
+    ...quiverData.insider.map(x => ({ ...x, _ds: "insider" })),
+    ...quiverData.contracts.map(x => ({ ...x, _ds: "contracts" }))
+  ].sort((a, b) => (a.daysAgo == null ? 999 : a.daysAgo) - (b.daysAgo == null ? 999 : b.daysAgo));
+
+  const tickers = [...new Set(allM.map(x => x.symbol))];
+
+  const tickerChips = tickers.slice(0, 12).map(sym => {
+    const asset = PORTFOLIO.find(a => a.symbol === sym);
+    const bg = asset ? asset.color : "#1e293b";
+    const cnt = allM.filter(x => x.symbol === sym).length;
+    return '<span style="display:inline-flex;align-items:center;gap:5px;background:' + esc(bg) + '44;border:1px solid ' + esc(bg) + '88;border-radius:10px;padding:4px 10px;font-size:12px;margin:3px">'
+      + (asset ? '<span style="background:' + esc(asset.color) + ';border-radius:5px;padding:1px 5px;font-size:10px;font-weight:900">' + esc(asset.logo) + '</span>' : '')
+      + '<b>' + esc(sym) + '</b> <span class="muted">×' + cnt + '</span></span>';
+  }).join("");
+
+  const recentRows = allM.slice(0, 12).map(m => {
+    const txRaw = (m.Transaction || m.TransactionType || m.transaction || "").toLowerCase();
+    const isBuy  = /buy|purchase|bought/.test(txRaw);
+    const isSell = /sale|sell|sold/.test(txRaw);
+    const txColor = isBuy ? "#00ff99" : isSell ? "#ff4d6d" : "#ffd166";
+    const txLabel = isBuy ? "COMPRA" : isSell ? "VENTA" : "OTRO";
+    const who  = esc(m.Representative || m.Name || m.name || m.Politician || "Desconocido");
+    const party = m.Party ? " (" + esc(m.Party.slice(0, 1)) + ")" : "";
+    const amount = m.Amount || m.amount || m.Value || "";
+    const ds = m._ds === "congressional" ? "Congreso" : m._ds === "insider" ? "Insider" : "Contrato";
+    const days = m.daysAgo != null ? m.daysAgo + "d" : "";
+    return '<tr>'
+      + '<td><b>' + esc(m.symbol) + '</b></td>'
+      + '<td style="color:' + txColor + ';font-weight:800">' + txLabel + '</td>'
+      + '<td>' + who + party + '</td>'
+      + '<td class="muted" style="font-size:12px">' + ds + '</td>'
+      + '<td class="muted" style="font-size:12px">' + esc(String(amount).slice(0, 20)) + '</td>'
+      + '<td class="muted" style="font-size:12px">' + days + '</td>'
+      + '</tr>';
+  }).join("");
+
+  const cacheAge = quiverData.lastFetch ? Math.floor((Date.now() - quiverData.lastFetch) / 60000) : null;
+
+  return '<div class="panel">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">'
+    + '<div><span class="label" style="font-size:13px">' + allM.length + ' matches · ' + tickers.length + ' tickers · ' + quiverData.congressional.length + ' congreso · ' + quiverData.insider.length + ' insiders · ' + quiverData.contracts.length + ' contratos</span></div>'
+    + (cacheAge != null ? '<span class="muted" style="font-size:12px">Cache: hace ' + cacheAge + ' min</span>' : '')
+    + '</div>'
+    + '<div style="margin-bottom:14px">' + tickerChips + '</div>'
+    + '<div class="table-wrap"><table>'
+    + '<thead><tr><th>Activo</th><th>Tipo</th><th>Quien</th><th>Dataset</th><th>Monto</th><th>Dias</th></tr></thead>'
+    + '<tbody>' + (recentRows || '<tr><td colspan="6" class="muted">Sin datos recientes</td></tr>') + '</tbody>'
+    + '</table></div>'
+    + '<div class="muted" style="font-size:12px;margin-top:10px">Datos educativos. Retraso típico Quiver: hasta 45 días. No implica señal de compra/venta.</div>'
+    + '</div>';
+}
+
 function renderDailyScanCard() {
   try {
     const scan = computeDailyScan();
@@ -1021,6 +1099,8 @@ function renderDailyScanCard() {
       + '<div><span class="label">Intel cargado</span> <b>' + scan.intel.count + '</b></div>'
       + '<a href="/api/daily-scan" target="_blank" style="color:#9fb3c8;font-size:12px;text-decoration:none;margin-left:auto">Ver JSON →</a>'
       + '</div>'
+      + (scan.educationalSummary ? '<div style="margin-top:12px;padding:12px 14px;border-radius:14px;background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);color:#c7dff7;font-size:13px;line-height:1.6">'
+        + '<b style="color:#3b9dff;font-size:11px;letter-spacing:.08em">RESUMEN EDUCATIVO</b><br>' + esc(scan.educationalSummary) + '</div>' : '')
       + '</div>';
   } catch (e) {
     return '<div class="panel"><div class="muted">Scan diario no disponible: ' + esc(String(e.message || "error")) + '</div></div>';
@@ -1292,12 +1372,8 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
 <h2>Bitacora del bot</h2>
 <div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razon</th></tr></thead><tbody>${botTables.histRows}</tbody></table></div>
 
-<a id="quiver"></a><h2>Quiver / Congreso / politica publica</h2>
-<div class="quiver-box">
-  <div class="quiver-item"><div class="label">Estado</div><div class="big ${QUIVER_API_KEY ? "green" : "yellow"}">${QUIVER_API_KEY ? "READY" : "PENDIENTE"}</div><p class="muted">Pon QUIVER_API_KEY en .env para conectar datos politicos.</p></div>
-  <div class="quiver-item"><div class="label">Uso pensado</div><p>Detectar compras de politicos, contratos, lobbying y cruzarlo contra tus activos.</p></div>
-  <div class="quiver-item"><div class="label">Activos sensibles</div><p>MSFT, AAPL, UNH, AEP, GEV, COPX, PLTR reaccionan a regulacion y gasto publico.</p></div>
-</div>
+<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
+${renderQuiverPanel()}
 
 <a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
 
@@ -1369,28 +1445,29 @@ function handleIntelClear(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
-  if (req.method === "POST" && req.url === "/intel") return handleIntel(req, res);
-  if (req.method === "POST" && req.url === "/intel/delete") return handleIntelDelete(req, res);
-  if (req.method === "POST" && req.url === "/intel/clear") return handleIntelClear(req, res);
-  if (req.url === "/toggle-thinking") {
+  const path = req.url.split("?")[0];
+  if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
+  if (req.method === "POST" && path === "/intel") return handleIntel(req, res);
+  if (req.method === "POST" && path === "/intel/delete") return handleIntelDelete(req, res);
+  if (req.method === "POST" && path === "/intel/clear") return handleIntelClear(req, res);
+  if (path === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
     saveJSON(SETTINGS_FILE, settings);
     res.writeHead(302, { Location: "/#alfredo" }); return res.end();
   }
-  if (req.url === "/bot/start") { bot.running = true; addThought("Bot ficticio encendido.", "scan"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
-  if (req.url === "/bot/pause") { bot.running = false; addThought("Bot ficticio pausado.", "warn"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
-  if (req.url === "/bot/reset") {
+  if (path === "/bot/start") { bot.running = true; addThought("Bot ficticio encendido.", "scan"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
+  if (path === "/bot/pause") { bot.running = false; addThought("Bot ficticio pausado.", "warn"); saveJSON(BOT_FILE, bot); res.writeHead(302, { Location: "/#bot" }); return res.end(); }
+  if (path === "/bot/reset") {
     bot = { initialCapital: 1000, cash: 1000, positions: {}, history: [], equityHistory: [], thoughts: [], running: true, totalRealizedPnl: 0, maxDrawdown: 0, tradesCount: 0, lastTick: null };
     addThought("Bot reiniciado desde cero.", "scan"); saveJSON(BOT_FILE, bot);
     res.writeHead(302, { Location: "/#bot" }); return res.end();
   }
-  if (req.url === "/health") {
+  if (path === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), uptime: Math.floor(process.uptime()) }));
   }
-  if (req.url === "/api/status") {
+  if (path === "/api/status") {
     const pv = portfolioValue();
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
@@ -1402,12 +1479,12 @@ const server = http.createServer(async (req, res) => {
       settings: { thinkingEnabled: settings.thinkingEnabled, theme: settings.themeMode }
     }));
   }
-  if (req.url === "/api/portfolio") {
+  if (path === "/api/portfolio") {
     const pv = portfolioValue();
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), ...pv }));
   }
-  if (req.url === "/api/intel") {
+  if (path === "/api/intel") {
     const intelSummary = {
       total: intelItems.length,
       positivo: intelItems.filter(x => x.mood === "POSITIVO").length,
@@ -1421,7 +1498,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, summary: intelSummary, items: intelItems }));
   }
-  if (req.url === "/api/quiver") {
+  if (path === "/api/quiver") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
       ok: true, configured: quiverData.configured, error: quiverData.error || null,
@@ -1437,7 +1514,7 @@ const server = http.createServer(async (req, res) => {
       contracts: quiverData.contracts
     }));
   }
-  if (req.url === "/api/quiver/matches") {
+  if (path === "/api/quiver/matches") {
     const allMatches = [
       ...quiverData.congressional.map(x => ({ ...x, dataset: "congressional" })),
       ...quiverData.insider.map(x => ({ ...x, dataset: "insider" })),
@@ -1454,7 +1531,7 @@ const server = http.createServer(async (req, res) => {
       matches: allMatches
     }));
   }
-  if (req.url === "/api/daily-scan") {
+  if (path === "/api/daily-scan") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(computeDailyScan()));
   }
