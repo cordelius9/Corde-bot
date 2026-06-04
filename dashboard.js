@@ -675,18 +675,42 @@ function analyzeIntelText(text) {
 }
 
 function renderIntelPanel() {
-  const rows = (intelItems || []).slice(0, 10).map(function(x) {
+  const count = (intelItems || []).length;
+
+  const rows = (intelItems || []).slice(0, 20).map(function(x) {
     const moodClass = x.mood === "POSITIVO" ? "green" : (x.mood === "NEGATIVO" ? "red" : "yellow");
+    const moodKey = x.mood === "POSITIVO" ? "POS" : (x.mood === "NEGATIVO" ? "NEG" : "NEU");
     const affected = (x.affected && x.affected.length) ? x.affected.join(", ") : "Sin activo directo";
     const tags = (x.tags && x.tags.length) ? x.tags.join(" · ") : "General";
+    const hashVal = x.hash ? esc(x.hash) : "";
 
-    return '<div class="news-card">'
-      + '<div><b class="' + moodClass + '">' + esc(x.mood) + '</b><div class="muted">' + esc(x.time) + '</div></div>'
+    return '<div class="news-card intel-item" data-mood="' + moodKey + '">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+      + '<div><b class="' + moodClass + '">' + esc(x.mood) + '</b><div class="muted" style="font-size:12px">' + esc(x.time) + '</div></div>'
+      + (hashVal ? '<form method="POST" action="/intel/delete" style="margin:0">'
+        + '<input type="hidden" name="id" value="' + hashVal + '">'
+        + '<button type="submit" style="background:rgba(255,77,109,.15);border:1px solid rgba(255,77,109,.35);color:#ff4d6d;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:12px" title="Borrar este analisis">✕</button>'
+        + '</form>' : '')
+      + '</div>'
       + '<div><div><b>Activos afectados:</b> ' + esc(affected) + '</div>'
       + '<div class="muted">' + esc(tags) + '</div>'
-      + '<p>' + esc(x.text).slice(0, 700) + '</p></div>'
+      + '<p style="white-space:pre-wrap">' + esc(x.text).slice(0, 700) + '</p></div>'
       + '</div>';
   }).join("") || '<div class="msg muted">Todavia no hay analisis pegado. Pega texto de Grok, X o noticias.</div>';
+
+  const filterBar = '<div id="intel-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">'
+    + '<button class="intel-chip active" onclick="intelFilter(this,\'ALL\')" style="background:rgba(59,157,255,.2);border:1px solid rgba(59,157,255,.5);color:#3b9dff;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">Todos <b>' + count + '</b></button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'POS\')" style="background:rgba(0,255,153,.08);border:1px solid rgba(0,255,153,.3);color:#00ff99;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">POSITIVO</button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'NEG\')" style="background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.3);color:#ff4d6d;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEGATIVO</button>'
+    + '<button class="intel-chip" onclick="intelFilter(this,\'NEU\')" style="background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);color:#ffd166;border-radius:20px;padding:5px 16px;cursor:pointer;font-size:13px">NEUTRAL</button>'
+    + '</div>'
+    + '<script>function intelFilter(btn,type){'
+    + 'document.querySelectorAll(".intel-item").forEach(function(el){'
+    + 'el.style.display=(type==="ALL"||el.dataset.mood===type)?"":"none";});'
+    + 'document.querySelectorAll(".intel-chip").forEach(function(b){'
+    + 'b.style.fontWeight=b===btn?"bold":"normal";'
+    + 'b.style.opacity=b===btn?"1":"0.6";});}'
+    + '</script>';
 
   return '<div class="panel">'
     + '<form method="POST" action="/intel">'
@@ -695,7 +719,7 @@ function renderIntelPanel() {
     + '</form>'
     + '<p class="muted">Modo manual: pega texto externo y Cordelius lo cruza contra tus activos. No opera dinero real.</p>'
     + '</div>'
-    + '<div class="panel">' + rows + '</div>';
+    + '<div class="panel">' + filterBar + rows + '</div>';
 }
 
 function renderNews() {
@@ -970,7 +994,7 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
   <div class="quiver-item"><div class="label">Activos sensibles</div><p>MSFT, AAPL, UNH, AEP, GEV, COPX, PLTR reaccionan a regulacion y gasto publico.</p></div>
 </div>
 
-<a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual</h2>${renderIntelPanel()}
+<a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
 
 <a id="modulos"></a><h2>Modulos Cordelius (proximamente)</h2><div class="grid"><div class="card"><div class="label">Cordelius Health</div><div class="big" style="color:#818cf8">Proximamente</div><div class="muted">WHOOP API: sueno, HRV, recuperacion, habitos (pendiente)</div></div><div class="card"><div class="label">Cordelius Law</div><div class="big" style="color:#ffd35c">Proximamente</div><div class="muted">Cuaderno juridico, apuntes, casos (pendiente)</div></div><div class="card"><div class="label">Cordelius Intelligence</div><div class="big" style="color:#3b9dff">Grok / X manual</div><div class="muted">Pegar analisis de X o Grok (pendiente P2)</div></div><div class="card"><div class="label">Asia / China Tech</div><div class="big" style="color:#00ff99">Radar</div><div class="muted">Chips, cobre, IA, energia (pendiente, sin fuente)</div></div><div class="card"><div class="label">Alpaca</div><div class="big" style="color:#ffd35c">Pendiente</div><div class="muted">Solo paper trading futuro, sin ordenes reales</div></div></div><a id="system"></a><h2>Sistema</h2>
 <div class="grid">
@@ -1001,10 +1025,28 @@ async function handleIntel(req, res) {
   req.on("end", async () => {
     const text = new URLSearchParams(body).get("intel") || "";
     if (text.trim()) {
-      intelItems.unshift(analyzeIntelText(text.trim()));
-      intelItems = intelItems.slice(0, 30);
+      const item = analyzeIntelText(text.trim());
+      const isDup = intelItems.some(x => x.hash && x.hash === item.hash);
+      if (!isDup) {
+        intelItems.unshift(item);
+        intelItems = intelItems.slice(0, 30);
+        saveJSON(INTEL_FILE, intelItems);
+        addThought("Nuevo analisis manual agregado a Cordelius Intelligence.", "scan");
+      }
+    }
+    res.writeHead(302, { Location: "/#intel" });
+    res.end();
+  });
+}
+
+function handleIntelDelete(req, res) {
+  let body = "";
+  req.on("data", c => body += c);
+  req.on("end", () => {
+    const id = new URLSearchParams(body).get("id") || "";
+    if (id) {
+      intelItems = intelItems.filter(x => x.hash !== id);
       saveJSON(INTEL_FILE, intelItems);
-      addThought("Nuevo analisis manual agregado a Cordelius Intelligence.", "scan");
     }
     res.writeHead(302, { Location: "/#intel" });
     res.end();
@@ -1014,6 +1056,7 @@ async function handleIntel(req, res) {
 const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && req.url === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && req.url === "/intel") return handleIntel(req, res);
+  if (req.method === "POST" && req.url === "/intel/delete") return handleIntelDelete(req, res);
   if (req.url === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
