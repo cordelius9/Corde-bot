@@ -1037,6 +1037,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), ...pv }));
   }
+
+  if (req.url === "/api/quiver") {
+    const payload = {
+      ok: true,
+      configured: !!QUIVER_API_KEY,
+      ts: Date.now(),
+      count: 0,
+      items: [],
+      message: QUIVER_API_KEY ? "QUIVER_API_KEY configured but fetchQuiverData not implemented yet" : "QUIVER_API_KEY not configured"
+    };
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    return res.end(JSON.stringify(payload));
+  }
+
   if (req.url === "/api/intel") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, ts: Date.now(), count: intelItems.length, items: intelItems }));
