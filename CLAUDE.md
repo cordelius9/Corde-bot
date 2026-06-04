@@ -177,6 +177,7 @@ git status --short
 | M5 | UI Cordelius OS / Jarvis: Daily Brief, brain 16 nodos, paper panel | ✅ RESUELTO en Mega 5 |
 | M6 | Market intelligence engine: Quiver, external radar, newsletter | ✅ RESUELTO en Mega 6 |
 | M7 | Automatización: scripts, morning report, autopilot panel | ✅ RESUELTO en Mega 7 |
+| M8 | Personal OS: Health Readiness, WHOOP placeholder, home minimalista | ✅ RESUELTO en Mega 8 |
 | F3a | Quiver Quant: congressional + insider trading (API live) | 🔲 PENDIENTE |
 | F3b | Alertas push vía Telegram | 🔲 PENDIENTE |
 | F3c | Portfolio editable en runtime sin tocar código | 🔲 PENDIENTE |

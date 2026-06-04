@@ -94,7 +94,8 @@ Ver [AUTOMATION.md](AUTOMATION.md) para guía completa: inicio automático en Te
 | `GET` | `/api/portfolio` | Portafolio completo con todos los activos en JSON |
 | `GET` | `/api/intel` | Items de Intel con resumen de moods y tickers |
 | `GET` | `/api/daily-brief` | Newsletter diario con saludo y líneas de resumen |
-| `GET` | `/api/morning-report` | Reporte matutino completo: portafolio, idea, Quiver, automation |
+| `GET` | `/api/morning-report` | Reporte matutino: portafolio, idea, healthReadiness, operatingMode, nextActions |
+| `GET` | `/api/health-readiness` | Estado de salud/readiness: WHOOP pending, operatingMode, nota educativa |
 | `GET` | `/api/market-intelligence` | Inteligencia de mercado: portafolio + externo + Quiver + sectores |
 | `GET` | `/api/external-radar` | Radar externo: stocks calientes por sector |
 | `GET` | `/api/paper/status` | Estado Paper Mode: idea, bot metrics, disclaimer |

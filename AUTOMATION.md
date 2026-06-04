@@ -170,8 +170,11 @@ Cordelius está listo para migrar a un servidor VPS o PaaS. No requiere cambios 
 | `restart_safe.sh` | ✅ Disponible |
 | `morning_report.sh` | ✅ Disponible |
 | `final_check.sh` | ✅ Disponible |
-| `/api/morning-report` | ✅ Disponible |
+| `/api/morning-report` | ✅ Disponible (incluye healthReadiness, operatingMode, nextActions) |
+| `/api/health-readiness` | ✅ Disponible (WHOOP placeholder) |
+| Health Readiness UI | ✅ Panel en home — WHOOP pendiente de conexión |
 | Termux:Boot | 🔲 Manual — ver instrucciones arriba |
 | Cloud deploy | 🔲 Conceptual — listo para ejecutar |
+| WHOOP live data | 🔲 Pendiente — vars WHOOP_CLIENT_ID/SECRET en .env.example |
 | Alertas push Telegram | 🔲 Pendiente (F3b) |
 | Portfolio editable en runtime | 🔲 Pendiente (F3c) |

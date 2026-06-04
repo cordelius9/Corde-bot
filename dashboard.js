@@ -7,6 +7,8 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
 const QUIVER_CACHE_MS = 2 * 60 * 60 * 1000;
+// WHOOP vars — read at runtime, never logged
+const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLIENT_SECRET);
 
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
@@ -1299,6 +1301,18 @@ EDUCATIVO — no es asesoría financiera.`;
     const idea = computeTradeIdea();
     const m = botMetrics();
     reply = `Paper Status — Bot ficticio: ${bot.running ? "ACTIVO" : "PAUSADO"}. Equity: ${money(botEq)}. P&L: ${money(botPnl)}. Trades: ${m.totalTrades}. Ratio: ${m.winRatio}%. Trade idea: ${idea.hasIdea ? idea.type + " " + idea.symbol : "sin señal"}. Alpaca: PENDIENTE. NO hay dinero real.`;
+  } else if (q.includes("salud") || q.includes("whoop") || q.includes("readiness") || q.includes("cómo estoy") || q.includes("como estoy")) {
+    const h = computeHealthReadiness();
+    reply = `Health Readiness — WHOOP: ${h.configured ? "detectado" : "pendiente de conexión"}. Recovery: ${h.recovery !== null ? h.recovery + "%" : "sin datos"}. Sleep: ${h.sleep !== null ? h.sleep + "%" : "sin datos"}. HRV: ${h.hrv !== null ? h.hrv + " ms" : "sin datos"}. Modo operativo: ${h.operatingMode}. Sugerencia: ${h.suggestion}. ${h.message} NO es consejo médico. El objetivo es evitar decisiones impulsivas cuando el estado físico esté bajo.`;
+  } else if (q.includes("modo operativo") || q.includes("debo operar") || q.includes("puedo operar")) {
+    const h = computeHealthReadiness();
+    const idea = computeTradeIdea();
+    reply = `Modo operativo: ${h.operatingMode}. ${h.configured ? "" : "Sin datos de WHOOP — usando modo neutral. "}${h.suggestion}. Trade idea: ${idea.hasIdea ? idea.type + " en " + idea.symbol + " (confianza " + idea.confidence + ")" : "sin señal destacada"}. RECORDATORIO: no es asesoría financiera ni consejo médico. Usar solo como contexto personal educativo.`;
+  } else if (q.includes("morning report con salud") || q.includes("reporte con salud") || q.includes("reporte completo")) {
+    const nl = computeDailyNewsletter();
+    const h = computeHealthReadiness();
+    const idea = computeTradeIdea();
+    reply = `Morning Report — ${nl.date}. ${nl.lines.slice(0, 2).join(" ")} Estado personal: WHOOP ${h.configured ? "ON" : "pendiente"}, modo ${h.operatingMode}, ${h.suggestion}. Trade idea: ${idea.hasIdea ? idea.type + " " + idea.symbol : "sin señal"}. NO es asesoría financiera ni consejo médico.`;
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
@@ -2129,6 +2143,32 @@ function computeTradeIdea() {
   return { hasIdea: false, type: "NO_TRADE", symbol: null, action: "SIN SEÑAL", reason: "Sin señales destacadas ahora", score: null, risk: null, confidence: "N/A", source: null, missingData: "N/A", timestamp: nowMX() };
 }
 
+function computeOperatingMode(recovery) {
+  if (recovery === null || recovery === undefined) return "NORMAL";
+  if (recovery < 33) return "CONSERVADOR";
+  if (recovery >= 67) return "NORMAL";
+  return "NEUTRAL";
+}
+
+function computeHealthReadiness() {
+  return {
+    ok: true,
+    configured: WHOOP_CONFIGURED,
+    source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "whoop_pending",
+    recovery: null,
+    sleep: null,
+    strain: null,
+    hrv: null,
+    restingHeartRate: null,
+    operatingMode: computeOperatingMode(null),
+    message: WHOOP_CONFIGURED
+      ? "WHOOP API key detectada — implementación de datos en progreso."
+      : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
+    suggestion: "usa modo neutral",
+    educationalNote: "No es consejo médico. Sirve para contexto personal."
+  };
+}
+
 function renderTradingAIStatus() {
   return `<div style="max-width:1280px;margin:0 auto 8px;border:1px solid rgba(255,211,92,.18);border-radius:24px;padding:18px 22px;background:linear-gradient(135deg,rgba(255,211,92,.04),rgba(59,157,255,.04))">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
@@ -2174,81 +2214,146 @@ function renderPaperTradingPanel() {
 function renderMorningReport() {
   const nl = computeDailyNewsletter();
   const idea = computeTradeIdea();
-  const lines = nl.lines.slice(0, 4);
+  const h = computeHealthReadiness();
+  const lines = nl.lines.slice(0, 3);
   const ideaHtml = idea.hasIdea
-    ? `<div style="margin-top:12px;padding:10px 14px;background:rgba(0,255,153,.06);border:1px solid rgba(0,255,153,.18);border-radius:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99">IDEA PAPER</span>
-        <b>${esc(idea.symbol)}</b>
-        <span style="color:#00ff99;font-weight:700">${esc(idea.type)}</span>
+    ? `<div style="margin-top:10px;padding:9px 13px;background:rgba(0,255,153,.06);border:1px solid rgba(0,255,153,.15);border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99">IDEA PAPER</span>
+        <b style="font-size:13px">${esc(idea.symbol)}</b>
+        <span style="color:#00ff99;font-weight:700;font-size:13px">${esc(idea.type)}</span>
         <span class="muted" style="font-size:12px">${esc(idea.reason)}</span>
-        <span style="font-size:11px;color:#9fb3c8">confianza: ${esc(idea.confidence)}</span>
       </div>`
-    : `<div style="margin-top:12px;padding:8px 14px;background:rgba(120,160,210,.05);border-radius:10px;color:#9fb3c8;font-size:13px">Sin idea de trade destacada hoy.</div>`;
-  return `<div style="max-width:1280px;margin:0 auto 16px">
-    <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04)">
-      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Morning Report — ${esc(nl.date)}</div>
-      <div style="font-size:15px;color:#dbeafe;font-weight:600;margin-bottom:12px">${esc(nl.greeting)}</div>
-      <ul style="margin:0;padding-left:18px;list-style:disc">
-        ${lines.map(l => `<li style="margin-bottom:6px;color:#c8d8f0;font-size:13px">${esc(l)}</li>`).join("")}
+    : `<div style="margin-top:10px;padding:7px 12px;background:rgba(120,160,210,.05);border-radius:8px;color:#9fb3c8;font-size:12px">Sin idea de trade destacada hoy.</div>`;
+  const healthHtml = `<div style="margin-top:10px;padding:9px 13px;background:rgba(244,114,182,.05);border:1px solid rgba(244,114,182,.15);border-radius:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6">ESTADO PERSONAL</span>
+    <span style="color:#ffd35c;font-weight:700;font-size:13px">${esc(h.operatingMode)}</span>
+    <span class="muted" style="font-size:12px">${esc(h.suggestion)}</span>
+    <span style="background:${h.configured ? "rgba(0,255,153,.12)" : "rgba(255,211,92,.10)"};color:${h.configured ? "#00ff99" : "#ffd35c"};border-radius:99px;padding:2px 9px;font-size:11px;font-weight:700">WHOOP ${h.configured ? "ON" : "PENDIENTE"}</span>
+  </div>`;
+  return `<div style="max-width:1280px;margin:0 auto 12px">
+    <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04);padding:16px 20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff">Morning Report — ${esc(nl.date)}</div>
+          <div style="font-size:14px;color:#dbeafe;font-weight:600;margin-top:3px">${esc(nl.greeting)}</div>
+        </div>
+        <a href="/api/morning-report" target="_blank" style="font-size:11px;color:#3b9dff;text-decoration:none;border:1px solid rgba(59,157,255,.25);border-radius:99px;padding:4px 11px">JSON</a>
+      </div>
+      <ul style="margin:0;padding-left:16px;list-style:disc">
+        ${lines.map(l => `<li style="margin-bottom:5px;color:#c8d8f0;font-size:13px">${esc(l)}</li>`).join("")}
       </ul>
       ${ideaHtml}
-      <div style="margin-top:14px;padding-top:10px;border-top:1px solid rgba(120,160,210,.08);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <a href="/api/morning-report" target="_blank" style="font-size:12px;color:#3b9dff;text-decoration:none;border:1px solid rgba(59,157,255,.25);border-radius:99px;padding:5px 12px">API JSON</a>
-        <span class="muted" style="font-size:11px">Generado: ${esc(nowMX())}</span>
-        <span class="muted" style="font-size:11px">• bash scripts/morning_report.sh para guardar en reports/</span>
-      </div>
+      ${healthHtml}
     </div>
   </div>`;
 }
 
 function renderAutopilotPanel() {
-  const isOnline = true;
-  const paperActive = true;
+  const statusCards = [
+    { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
+    { label: "CLOUDFLARE",   value: "MANUAL",   sub: "bash tunnel.sh",    bg: "rgba(255,211,92,.07)",   border: "rgba(255,211,92,.18)",   color: "#ffd35c" },
+    { label: "PAPER MODE",   value: "ON",       sub: "Sin dinero real",   bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
+    { label: "REAL TRADING", value: "OFF",      sub: "Desactivado",       bg: "rgba(255,77,109,.07)",   border: "rgba(255,77,109,.18)",   color: "#ff4d6d" },
+    { label: "QUIVER",       value: quiverData.configured ? "ON" : "—",  sub: quiverData.configured ? "Datos en vivo" : "Agrega API key", bg: quiverData.configured ? "rgba(0,255,153,.07)" : "rgba(255,211,92,.07)", border: quiverData.configured ? "rgba(0,255,153,.18)" : "rgba(255,211,92,.18)", color: quiverData.configured ? "#00ff99" : "#ffd35c" },
+    { label: "ALPACA",       value: "PENDIENTE",sub: "Paper solo (F3)",   bg: "rgba(129,140,248,.07)",  border: "rgba(129,140,248,.18)",  color: "#818cf8" },
+    { label: "WHOOP",        value: WHOOP_CONFIGURED ? "DETECTADO" : "PENDIENTE", sub: WHOOP_CONFIGURED ? "API key lista" : "Conecta para readiness", bg: WHOOP_CONFIGURED ? "rgba(0,255,153,.07)" : "rgba(244,114,182,.07)", border: WHOOP_CONFIGURED ? "rgba(0,255,153,.18)" : "rgba(244,114,182,.18)", color: WHOOP_CONFIGURED ? "#00ff99" : "#f472b6" },
+  ];
   return `<div style="max-width:1280px;margin:0 auto 16px">
     <div class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.04)">
       <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Autopilot — Estado del sistema</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
-        <div style="background:rgba(0,255,153,.07);border:1px solid rgba(0,255,153,.18);border-radius:12px;padding:12px;text-align:center">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#00ff99;margin-bottom:4px">SERVIDOR</div>
-          <div style="font-size:18px;font-weight:900;color:#00ff99">ON</div>
-          <div class="muted" style="font-size:11px">Cordelius OS</div>
-        </div>
-        <div style="background:rgba(255,211,92,.07);border:1px solid rgba(255,211,92,.18);border-radius:12px;padding:12px;text-align:center">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#ffd35c;margin-bottom:4px">CLOUDFLARE</div>
-          <div style="font-size:18px;font-weight:900;color:#ffd35c">MANUAL</div>
-          <div class="muted" style="font-size:11px">bash tunnel.sh</div>
-        </div>
-        <div style="background:rgba(0,255,153,.07);border:1px solid rgba(0,255,153,.18);border-radius:12px;padding:12px;text-align:center">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#00ff99;margin-bottom:4px">PAPER MODE</div>
-          <div style="font-size:18px;font-weight:900;color:#00ff99">ON</div>
-          <div class="muted" style="font-size:11px">Sin dinero real</div>
-        </div>
-        <div style="background:rgba(255,77,109,.07);border:1px solid rgba(255,77,109,.18);border-radius:12px;padding:12px;text-align:center">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#ff4d6d;margin-bottom:4px">REAL TRADING</div>
-          <div style="font-size:18px;font-weight:900;color:#ff4d6d">OFF</div>
-          <div class="muted" style="font-size:11px">No conectado</div>
-        </div>
-        <div style="background:${quiverData.configured ? "rgba(0,255,153,.07)" : "rgba(255,211,92,.07)"};border:1px solid ${quiverData.configured ? "rgba(0,255,153,.18)" : "rgba(255,211,92,.18)"};border-radius:12px;padding:12px;text-align:center">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:${quiverData.configured ? "#00ff99" : "#ffd35c"};margin-bottom:4px">QUIVER</div>
-          <div style="font-size:18px;font-weight:900;color:${quiverData.configured ? "#00ff99" : "#ffd35c"}">${quiverData.configured ? "ON" : "—"}</div>
-          <div class="muted" style="font-size:11px">${quiverData.configured ? "Datos en vivo" : "Agrega API key"}</div>
-        </div>
-        <div style="background:rgba(129,140,248,.07);border:1px solid rgba(129,140,248,.18);border-radius:12px;padding:12px;text-align:center">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#818cf8;margin-bottom:4px">ALPACA</div>
-          <div style="font-size:18px;font-weight:900;color:#818cf8">PENDIENTE</div>
-          <div class="muted" style="font-size:11px">Paper solo (F3)</div>
-        </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
+        ${statusCards.map(c => `<div style="background:${c.bg};border:1px solid ${c.border};border-radius:12px;padding:10px 12px;text-align:center">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:${c.color};margin-bottom:3px">${c.label}</div>
+          <div style="font-size:16px;font-weight:900;color:${c.color}">${c.value}</div>
+          <div class="muted" style="font-size:10px;margin-top:2px">${c.sub}</div>
+        </div>`).join("")}
       </div>
       <div style="border-top:1px solid rgba(120,160,210,.08);padding-top:10px">
-        <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS DE AUTOMATIZACIÓN</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           ${["health_check.sh","restart_safe.sh","morning_report.sh","final_check.sh"].map(s =>
-            `<span style="border:1px solid rgba(129,140,248,.25);border-radius:99px;padding:4px 12px;font-size:12px;font-family:monospace;color:#818cf8">bash scripts/${esc(s)}</span>`
+            `<span style="border:1px solid rgba(129,140,248,.22);border-radius:99px;padding:3px 10px;font-size:11px;font-family:monospace;color:#818cf8">bash scripts/${esc(s)}</span>`
           ).join("")}
         </div>
-        <div class="muted" style="font-size:11px;margin-top:8px">Próximo paso: Termux:Boot para inicio automático — ver AUTOMATION.md</div>
+        <div class="muted" style="font-size:11px;margin-top:8px">Próximo: Termux:Boot — ver AUTOMATION.md</div>
       </div>
     </div>
+  </div>`;
+}
+
+function renderHealthReadinessPanel() {
+  const h = computeHealthReadiness();
+  const metrics = [
+    { label: "Recovery",      value: h.recovery       !== null ? h.recovery + "%" : "—",  color: "#9fb3c8" },
+    { label: "Sleep",         value: h.sleep          !== null ? h.sleep + "%" : "—",     color: "#9fb3c8" },
+    { label: "Strain",        value: h.strain         !== null ? String(h.strain) : "—",  color: "#9fb3c8" },
+    { label: "HRV",           value: h.hrv            !== null ? h.hrv + " ms" : "—",     color: "#9fb3c8" },
+    { label: "Resting HR",    value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
+    { label: "Modo Operativo",value: h.operatingMode, color: "#ffd35c" },
+  ];
+  return `<div style="max-width:1280px;margin:0 auto 12px">
+    <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+        <div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health Readiness</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · educativo</div>
+        </div>
+        <span style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        ${metrics.map(m =>
+          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:90px">
+            <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
+            <div style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
+          </div>`
+        ).join("")}
+      </div>
+      <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
+        ${esc(h.message)}
+        <span class="muted" style="margin-left:8px;font-size:12px">Sugerencia: <b style="color:#ffd35c">${esc(h.suggestion)}</b></span>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
+    </div>
+  </div>`;
+}
+
+function renderPortfolioSnapshot(pv, reg) {
+  const best = pv.assets.slice().sort((a, b) => b.score - a.score)[0];
+  const cripto = pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
+  const gainColor = pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  return `<div style="background:var(--panel);border:1px solid rgba(59,157,255,.2);border-radius:20px;padding:16px 20px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Portfolio Snapshot</div>
+    <div style="font-size:28px;font-weight:900;color:${gainColor};line-height:1">${money(pv.totalValueMXN)}</div>
+    <div style="font-size:13px;color:${gainColor};margin:4px 0 10px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <span style="background:rgba(255,211,92,.1);border:1px solid rgba(255,211,92,.2);border-radius:99px;padding:3px 10px;font-size:11px;color:#ffd35c">${esc(reg.label)}</span>
+      <span style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:99px;padding:3px 10px;font-size:11px;color:#9fb3c8">Cripto ${criptoPct.toFixed(0)}%</span>
+      ${best ? `<span style="background:rgba(0,255,153,.08);border:1px solid rgba(0,255,153,.2);border-radius:99px;padding:3px 10px;font-size:11px;color:#00ff99">Top: ${esc(best.symbol)} ${best.score}/100</span>` : ""}
+      <span style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:99px;padding:3px 10px;font-size:11px;color:#9fb3c8">${pv.assets.length} activos</span>
+    </div>
+  </div>`;
+}
+
+function renderExecutiveHub(pv, reg) {
+  const h = computeHealthReadiness();
+  const idea = computeTradeIdea();
+  const nl = computeDailyNewsletter();
+  const modules = [
+    { label: "PORTAFOLIO",    value: money(pv.totalValueMXN), sub: pct(pv.totalGainPct), color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d", href: "#portfolio" },
+    { label: "MERCADO",       value: esc(reg.label),           sub: pct(reg.avg),         color: reg.color,  href: "#vigilar" },
+    { label: "PAPER TRADE",   value: idea.hasIdea ? esc(idea.type) : "SIN SEÑAL", sub: idea.hasIdea ? esc(idea.symbol || "") : "", color: idea.hasIdea ? "#00ff99" : "#9fb3c8", href: "#bot" },
+    { label: "HEALTH",        value: h.configured ? "WHOOP ON" : "SIN DATOS",    sub: esc(h.operatingMode), color: h.configured ? "#00ff99" : "#9fb3c8", href: "#health" },
+    { label: "QUIVER",        value: quiverData.configured ? "LIVE" : "PENDIENTE", sub: quiverData.configured ? "Datos institucionales" : "Agrega API key", color: quiverData.configured ? "#00ff99" : "#ffd35c", href: "#quiver" },
+  ];
+  return `<div style="max-width:1280px;margin:0 auto 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+    ${modules.map(m => `<a href="${m.href}" style="text-decoration:none">
+      <div style="background:var(--panel);border:1px solid rgba(120,160,210,.14);border-radius:16px;padding:14px 16px;transition:.2s" onmouseover="this.style.borderColor='${m.color}40'" onmouseout="this.style.borderColor='rgba(120,160,210,.14)'">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">${m.label}</div>
+        <div style="font-size:17px;font-weight:900;color:${m.color};line-height:1.1">${m.value}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:4px">${m.sub}</div>
+      </div>
+    </a>`).join("")}
   </div>`;
 }
 
@@ -2367,7 +2472,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
     <div><h1>${esc(settings.appName)}</h1><div class="subtitle">CORDΞLIUS · Trading · Intelligence · Law · Alfredo AI</div></div>
   </div>
   <nav>
-    <a href="#home">Inicio</a><a href="#vigilar">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#intelligence">Intelligence</a><a href="#radar">Trading AI</a><a href="#portfolio">Portafolio</a><a href="#quiver">Quiver</a><a href="#chart">Graficas</a><a href="#alfredo">Alfredo AI</a><a href="#modulos">Law / Help</a><a href="#system">Sistema</a>
+    <a href="#home">Inicio</a><a href="#health">Health</a><a href="#vigilar">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#intelligence">Intelligence</a><a href="#radar">Trading AI</a><a href="#portfolio">Portafolio</a><a href="#quiver">Quiver</a><a href="#chart">Graficas</a><a href="#alfredo">Alfredo AI</a><a href="#modulos">Law / Help</a><a href="#system">Sistema</a>
   </nav>
 </header>
 
@@ -2380,19 +2485,15 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 
 <a id="home"></a>
 ${renderDailyBrief()}
+${renderExecutiveHub(pv, reg)}
 ${renderMorningReport()}
-<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-bottom:8px">
-  <a href="#portfolio" style="text-decoration:none"><div class="card" style="border-color:rgba(59,157,255,.35);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,0,0,0))"><div class="label">Trading</div><div class="big blue" style="font-size:26px">Portafolio</div><div class="muted">Activos · Scan Diario · Quiver · Bot ficticio</div></div></a>
-  <a href="#intelligence" style="text-decoration:none"><div class="card" style="border-color:rgba(0,255,153,.35);background:linear-gradient(135deg,rgba(0,255,153,.08),rgba(0,0,0,0))"><div class="label">Intelligence</div><div class="big green" style="font-size:26px">Radar</div><div class="muted">Intel manual · Trading político · Market Radar</div></div></a>
-  <a href="#modulos" style="text-decoration:none"><div class="card" style="border-color:rgba(255,211,92,.35);background:linear-gradient(135deg,rgba(255,211,92,.08),rgba(0,0,0,0))"><div class="label">Law</div><div class="big yellow" style="font-size:26px">Cordelius Law</div><div class="muted">Cuaderno jurídico · casos · apuntes (próximo)</div></div></a>
-  <a href="#alfredo" style="text-decoration:none"><div class="card" style="border-color:rgba(129,140,248,.35);background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(0,0,0,0))"><div class="label">Alfredo AI</div><div class="big" style="font-size:26px;color:#818cf8">Asistente</div><div class="muted">Preguntas · análisis educativo · chat</div></div></a>
-</div>
-
-<div class="grid">
-  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;var estado=cp>45?"AGRESIVO":(cp<20?"DEFENSIVO":"NEUTRAL");var ec=estado==="AGRESIVO"?"#ff4d6d":(estado==="DEFENSIVO"?"#00ff99":"#ffd35c");function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card"><div class="label">Estado general</div><div class="big" style="color:${ec}">${estado}</div><div class="muted">Cripto ${cp.toFixed(0)}% · educativo, no asesoria</div></div><div class="card"><div class="label">Exposicion por plataforma</div><div>GBM ${pp(gbm)}</div><div>Plata ${pp(plata)}</div><div>Bitso ${pp(bitso)}</div></div><div class="card"><div class="label">Exposicion por divisa</div><div>USD ${pp(plata)}</div><div>MXN ${pp(gbm+bitso)}</div><div>Cripto ${pp(bitso)}</div></div><div class="card"><div class="label">Tipo de cambio</div><div class="big">$${FX_USD_MXN.toFixed(2)}</div><div class="muted">USD a MXN · .env USD_MXN o fallback · ${nowMX()}</div></div>`;})()}<div class="card"><div class="label">Patrimonio total estimado</div><div class="big green glow">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div>
-  <div class="card"><div class="label">Regimen</div><div class="big" style="color:${reg.color}">${esc(reg.label)}</div><div class="muted">${pct(reg.avg)} · ${esc(reg.detail)}</div></div>
-  <div class="card"><div class="label">Mejor score</div><div class="big green">${esc(best.symbol)}</div><div>${esc(best.signal)} · ${best.score}/100</div></div>
-  <div class="card"><div class="label">Mas debil</div><div class="big red">${esc(worst.symbol)}</div><div>${esc(worst.signal)} · ${worst.score}/100</div></div>
+<a id="health"></a>
+${renderHealthReadinessPanel()}
+<div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
+  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
 
 <a id="chart"></a><h2>Graficas — portafolio + TradingView</h2>
@@ -2413,7 +2514,7 @@ ${renderMorningReport()}
   </summary>
   <div style="padding:16px 20px 20px">
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-      ${["Qué vigilar hoy","Analiza mi portafolio","Stocks externos calientes","Congreso e insiders","Cuánto BTC tengo","Promedio de compra por activo"].map(q =>
+      ${["Qué vigilar hoy","Morning report con salud","Modo operativo hoy","Analiza mi portafolio","Stocks externos calientes","Congreso e insiders"].map(q =>
         `<button onclick="document.querySelector('[name=q]').value='${q}'" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
       ).join("")}
     </div>
@@ -2733,6 +2834,7 @@ const server = http.createServer(async (req, res) => {
     const pv = portfolioValue();
     const idea = computeTradeIdea();
     const qi = computeQuiverIntelligence();
+    const h = computeHealthReadiness();
     const m = botMetrics();
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
@@ -2750,14 +2852,45 @@ const server = http.createServer(async (req, res) => {
         assetCount: pv.assets.length
       },
       tradeIdea: idea,
+      healthReadiness: h,
+      operatingMode: h.operatingMode,
       quiver: { configured: qi.configured },
       paperMode: { active: true, realTrading: false, alpacaConnected: false, botMetrics: m },
+      autopilot: {
+        serverOnline: true,
+        paperMode: true,
+        realTrading: false,
+        whoop: WHOOP_CONFIGURED,
+        quiver: quiverData.configured,
+        alpaca: false
+      },
+      nextActions: [
+        h.configured ? "Revisar recovery score en WHOOP" : "Conectar WHOOP para readiness",
+        idea.hasIdea ? `Evaluar idea paper: ${idea.type} en ${idea.symbol}` : "Sin trade idea activa hoy",
+        quiverData.configured ? "Revisar actividad Quiver" : "Agregar QUIVER_API_KEY para datos institucionales"
+      ],
       automation: {
         scripts: ["health_check.sh", "restart_safe.sh", "morning_report.sh", "final_check.sh"],
         reportsDir: "reports/",
         cloudReady: true,
         disclaimer: "PAPER TRADING / EDUCATIVO — SIN ORDENES REALES"
       }
+    }));
+  }
+  if (path === "/api/health-readiness") {
+    const h = computeHealthReadiness();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: h.ok,
+      configured: h.configured,
+      source: h.source,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      strain: h.strain,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      operatingMode: h.operatingMode,
+      educationalNote: h.educationalNote
     }));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
