@@ -1069,25 +1069,54 @@ function logoHtml(a) { return `<div class="asset-logo" style="background:${esc(a
 
 function brainHtml() {
   const thoughts = (bot.thoughts || []).slice(0, 9);
-  const nodes = ["AAPL", "BBVA", "BTC", "ETH", "MSFT", "IREN", "PLTR", "COPX", "RISK", "NEWS", "AI", "BOT"];
+  const nodes = [
+    { label: "Portfolio", delay: 0 },    { label: "Risk",      delay: 0.3 },
+    { label: "Quiver",    delay: 0.7 },  { label: "Congress",  delay: 1.1 },
+    { label: "Insiders",  delay: 0.5 },  { label: "News",      delay: 0.9 },
+    { label: "BBVA",      delay: 0.2 },  { label: "MSFT",      delay: 0.6 },
+    { label: "AI",        delay: 1.4 },  { label: "PLTR",      delay: 0.8 },
+    { label: "Bot",       delay: 1.2 },  { label: "Scan",      delay: 0.4 },
+    { label: "BTC",       delay: 1.0 },  { label: "XRP",       delay: 0.15 },
+    { label: "AAPL",      delay: 0.55 }, { label: "Macro",     delay: 0.95 },
+  ];
+  const positions = [
+    "left:4%;top:10%",  "left:20%;top:4%",  "left:38%;top:13%", "left:56%;top:4%",
+    "left:73%;top:13%", "left:86%;top:5%",  "left:8%;top:42%",  "left:26%;top:35%",
+    "left:44%;top:44%", "left:61%;top:36%", "left:78%;top:44%", "left:88%;top:34%",
+    "left:4%;top:74%",  "left:23%;top:68%", "left:45%;top:76%", "left:66%;top:70%",
+  ];
   return `<div class="brain-card">
     <div class="brain-left">
       <div class="brain-title">Cerebro Alfredo AI</div>
-      <div class="brain-sub">Red neuronal viva: noticias → portafolio → riesgo → decision</div>
-      <div class="brain">
-        ${nodes.map((n, i) => `<span class="brain-node n${i}">${n}<i class="pulse"></i></span>`).join("")}
-        <svg viewBox="0 0 600 300" class="brain-lines" preserveAspectRatio="none">
-          <path d="M80 80 C160 30 240 120 320 70 S500 60 540 150"/>
-          <path d="M70 210 C150 130 260 250 350 180 S470 130 550 220"/>
-          <path d="M110 150 C200 80 300 210 420 90"/>
-          <path d="M150 250 C250 160 350 280 520 120"/>
-          <path d="M60 120 C180 170 280 40 520 190"/>
+      <div class="brain-sub">Red neuronal viva: datos → análisis → señales → decisiones</div>
+      <div class="brain" style="min-height:380px">
+        ${nodes.map((n, i) => `<span class="brain-node" style="${positions[i]}">${esc(n.label)}<i class="pulse" style="animation-delay:${n.delay}s"></i></span>`).join("")}
+        <svg viewBox="0 0 700 380" class="brain-lines" preserveAspectRatio="none">
+          <path d="M50 55 C130 25 220 120 280 60 S440 25 530 75"/>
+          <path d="M50 55 C100 155 180 195 280 185"/>
+          <path d="M50 55 C80 275 165 295 320 305"/>
+          <path d="M140 28 C205 95 260 155 310 182"/>
+          <path d="M280 60 C340 100 380 155 425 182"/>
+          <path d="M400 28 C445 78 445 165 430 182"/>
+          <path d="M530 75 C595 125 625 158 608 182"/>
+          <path d="M80 195 C165 245 245 295 320 305"/>
+          <path d="M185 178 C240 235 282 285 320 305"/>
+          <path d="M310 182 C350 245 352 285 320 305"/>
+          <path d="M430 182 C445 238 422 278 430 305"/>
+          <path d="M608 182 C625 238 562 288 525 305"/>
+          <path d="M80 195 C125 238 162 258 185 178" style="stroke:#3b9dff;stroke-dasharray:8 18;opacity:.5"/>
+          <path d="M430 182 C485 198 545 198 608 182" style="stroke:#ffd35c;stroke-dasharray:6 20;opacity:.5"/>
+          <path d="M50 278 C140 305 245 325 320 305"/>
+          <path d="M320 305 C400 308 462 308 525 305"/>
+          <path d="M525 305 C585 318 632 278 652 255"/>
+          <path d="M165 268 C220 290 278 305 320 305"/>
+          <path d="M455 305 C500 295 550 275 575 258"/>
         </svg>
       </div>
     </div>
     <div class="brain-feed">
       <div class="feed-title">Pensamientos en vivo</div>
-      ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando senales del mercado...</div>`}
+      ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando señales del mercado...</div>`}
     </div>
   </div>`;
 }
@@ -1564,19 +1593,33 @@ function renderDailyScanCard() {
 
 function renderNews() {
   if (!news.length) return `<div class="muted">Cargando noticias...</div>`;
-  return news.map(n => {
+  const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
+  function newsCard(n) {
     const c = n.classification;
     const img = n.image ? `<img class="news-img" src="${esc(n.image)}" alt="">` : `<div class="news-img placeholder">NEWS</div>`;
     const impacted = n.impacted && n.impacted.length ? n.impacted : ["Mercado"];
+    const dateStr = n.datetime ? new Date(n.datetime * 1000).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
     return `<div class="news-card">${img}<div class="news-body">
-      <div class="chips"><span>${esc(c.type)}</span><span style="background:${c.impactColor}22;border-color:${c.impactColor}55;color:${c.impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span><span>${esc(n.source || "Fuente")}</span></div>
+      <div class="chips"><span>${esc(c.type)}</span><span style="background:${c.impactColor}22;border-color:${c.impactColor}55;color:${c.impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span><span>${esc(n.source || "Fuente")}</span>${dateStr ? `<span style="color:#9fb3c8">${esc(dateStr)}</span>` : ""}</div>
       <h3>${esc(n.headline || "Sin titulo")}</h3>
       <p>${esc((n.summary || "").slice(0, 240))}</p>
-      <div class="impact"><b>Activos posiblemente impactados:</b>${impacted.map(x => `<span>${esc(x)}</span>`).join("")}</div>
-      <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No es comprar/vender automatico; sirve para saber que vigilar.</div>
-      <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente</a>
+      <div class="impact"><b>Activos impactados:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
+      <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
+      <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente ↗</a>
     </div></div>`;
-  }).join("");
+  }
+  const portfolioNews = news.filter(n => n.impacted && n.impacted.some(t => portfolioSymbols.has(t)));
+  const externalNews = news.filter(n => !portfolioNews.includes(n));
+  let html = "";
+  if (portfolioNews.length) {
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin:8px 0 12px;max-width:1280px">Impactan tu portafolio (${portfolioNews.length})</div>`;
+    html += portfolioNews.map(newsCard).join("");
+  }
+  if (externalNews.length) {
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#9fb3c8;margin:${portfolioNews.length ? "24px" : "8px"} 0 12px;max-width:1280px">Mercado general (${externalNews.length})</div>`;
+    html += externalNews.map(newsCard).join("");
+  }
+  return html || `<div class="muted">Sin noticias disponibles.</div>`;
 }
 
 
@@ -1655,6 +1698,132 @@ function renderBotTables() {
   return { posRows, histRows };
 }
 
+function renderDailyBrief() {
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const assets = pv.assets;
+  const ranked = assets.slice().sort((a, b) => b.score - a.score);
+  const best = ranked[0], worst = ranked[ranked.length - 1];
+  const cripto = assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
+  const riskAssets = ranked.filter(a => a.score < 35 || a.gainPct < -10);
+  const buyDips = ranked.filter(a => a.signal && a.signal.includes("BUY") && a.score > 45);
+  const today = new Date().toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const gainColor = pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  const qTrend = computeQuiverTrending();
+  const topQTicker = qTrend.topBuys && qTrend.topBuys[0] ? qTrend.topBuys[0].symbol : null;
+  const metrics = [
+    { label: "Patrimonio", value: money(pv.totalValueMXN), sub: `${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}`, subColor: gainColor },
+    { label: "Mejor activo", value: best.symbol, sub: `${best.signal} · ${best.score}/100`, subColor: "#9fb3c8", valueColor: "#00ff99" },
+    { label: "Más débil", value: worst.symbol, sub: `${pct(worst.gainPct)} · score ${worst.score}`, subColor: "#9fb3c8", valueColor: "#ff4d6d" },
+    { label: "Vigilar hoy", value: riskAssets.length ? riskAssets.slice(0,2).map(a=>a.symbol).join(", ") : "OK", sub: riskAssets.length ? `${riskAssets.length} en zona de riesgo` : "Sin alertas críticas", subColor: riskAssets.length ? "#ff4d6d" : "#00ff99", valueColor: riskAssets.length ? "#ffd35c" : "#00ff99" },
+    { label: "Oportunidad", value: buyDips.length ? buyDips[0].symbol : "—", sub: buyDips.length ? `${buyDips[0].signal} · ${pct(buyDips[0].gainPct)}` : "Sin señal de compra", subColor: "#9fb3c8", valueColor: "#3b9dff" },
+  ];
+  if (topQTicker) metrics.push({ label: "Quiver Top", value: topQTicker, sub: "Más comprado congreso", subColor: "#9fb3c8", valueColor: "#00ff99" });
+  return `<div style="max-width:1280px;margin:16px auto 4px;border:1px solid rgba(120,160,210,.18);border-radius:28px;overflow:hidden;background:linear-gradient(135deg,rgba(7,16,30,.92),rgba(2,4,10,.97));box-shadow:0 8px 48px rgba(0,0,0,.45)">
+    <div style="background:linear-gradient(90deg,rgba(0,255,153,.1),rgba(59,157,255,.1),rgba(255,211,92,.08));padding:13px 24px;border-bottom:1px solid rgba(120,160,210,.1);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>
+        <span style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8">CORDELIUS DAILY BRIEF</span>
+        <div style="font-size:13px;color:#4a6a8a;margin-top:2px">${esc(today)}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="border:1px solid ${reg.color}44;border-radius:99px;padding:4px 12px;font-size:12px;font-weight:800;color:${reg.color};background:${reg.color}14">${esc(reg.label)}</span>
+        <span style="border:1px solid rgba(120,160,210,.2);border-radius:99px;padding:4px 12px;font-size:12px;color:#9fb3c8">Cripto ${criptoPct.toFixed(0)}%</span>
+        <span style="border:1px solid rgba(120,160,210,.2);border-radius:99px;padding:4px 12px;font-size:12px;color:#9fb3c8">${assets.length} activos</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+      ${metrics.map((m, i) => `<div style="padding:16px 20px;${i < metrics.length-1 ? "border-right:1px solid rgba(120,160,210,.07)" : ""}">
+        <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#9fb3c8;margin-bottom:4px">${esc(m.label)}</div>
+        <div style="font-size:20px;font-weight:900;color:${m.valueColor || "#eaf6ff"}">${esc(String(m.value))}</div>
+        <div style="font-size:12px;color:${m.subColor || "#9fb3c8"};margin-top:2px">${esc(m.sub)}</div>
+      </div>`).join("")}
+    </div>
+    <div style="padding:10px 24px;background:rgba(0,0,0,.25);display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid rgba(120,160,210,.07)">
+      <span style="font-size:11px;color:#3a5a7a;font-style:italic">EDUCATIVO — no es asesoría financiera</span>
+      <span style="flex:1"></span>
+      ${riskAssets.slice(0,3).map(a => `<span style="border:1px solid rgba(255,77,109,.25);border-radius:8px;padding:2px 9px;font-size:11px;color:#ff4d6d;background:rgba(255,77,109,.06)">${esc(a.symbol)} ⚠</span>`).join("")}
+      ${buyDips.slice(0,2).map(a => `<span style="border:1px solid rgba(0,255,153,.25);border-radius:8px;padding:2px 9px;font-size:11px;color:#00ff99;background:rgba(0,255,153,.06)">${esc(a.symbol)} ↗</span>`).join("")}
+    </div>
+  </div>`;
+}
+
+function renderAccountSummary(source, assets) {
+  if (!assets.length) return "";
+  const totalValue = assets.reduce((s, a) => s + a.valueMXN, 0);
+  const totalCost = assets.reduce((s, a) => s + a.costMXN, 0);
+  const totalGain = totalValue - totalCost;
+  const totalGainPct = totalCost > 0 ? (totalGain / totalCost * 100) : 0;
+  const sorted = assets.slice().sort((a, b) => b.score - a.score);
+  const topAsset = sorted[0], weakAsset = sorted[sorted.length - 1];
+  const hasRisk = assets.some(a => a.risk === "ALTO");
+  const gainColor = totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  const colors = { GBM: "#3b9dff", Plata: "#00ff99", Bitso: "#f59e0b" };
+  const color = colors[source] || "#9fb3c8";
+  return `<div style="border:1px solid ${color}22;border-radius:18px;padding:14px 20px;margin-bottom:10px;background:linear-gradient(135deg,${color}07,rgba(0,0,0,0));display:grid;grid-template-columns:80px 1fr auto auto auto;gap:14px;align-items:center">
+    <div style="font-size:16px;font-weight:900;color:${color}">${esc(source)}</div>
+    <div>
+      <div style="font-size:20px;font-weight:900">${money(totalValue)}</div>
+      <div style="font-size:12px;color:${gainColor}">${pct(totalGainPct)} · ${money(totalGain)}</div>
+    </div>
+    <div style="text-align:center"><div style="font-size:10px;color:#9fb3c8;text-transform:uppercase;margin-bottom:2px">Mejor</div><div style="font-weight:900;color:#00ff99">${esc(topAsset.symbol)}</div><div style="font-size:11px;color:#9fb3c8">${topAsset.score}/100</div></div>
+    <div style="text-align:center"><div style="font-size:10px;color:#9fb3c8;text-transform:uppercase;margin-bottom:2px">Débil</div><div style="font-weight:900;color:#ff4d6d">${esc(weakAsset.symbol)}</div><div style="font-size:11px;color:#9fb3c8">${weakAsset.score}/100</div></div>
+    <div style="text-align:right"><div style="font-size:10px;color:#9fb3c8;text-transform:uppercase;margin-bottom:2px">Riesgo</div><div style="font-weight:900;color:${hasRisk ? "#ff4d6d" : "#00ff99"}">${hasRisk ? "ALTO" : "OK"}</div></div>
+  </div>`;
+}
+
+function computeTradeIdea() {
+  const pv = portfolioValue();
+  const ranked = pv.assets.slice().sort((a, b) => b.score - a.score);
+  const takeProfit = ranked.find(a => a.gainPct > 80 && a.score > 55);
+  if (takeProfit) return { hasIdea: true, symbol: takeProfit.symbol, action: "TOMA GANANCIA PARCIAL (hipotético)", reason: `+${takeProfit.gainPct.toFixed(0)}% ganancia acumulada — considerar reducir posición` };
+  const buyDip = ranked.find(a => a.signal && a.signal.includes("BUY") && a.gainPct < -3 && a.score > 45);
+  if (buyDip) return { hasIdea: true, symbol: buyDip.symbol, action: "BUY DIP (hipotético)", reason: `Score ${buyDip.score}/100 · caída ${pct(buyDip.gainPct)} · señal ${buyDip.signal}` };
+  return { hasIdea: false };
+}
+
+function renderTradingAIStatus() {
+  return `<div style="max-width:1280px;margin:0 auto 8px;border:1px solid rgba(255,211,92,.18);border-radius:24px;padding:18px 22px;background:linear-gradient(135deg,rgba(255,211,92,.04),rgba(59,157,255,.04))">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div>
+        <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">TRADING AI · PAPER MODE</div>
+        <div style="color:#9fb3c8;font-size:13px;margin-top:2px">Simulación educativa — sin dinero real — Alpaca pendiente de conexión</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <span style="border:1px solid rgba(255,211,92,.3);border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;color:#ffd35c">PAPER ONLY</span>
+        <span style="border:1px solid rgba(120,160,210,.15);border-radius:99px;padding:4px 13px;font-size:12px;color:#9fb3c8">Alpaca: pendiente</span>
+      </div>
+    </div>
+    <div class="grid" style="margin:0;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">${renderBotMetricCards()}</div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(120,160,210,.07);display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <a class="btn" href="/bot/start" style="font-size:13px;padding:7px 14px">▶ Start</a>
+      <a class="btn" href="/bot/pause" style="font-size:13px;padding:7px 14px">⏸ Pause</a>
+      <a class="btn" href="/bot/reset" style="font-size:13px;padding:7px 14px">↺ Reset</a>
+      <span class="muted" style="font-size:12px">PAPER TRADING / SIMULACIÓN — NO USA DINERO REAL</span>
+    </div>
+  </div>`;
+}
+
+function renderPaperTradingPanel() {
+  const idea = computeTradeIdea();
+  const bt = renderBotTables();
+  return `<div style="max-width:1280px;margin:0 auto 16px">
+    ${idea.hasIdea ? `<div style="border:1px solid rgba(0,255,153,.18);border-radius:18px;padding:14px 20px;margin-bottom:14px;background:rgba(0,255,153,.03)">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99;margin-bottom:8px">Idea de paper trade (hipotético — no ejecutar)</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <b style="font-size:20px">${esc(idea.symbol)}</b>
+        <span style="color:#00ff99;font-weight:700">${esc(idea.action)}</span>
+        <span class="muted" style="font-size:13px">${esc(idea.reason)}</span>
+      </div>
+    </div>` : ""}
+    ${spark(bot.equityHistory, { key: "v", color: "#00ff99", height: 220 })}
+    <h2 style="font-size:18px;margin:16px 0 8px">Posiciones simuladas</h2>
+    <div class="panel table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${bt.posRows}</tbody></table></div>
+    <h2 style="font-size:18px;margin:16px 0 8px">Bitácora del bot</h2>
+    <div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razón</th></tr></thead><tbody>${bt.histRows}</tbody></table></div>
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -1709,10 +1878,9 @@ h2{max-width:1280px;margin:34px auto 14px;font-size:26px;background:linear-gradi
 .brain-lines{position:absolute;inset:0;width:100%;height:100%}
 .brain-lines path{fill:none;stroke:#00ff99;stroke-width:2.4;stroke-linecap:round;stroke-dasharray:12 12;animation:dash 3s linear infinite;opacity:.75;filter:drop-shadow(0 0 8px #00ff99)}
 @keyframes dash{to{stroke-dashoffset:-90}}
-.brain-node{position:absolute;display:grid;place-items:center;min-width:56px;height:36px;padding:0 10px;border-radius:999px;font-weight:900;font-size:13px;border:1px solid rgba(120,160,210,.22);background:rgba(8,18,36,.9);box-shadow:0 0 22px rgba(59,157,255,.3);z-index:3}
+.brain-node{position:absolute;display:grid;place-items:center;min-width:52px;height:32px;padding:0 9px;border-radius:999px;font-weight:900;font-size:11px;border:1px solid rgba(120,160,210,.22);background:rgba(8,18,36,.92);box-shadow:0 0 18px rgba(59,157,255,.28);z-index:3}
 .brain-node .pulse{position:absolute;inset:-4px;border-radius:999px;border:1px solid rgba(0,255,153,.4);animation:ping 2.4s ease-out infinite}
 @keyframes ping{0%{transform:scale(1);opacity:.7}100%{transform:scale(1.6);opacity:0}}
-.n0{left:9%;top:16%}.n1{left:25%;top:8%}.n2{left:44%;top:20%}.n3{left:68%;top:11%}.n4{left:12%;top:52%}.n5{left:34%;top:44%}.n6{left:55%;top:52%}.n7{left:76%;top:45%}.n8{left:18%;top:78%}.n9{left:44%;top:76%}.n10{left:65%;top:74%}.n11{left:82%;top:72%}
 .brain-feed{display:flex;flex-direction:column;gap:10px}.feed-title{font-size:22px;font-weight:900}
 .thought{border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.04);padding:12px;border-radius:14px;color:#dbeafe;animation:fade .5s ease}
 .thought small{display:block;color:var(--muted);margin-top:5px}.thought b{color:#9bd3ff}
@@ -1767,7 +1935,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 
 <header>
   <div class="logo-wrap">
-    <div class="app-icon">C<span style="font-size:0.65em;vertical-align:super">Δ</span></div>
+    <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
     <div><h1>${esc(settings.appName)}</h1><div class="subtitle">CORDΞLIUS · Trading · Intelligence · Law · Alfredo AI</div></div>
   </div>
   <nav>
@@ -1783,6 +1951,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </div>
 
 <a id="home"></a>
+${renderDailyBrief()}
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-bottom:8px">
   <a href="#portfolio" style="text-decoration:none"><div class="card" style="border-color:rgba(59,157,255,.35);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,0,0,0))"><div class="label">Trading</div><div class="big blue" style="font-size:26px">Portafolio</div><div class="muted">Activos · Scan Diario · Quiver · Bot ficticio</div></div></a>
   <a href="#intelligence" style="text-decoration:none"><div class="card" style="border-color:rgba(0,255,153,.35);background:linear-gradient(135deg,rgba(0,255,153,.08),rgba(0,0,0,0))"><div class="label">Intelligence</div><div class="big green" style="font-size:26px">Radar</div><div class="muted">Intel manual · Trading político · Market Radar</div></div></a>
@@ -1814,8 +1983,12 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
     <span class="btn" style="font-size:13px;padding:6px 14px">Abrir chat ▾</span>
   </summary>
   <div style="padding:16px 20px 20px">
-    <div class="muted" style="margin-bottom:12px;font-size:13px">Preguntas útiles: "riesgo", "que vendo", "comprar", "vigilar", "quiver", "radar", "intel", "bot"  ·  Apaga Thinking Mode para no gastar Claude.</div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Preguntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+      ${["Qué vigilar hoy","Analiza mi portafolio","Stocks externos calientes","Congreso e insiders","Cuánto BTC tengo","Promedio de compra por activo"].map(q =>
+        `<button onclick="document.querySelector('[name=q]').value='${q}'" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
+      ).join("")}
+    </div>
+    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
     <div style="max-height:480px;overflow-y:auto;margin-top:12px">
       ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
     </div>
@@ -1823,7 +1996,15 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </details></div>
 
 <a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
-${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-top:22px">${esc(k)}</h2>${renderPortfolioRows(list)}`).join("")}
+${(function(){
+  const bySource = {};
+  for (const a of assets) { bySource[a.source] = bySource[a.source] || []; bySource[a.source].push(a); }
+  return Object.entries(bySource).map(([src, list]) =>
+    renderAccountSummary(src, list)
+    + `<h2 style="font-size:18px;margin:6px 0 8px;color:#9fb3c8">${esc(src)} · ${[...new Set(list.map(a => a.category))].join(", ")}</h2>`
+    + renderPortfolioRows(list)
+  ).join("");
+})()}
 
 <h2>Ranking Alfredo — score · riesgo · señal educativa</h2>
 <div class="ranking">${ranked.map((a, i) => {
@@ -1851,19 +2032,9 @@ ${Object.entries(grouped).map(([k, list]) => `<h2 style="font-size:21px;margin-t
 
 <a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
-<a id="bot"></a><h2>Trading AI ficticio — laboratorio</h2>
-<div class="grid">
-  ${renderBotMetricCards()}
-</div>
-<div class="panel">
-  <a class="btn" href="/bot/start">Start</a> <a class="btn" href="/bot/pause">Pause</a> <a class="btn" href="/bot/reset">Reset</a>
-  <p class="muted">PAPER TRADING / SIMULACION — NO USA DINERO REAL. Simula tendencia, score, riesgo, tamano y salida.</p>
-  ${spark(bot.equityHistory, { key: "v", color: "#00ff99", height: 240 })}
-</div>
-<h2>Posiciones simuladas</h2>
-<div class="panel table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${botTables.posRows}</tbody></table></div>
-<h2>Bitacora del bot</h2>
-<div class="panel table-wrap"><table><thead><tr><th>Tipo</th><th>Activo</th><th>Unidades</th><th>Precio</th><th>Valor</th><th>P&L</th><th>Hora</th><th>Razon</th></tr></thead><tbody>${botTables.histRows}</tbody></table></div>
+<a id="bot"></a><h2>Trading AI — Paper Mode · Laboratorio ficticio</h2>
+${renderTradingAIStatus()}
+${renderPaperTradingPanel()}
 
 <a id="vigilar"></a><h2>Trading AI — Radar externo · Stocks calientes</h2>
 ${renderExternalRadar()}
