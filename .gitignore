@@ -18,7 +18,9 @@ alfredo_chat_history.json
 cordelius_intel.json
 
 # Backups y parches locales
+*_backup_*.js
 dashboard_backup_*.js
+bot_backup_*.js
 dashboard_FINAL_ESTABLE_*.js
 dashboard_OK_PUBLICO_*.js
 dashboard_broken_before_recovery_*.js
