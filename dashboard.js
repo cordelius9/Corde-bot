@@ -182,9 +182,9 @@ async function refreshWhoopCache() {
   if (Date.now() - whoopCache.lastFetch < WHOOP_CACHE_MS) return;
   try {
     const [profile, cycleResp, recoveryResp] = await Promise.all([
-      fetchWhoopAPI("/developer/v1/user/profile/basic"),
-      fetchWhoopAPI("/developer/v1/cycle?limit=1"),
-      fetchWhoopAPI("/developer/v1/recovery?limit=1")
+      fetchWhoopAPI("/v2/user/profile/basic"),
+      fetchWhoopAPI("/v2/cycle?limit=1"),
+      fetchWhoopAPI("/v2/recovery?limit=1")
     ]);
     if (profile && profile.user_id) { whoopCache.profile = profile; whoopCache.connected = true; }
     if (cycleResp && cycleResp.records && cycleResp.records[0]) whoopCache.cycle = cycleResp.records[0];
@@ -2597,34 +2597,62 @@ function renderWhoopNotConnected() {
 
 function renderHealthReadinessPanel() {
   const h = computeHealthReadiness();
+  const cyc = whoopCache.cycle;
+  const scoreState = cyc && cyc.score && cyc.score.state ? cyc.score.state : null;
+  const kilojoule = cyc && cyc.score && cyc.score.kilojoule != null ? cyc.score.kilojoule : null;
+
+  // Color helpers
+  const recColor = h.recovery !== null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const slpColor = h.sleep !== null ? (h.sleep >= 70 ? "#00ff99" : h.sleep >= 50 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const strColor = h.strain !== null ? (h.strain > 15 ? "#ff4d6d" : h.strain > 8 ? "#ffd35c" : "#00ff99") : "#9fb3c8";
+  const hrvColor = h.hrv !== null ? (h.hrv >= 50 ? "#00ff99" : h.hrv >= 30 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const stateColor = scoreState === "SCORED" ? "#00ff99" : scoreState ? "#ffd35c" : "#9fb3c8";
+
   const metrics = [
-    { label: "Recovery",      value: h.recovery       !== null ? h.recovery + "%" : "—",  color: "#9fb3c8" },
-    { label: "Sleep",         value: h.sleep          !== null ? h.sleep + "%" : "—",     color: "#9fb3c8" },
-    { label: "Strain",        value: h.strain         !== null ? String(h.strain) : "—",  color: "#9fb3c8" },
-    { label: "HRV",           value: h.hrv            !== null ? h.hrv + " ms" : "—",     color: "#9fb3c8" },
-    { label: "Resting HR",    value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
-    { label: "Modo Operativo",value: h.operatingMode, color: "#ffd35c" },
+    { label: "Recovery",    value: h.recovery !== null ? h.recovery + "%" : "—",                           color: recColor },
+    { label: "Sleep",       value: h.sleep !== null ? h.sleep + "%" : "—",                                 color: slpColor },
+    { label: "Strain",      value: h.strain !== null ? h.strain.toFixed(1) : "—",                          color: strColor },
+    { label: "Avg HR",      value: h.averageHeartRate !== null ? h.averageHeartRate + " bpm" : "—",        color: "#f472b6" },
+    { label: "Max HR",      value: h.maxHeartRate !== null ? h.maxHeartRate + " bpm" : "—",                color: "#ff4d6d" },
+    { label: "HRV",         value: h.hrv !== null ? h.hrv.toFixed(1) + " ms" : "—",                       color: hrvColor },
+    { label: "Resting HR",  value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—",        color: "#9fb3c8" },
+    { label: "Kilojoule",   value: kilojoule !== null ? kilojoule.toFixed(0) + " kJ" : "—",               color: "#9fb3c8" },
+    { label: "Estado",      value: scoreState || "—",                                                       color: stateColor },
+    { label: "Modo",        value: h.operatingMode,                                                         color: "#ffd35c" },
   ];
+
+  // Connection badge
+  const badgeBg    = h.connected ? "rgba(0,255,153,.15)" : h.configured ? "rgba(255,211,92,.12)" : "rgba(120,160,210,.08)";
+  const badgeColor = h.connected ? "#00ff99" : h.configured ? "#ffd35c" : "#9fb3c8";
+  const badgeLabel = h.connected ? "● WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "SIN DATOS";
+
+  // alfredoAdvice from auto-journal helper
+  const pv = portfolioValue();
+  const idea = computeTradeIdea();
+  const alfredoAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
+    (idea.hasIdea ? `Idea paper: ${idea.type} en ${idea.symbol}. ` : "") +
+    `Modo: ${h.operatingMode}. ${h.suggestion}.`;
+
   return `<div style="max-width:1280px;margin:0 auto 12px">
     <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div>
           <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health Readiness</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · educativo</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · no consejo médico</div>
         </div>
-        <span style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
+        <span style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${badgeBg};color:${badgeColor}">${badgeLabel}</span>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         ${metrics.map(m =>
-          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:90px">
+          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:80px">
             <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
-            <div style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
+            <div style="font-size:${m.label === "Estado" ? "13px" : "16px"};font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
           </div>`
         ).join("")}
       </div>
       <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
-        ${esc(h.message)}
-        <span class="muted" style="margin-left:8px;font-size:12px">Sugerencia: <b style="color:#ffd35c">${esc(h.suggestion)}</b></span>
+        <b style="color:#ffd35c">${esc(h.operatingMode)}</b> · ${esc(h.suggestion)}
+        <div style="margin-top:5px;font-size:12px;color:#9fb3c8">${esc(alfredoAdvice)} <span style="opacity:.6">· No es consejo financiero.</span></div>
       </div>
       <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
     </div>
