@@ -18,6 +18,7 @@ ai_chat_history.json
 alfredo_chat_history.json
 cordelius_intel.json
 cordelius_alerts.json
+cordelius_journal.json
 
 # Backups y parches locales
 dashboard_backup_*.js

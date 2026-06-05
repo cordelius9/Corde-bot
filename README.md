@@ -99,6 +99,10 @@ Ver [AUTOMATION.md](AUTOMATION.md) para guía completa: inicio automático en Te
 | `GET` | `/api/market-intelligence` | Inteligencia de mercado: portafolio + externo + Quiver + sectores |
 | `GET` | `/api/external-radar` | Radar externo: stocks calientes por sector |
 | `GET` | `/api/paper/status` | Estado Paper Mode: idea, bot metrics, disclaimer |
+| `GET` | `/api/os-status` | Estado completo del OS: módulos, flags de seguridad |
+| `GET` | `/api/journal/status` | Estado del Journal: count, topMood, prompts sugeridos |
+| `GET` | `/api/journal` | Entradas del Journal (JSON completo) |
+| `POST` | `/api/journal` | Agrega entrada al Journal (body: `text`, `mood`, `energy`, `tags`) |
 | `POST` | `/ask` | Pregunta a Alfredo AI (body: `q=texto`) |
 | `POST` | `/intel` | Agrega item de Intel (body: `intel=texto`) |
 | `POST` | `/intel/delete` | Borra item Intel por hash (body: `id=hash`) |
@@ -120,6 +124,8 @@ Ver [`.env.example`](.env.example) para la lista completa con instrucciones.
 | `CLAUDE_MODEL` | No | Modelo para el dashboard (default `claude-sonnet-4-6`) |
 | `CLAUDE_MODEL_BOT` | No | Modelo para bot.js (default `claude-haiku-4-5-20251001`) |
 | `QUIVER_API_KEY` | No | Datos institucionales: congreso, insiders (pendiente F3) |
+| `WHOOP_CLIENT_ID` | No | WHOOP Health API — sleep, HRV, recovery (pendiente) |
+| `WHOOP_CLIENT_SECRET` | No | WHOOP Health API — clave secreta (pendiente) |
 
 ---
 
@@ -143,11 +149,36 @@ Ver [`.env.example`](.env.example) para la lista completa con instrucciones.
 
 ## Estructura del proyecto
 
+Ver [DEPLOY.md](DEPLOY.md) para guía de deploy en Render, Railway, Fly.io y VPS.
+
+---
+
+## Módulos del OS
+
+El dashboard usa navegación por módulos (tabs):
+
+| Módulo | Botón | Contenido |
+|---|---|---|
+| Inicio | `Inicio` | Home portal: resumen del OS, 5 módulos, daily brief |
+| Trading | `◈ Trading` | Portafolio, graficas, brain, ranking, noticias, paper trade, radar externo, scan |
+| Health | `◉ Health` | Health Readiness, WHOOP placeholder, stats del portafolio |
+| Journal | `◎ Journal` | Diario personal: entradas, mood, energía, tags |
+| Intelligence | `◆ Intelligence` | Morning report, Quiver, Intel manual, radar político |
+| Autopilot | `◇ Autopilot` | Scripts, automatización, estado del sistema |
+
+Alfredo AI flota en todos los módulos (botón AI abajo a la derecha).
+
+---
+
+## Estructura del proyecto
+
 ```
 Corde-bot/
 ├── dashboard.js          # App principal (Node.js HTTP server)
 ├── bot.js                # Bot Telegram + Claude AI
 ├── trading_ai.js         # Simulador de trading ficticio (port 3001)
+├── Procfile              # Para deploy en Render/Railway/Fly.io
+├── DEPLOY.md             # Guía de deploy en cloud
 ├── scripts/
 │   ├── health_check.sh   # Verifica /health, tail de log si falla
 │   ├── restart_safe.sh   # Reinicio seguro: stop → start → health
