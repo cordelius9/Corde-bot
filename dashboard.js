@@ -2397,6 +2397,14 @@ function computeAutoJournal() {
     tradingModeSuggestion,
     alfredoNote: alfredoAdvice,
     alfredoAdvice,
+    // Top-level biometrics (used by renderJournalModule)
+    strain: h.strain,
+    averageHeartRate: h.averageHeartRate,
+    maxHeartRate: h.maxHeartRate,
+    recovery: h.recovery,
+    sleep: h.sleep,
+    hrv: h.hrv,
+    restingHeartRate: h.restingHeartRate,
     portfolioSnapshot: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct },
     whoop: {
       connected: h.connected,
@@ -2601,32 +2609,30 @@ function renderHealthReadinessPanel() {
   const scoreState = cyc && cyc.score && cyc.score.state ? cyc.score.state : null;
   const kilojoule = cyc && cyc.score && cyc.score.kilojoule != null ? cyc.score.kilojoule : null;
 
-  // Color helpers
   const recColor = h.recovery !== null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
   const slpColor = h.sleep !== null ? (h.sleep >= 70 ? "#00ff99" : h.sleep >= 50 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
   const strColor = h.strain !== null ? (h.strain > 15 ? "#ff4d6d" : h.strain > 8 ? "#ffd35c" : "#00ff99") : "#9fb3c8";
   const hrvColor = h.hrv !== null ? (h.hrv >= 50 ? "#00ff99" : h.hrv >= 30 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
   const stateColor = scoreState === "SCORED" ? "#00ff99" : scoreState ? "#ffd35c" : "#9fb3c8";
 
+  // id attr for each metric so JS can update live
   const metrics = [
-    { label: "Recovery",    value: h.recovery !== null ? h.recovery + "%" : "—",                           color: recColor },
-    { label: "Sleep",       value: h.sleep !== null ? h.sleep + "%" : "—",                                 color: slpColor },
-    { label: "Strain",      value: h.strain !== null ? h.strain.toFixed(1) : "—",                          color: strColor },
-    { label: "Avg HR",      value: h.averageHeartRate !== null ? h.averageHeartRate + " bpm" : "—",        color: "#f472b6" },
-    { label: "Max HR",      value: h.maxHeartRate !== null ? h.maxHeartRate + " bpm" : "—",                color: "#ff4d6d" },
-    { label: "HRV",         value: h.hrv !== null ? h.hrv.toFixed(1) + " ms" : "—",                       color: hrvColor },
-    { label: "Resting HR",  value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—",        color: "#9fb3c8" },
-    { label: "Kilojoule",   value: kilojoule !== null ? kilojoule.toFixed(0) + " kJ" : "—",               color: "#9fb3c8" },
-    { label: "Estado",      value: scoreState || "—",                                                       color: stateColor },
-    { label: "Modo",        value: h.operatingMode,                                                         color: "#ffd35c" },
+    { id: "hr-recovery", label: "Recovery",   value: h.recovery !== null ? h.recovery + "%" : "—",                       color: recColor },
+    { id: "hr-sleep",    label: "Sleep",       value: h.sleep !== null ? h.sleep + "%" : "—",                             color: slpColor },
+    { id: "hr-strain",   label: "Strain",      value: h.strain !== null ? h.strain.toFixed(1) : "—",                      color: strColor },
+    { id: "hr-avghr",    label: "Avg HR",      value: h.averageHeartRate !== null ? h.averageHeartRate + " bpm" : "—",    color: "#f472b6" },
+    { id: "hr-maxhr",    label: "Max HR",      value: h.maxHeartRate !== null ? h.maxHeartRate + " bpm" : "—",            color: "#ff4d6d" },
+    { id: "hr-hrv",      label: "HRV",         value: h.hrv !== null ? h.hrv.toFixed(1) + " ms" : "—",                   color: hrvColor },
+    { id: "hr-rhr",      label: "Resting HR",  value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—",   color: "#9fb3c8" },
+    { id: "hr-kj",       label: "Kilojoule",   value: kilojoule !== null ? kilojoule.toFixed(0) + " kJ" : "—",           color: "#9fb3c8" },
+    { id: "hr-state",    label: "Estado",      value: scoreState || "—",                                                   color: stateColor },
+    { id: "hr-mode",     label: "Modo",        value: h.operatingMode,                                                     color: "#ffd35c" },
   ];
 
-  // Connection badge
   const badgeBg    = h.connected ? "rgba(0,255,153,.15)" : h.configured ? "rgba(255,211,92,.12)" : "rgba(120,160,210,.08)";
   const badgeColor = h.connected ? "#00ff99" : h.configured ? "#ffd35c" : "#9fb3c8";
   const badgeLabel = h.connected ? "● WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "SIN DATOS";
 
-  // alfredoAdvice from auto-journal helper
   const pv = portfolioValue();
   const idea = computeTradeIdea();
   const alfredoAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
@@ -2640,19 +2646,19 @@ function renderHealthReadinessPanel() {
           <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health Readiness</div>
           <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · no consejo médico</div>
         </div>
-        <span style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${badgeBg};color:${badgeColor}">${badgeLabel}</span>
+        <span id="hr-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${badgeBg};color:${badgeColor}">${badgeLabel}</span>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         ${metrics.map(m =>
           `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:80px">
             <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
-            <div style="font-size:${m.label === "Estado" ? "13px" : "16px"};font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
+            <div id="${m.id}" style="font-size:${m.id === "hr-state" ? "13px" : "16px"};font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
           </div>`
         ).join("")}
       </div>
       <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
-        <b style="color:#ffd35c">${esc(h.operatingMode)}</b> · ${esc(h.suggestion)}
-        <div style="margin-top:5px;font-size:12px;color:#9fb3c8">${esc(alfredoAdvice)} <span style="opacity:.6">· No es consejo financiero.</span></div>
+        <b id="hr-mode-footer" style="color:#ffd35c">${esc(h.operatingMode)}</b> · <span id="hr-suggestion">${esc(h.suggestion)}</span>
+        <div style="margin-top:5px;font-size:12px;color:#9fb3c8"><span id="hr-advice">${esc(alfredoAdvice)}</span> <span style="opacity:.6">· No es consejo financiero.</span></div>
       </div>
       <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
     </div>
@@ -3289,6 +3295,36 @@ document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
   showMod(saved || 'home');
+  // Live-update Health Readiness panel from /api/whoop/today
+  (function whoopHealthLive() {
+    function set(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; }
+    function fmt1(n) { return n != null ? (typeof n === 'number' ? n.toFixed(1) : n) : null; }
+    function poll() {
+      fetch('/api/whoop/today').then(function(r){return r.json();}).then(function(d){
+        set('hr-recovery',  d.recovery     != null ? d.recovery + '%'              : '—');
+        set('hr-sleep',     d.sleep        != null ? d.sleep + '%'                 : '—');
+        set('hr-strain',    d.strain       != null ? fmt1(d.strain)                : '—');
+        set('hr-avghr',     d.averageHeartRate != null ? d.averageHeartRate + ' bpm' : '—');
+        set('hr-maxhr',     d.maxHeartRate != null ? d.maxHeartRate + ' bpm'       : '—');
+        set('hr-hrv',       d.hrv          != null ? fmt1(d.hrv) + ' ms'           : '—');
+        set('hr-rhr',       d.restingHeartRate != null ? d.restingHeartRate + ' bpm' : '—');
+        set('hr-kj',        d.kilojoule    != null ? Math.round(d.kilojoule) + ' kJ' : '—');
+        set('hr-state',     d.scoreState   || '—');
+        set('hr-mode',      d.mode         || d.operatingMode || 'NORMAL');
+        set('hr-mode-footer', d.mode       || d.operatingMode || 'NORMAL');
+        set('hr-suggestion',  d.suggestion || '');
+        if (d.alfredoAdvice) set('hr-advice', d.alfredoAdvice);
+        var badge = document.getElementById('hr-badge');
+        if (badge) {
+          badge.textContent = d.connected ? '● WHOOP LIVE' : (d.configured !== false ? 'WHOOP DETECTADO' : 'SIN DATOS');
+          badge.style.color = d.connected ? '#00ff99' : '#ffd35c';
+          badge.style.background = d.connected ? 'rgba(0,255,153,.15)' : 'rgba(255,211,92,.12)';
+        }
+      }).catch(function(){});
+    }
+    poll();
+    setInterval(poll, 60000);
+  })();
 });
 </script>
 </html>`;
