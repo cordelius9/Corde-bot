@@ -40,7 +40,7 @@ function nowMX() { return new Date().toLocaleString("es-MX"); }
 
 let settings = loadJSON(SETTINGS_FILE, {
   thinkingEnabled: true, autoRefreshSeconds: 60, themeMode: "neural",
-  appName: "Cordelius Trading", assistantName: "Alfredo AI"
+  appName: "Cordelius OS", assistantName: "Alfredo AI"
 });
 
 let quotes = {};
@@ -1072,7 +1072,7 @@ async function askClaude(question, localReply, pv, reg, botEq, botPnl) {
   };
 
   const prompt = `
-Eres Alfredo AI dentro de Cordelius Trading. Responde en español mexicano, claro, directo y útil.
+Eres Alfredo AI dentro de Cordelius OS. Responde en español mexicano, claro, directo y útil.
 No eres asesor financiero. Da análisis educativo, no órdenes definitivas.
 Usa SIEMPRE los costos originales y valores reales del portafolio cuando hables de rendimiento.
 
@@ -1401,10 +1401,16 @@ function brainHtml() {
     "left:2%;top:67%",  "left:19%;top:62%", "left:38%;top:70%", "left:56%;top:63%",
     "left:72%;top:70%", "left:86%;top:61%", "left:10%;top:84%", "left:46%;top:88%",
   ];
-  return `<div class="brain-card">
+  return `<details class="brain-card" style="cursor:pointer">
+    <summary style="list-style:none;display:flex;align-items:center;justify-content:space-between;padding:14px 20px;user-select:none">
+      <div>
+        <div class="brain-title" style="font-size:16px">Mapa vivo del sistema</div>
+        <div class="brain-sub">Vista visual de conexiones entre portafolio, riesgo, cripto, noticias y health.</div>
+      </div>
+      <span class="btn" style="font-size:12px;padding:5px 12px">Expandir ▾</span>
+    </summary>
     <div class="brain-left">
-      <div class="brain-title">Cerebro Alfredo AI</div>
-      <div class="brain-sub">Red neuronal viva: datos → análisis → señales → decisiones</div>
+      <div class="brain-sub" style="margin:8px 16px 4px">Red neuronal viva: datos → análisis → señales → decisiones</div>
       <div class="brain" style="min-height:380px">
         ${nodes.map((n, i) => `<span class="brain-node" style="${positions[i]};${n.color ? "color:"+n.color+";border-color:"+n.color+"44" : ""}">${esc(n.label)}<i class="pulse" style="animation-delay:${n.delay}s"></i></span>`).join("")}
         <svg viewBox="0 0 700 380" class="brain-lines" preserveAspectRatio="none">
@@ -1434,7 +1440,7 @@ function brainHtml() {
       <div class="feed-title">Pensamientos en vivo</div>
       ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando señales del mercado...</div>`}
     </div>
-  </div>`;
+  </details>`;
 }
 
 function renderPortfolioRows(assets) {
@@ -1466,12 +1472,16 @@ function renderPortfolioRows(assets) {
       <div class="asset-detail">
         <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
         <div class="detail-grid" style="margin-bottom:14px">
+          <div><span>Broker / origen</span><b>${esc(a.source)}</b></div>
           <div><span>Cantidad</span><b>${unitsLabel}</b></div>
           <div><span>Costo original</span><b>${money(a.costMXN)}</b></div>
           <div><span>Valor actual</span><b>${money(a.valueMXN)}</b></div>
           <div><span>Ganancia MXN</span><b class="${a.gainMXN >= 0 ? "green" : "red"}">${money(a.gainMXN)}</b></div>
+          <div><span>Ganancia %</span><b class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)}</b></div>
           <div><span>Promedio compra</span><b>${avgLabel}</b></div>
           <div><span>Precio actual</span><b>${curLabel}</b></div>
+          <div><span>Cambio del día</span><b class="muted">N/D — sin feed en tiempo real</b></div>
+          <div><span>Última actualización</span><b class="muted">${esc(a.quoteSource === "live" ? "Live feed" : "Local: " + nowMX())}</b></div>
         </div>
         <div class="ind-row">
           <div class="ind"><span>RSI</span><b class="${ind.rsi > 70 ? "red" : ind.rsi < 30 ? "green" : ""}">${ind.rsi}</b></div>
@@ -1487,13 +1497,26 @@ function renderPortfolioRows(assets) {
           <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Score ${act.score}/100</span></div>
           <ul>${act.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
         </div>
+        <div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:14px;padding:12px 16px;margin-bottom:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">¿Por qué vigilarlo?</div>
+          <div style="font-size:13px;color:#c8d8f0">
+            ${a.risk === "ALTO" ? `⚠ Riesgo alto — score ${a.score}/100. ` : ""}
+            ${a.gainPct < -15 ? `Caída de ${pct(a.gainPct)} desde costo. ` : a.gainPct > 50 ? `Ganancia de ${pct(a.gainPct)} — evaluar toma parcial. ` : ""}
+            ${a.type === "crypto" ? "Activo cripto: volatilidad elevada. " : ""}
+            ${a.signal.includes("BUY") ? "Señal educativa de entrada detectada. " : a.signal.includes("VIGILAR") ? "Señal de vigilancia activa. " : ""}
+            ${a.score >= 65 ? "Score sólido — mantener y monitorear." : a.score < 35 ? "Score bajo — no promediar sin revisar la tesis." : "Score neutro — monitoreo regular recomendado."}
+          </div>
+        </div>
         <div class="detail-grid">
           <div><span>Zona compra</span><b>${a.currency === "USD" ? money(z.buy, "USD") : money(z.buy)}</b></div>
           <div><span>Zona venta</span><b>${a.currency === "USD" ? money(z.sell, "USD") : money(z.sell)}</b></div>
           <div><span>Stop educativo</span><b>${a.currency === "USD" ? money(z.stop, "USD") : money(z.stop)}</b></div>
           <div><span>Fuente precio</span><b>${esc(a.quoteSource)}</b></div>
         </div>
-        <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Abrir TradingView de ${esc(a.symbol)}</a>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
+          <button onclick="setAlfredoQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+        </div>
       </div>
     </details>`;
   }).join("");
@@ -2342,6 +2365,26 @@ function renderAutopilotPanel() {
   </div>`;
 }
 
+function renderWhoopNotConnected() {
+  if (WHOOP_CONFIGURED) return "";
+  return `<div style="max-width:1280px;margin:0 auto 12px">
+    <div style="border:1px solid rgba(244,114,182,.25);background:rgba(244,114,182,.06);border-radius:20px;padding:18px 22px;display:flex;align-items:flex-start;gap:16px">
+      <div style="font-size:28px;margin-top:2px">◉</div>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:900;color:#f472b6;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">WHOOP no conectado</div>
+        <div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Sin datos de recuperación, sueño, HRV o strain. Las métricas de Health Readiness usan valores por defecto.</div>
+        <div style="font-size:12px;color:#9fb3c8;margin-bottom:10px">Para conectar WHOOP, agrega en tu <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">.env</code>:</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_ID=YOUR_CLIENT_ID</code>
+          <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_SECRET=YOUR_CLIENT_SECRET</code>
+          <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_REDIRECT_URI=http://localhost:3000/whoop/callback</code>
+        </div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:8px">Luego reinicia el servidor. Consulta DEPLOY.md para más detalles.</div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderHealthReadinessPanel() {
   const h = computeHealthReadiness();
   const metrics = [
@@ -2553,6 +2596,92 @@ function renderJournalModule() {
   </div>`;
 }
 
+function renderSignalCenter(pv, reg) {
+  const assets = pv.assets;
+  const cripto = assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
+  const ranked = assets.slice().sort((a, b) => b.score - a.score);
+  const external = computeExternalMarketIntelligence();
+  const scan = computeDailyScan();
+
+  // Assign priority
+  const withPriority = assets.map(a => {
+    const isHighRisk = a.score < 35 || a.risk === "ALTO" || a.gainPct < -20;
+    const isCryptoConc = a.type === "crypto" && criptoPct > 50;
+    const priority = (isHighRisk || isCryptoConc) ? "ALTA" :
+      (a.score >= 35 && a.score <= 60) ? "MEDIA" : "BAJA";
+    const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length
+                 + quiverData.insider.filter(x => x.symbol === a.symbol).length;
+    const bullish = a.score >= 65 && a.ind.momentum >= 0;
+    const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
+    const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
+    const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
+      a.score < 30 ? "No promediar — revisar tesis" :
+      a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
+    const motivo = a.risk === "ALTO" ? "Riesgo alto" :
+      a.gainPct < -20 ? "Caída fuerte" :
+      a.score >= 65 ? "Score sólido" :
+      a.type === "crypto" ? "Cripto volatil" : "Score neutro";
+    return { ...a, priority, sigLabel, eduAction, motivo, qCount };
+  }).sort((a, b) => {
+    const p = { ALTA: 0, MEDIA: 1, BAJA: 2 };
+    return (p[a.priority] - p[b.priority]) || b.score - a.score;
+  });
+
+  const alertAsset = withPriority.find(a => a.priority === "ALTA") || withPriority[0];
+  const bestOpp = ranked[0];
+  const prioColor = { ALTA: "#ff4d6d", MEDIA: "#ffd35c", BAJA: "#00ff99" };
+
+  const hotExternal = external.hot ? external.hot.slice(0, 3).map(t => `${t.symbol} (${t.sector})`).join(", ") : "—";
+  const scanAlerts = scan.alerts ? scan.alerts.slice(0, 3) : [];
+
+  const rows = withPriority.map(a => `<tr>
+    <td><b>${esc(a.symbol)}</b>${a.qCount > 0 ? `<span style="color:#00ff99;font-size:10px;margin-left:4px">Q${a.qCount}</span>` : ""}</td>
+    <td class="muted" style="font-size:12px">${esc(a.source)}</td>
+    <td><b>${a.score}</b>/100</td>
+    <td><b class="${a.risk === "ALTO" ? "red" : a.risk === "BAJO" ? "green" : "yellow"}">${esc(a.risk)}</b></td>
+    <td style="font-size:12px;color:${a.sigLabel === "Bullish" ? "#00ff99" : a.sigLabel === "Risk/Vigilar" ? "#ff4d6d" : "#ffd35c"}">${esc(a.sigLabel)}</td>
+    <td class="muted" style="font-size:12px">${esc(a.motivo)}</td>
+    <td class="muted" style="font-size:11px">${esc(a.eduAction)}</td>
+    <td><span style="background:${prioColor[a.priority]}22;color:${prioColor[a.priority]};border-radius:99px;padding:3px 9px;font-size:11px;font-weight:900">${esc(a.priority)}</span></td>
+  </tr>`).join("");
+
+  return `<div style="max-width:1280px;margin:0 auto 8px">
+    <h2>Centro de Señales Alfredo</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div class="card" style="padding:12px 18px;flex:1;min-width:200px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ff4d6d;margin-bottom:4px">Vigilar primero</div>
+        <div style="font-size:18px;font-weight:900;color:#eaf6ff">${esc(alertAsset ? alertAsset.symbol : "—")}</div>
+        <div class="muted" style="font-size:11px">${alertAsset ? esc(alertAsset.motivo) + " · score " + alertAsset.score : "—"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:200px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99;margin-bottom:4px">Mejor oportunidad educativa</div>
+        <div style="font-size:18px;font-weight:900;color:#eaf6ff">${esc(bestOpp ? bestOpp.symbol : "—")}</div>
+        <div class="muted" style="font-size:11px">${bestOpp ? "Score " + bestOpp.score + " · " + esc(bestOpp.signal) : "—"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:180px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f59e0b;margin-bottom:4px">Concentración cripto</div>
+        <div style="font-size:18px;font-weight:900;color:${criptoPct > 45 ? "#ff4d6d" : "#ffd35c"}">${criptoPct.toFixed(1)}%</div>
+        <div class="muted" style="font-size:11px">${criptoPct > 50 ? "⚠ Concentración alta" : criptoPct > 35 ? "Revisar balance" : "Bajo control"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:160px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:${reg.color};margin-bottom:4px">Régimen</div>
+        <div style="font-size:18px;font-weight:900;color:${reg.color}">${esc(reg.label)}</div>
+        <div class="muted" style="font-size:11px">${pct(reg.avg)} promedio</div>
+      </div>
+    </div>
+    ${scanAlerts.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${scanAlerts.map(al => `<span style="background:rgba(255,77,109,.1);color:#ff4d6d;border:1px solid rgba(255,77,109,.25);border-radius:99px;padding:4px 12px;font-size:12px;font-weight:700">⚑ ${esc(al)}</span>`).join("")}</div>` : ""}
+    ${hotExternal !== "—" ? `<div style="margin-bottom:12px;font-size:12px;color:#9fb3c8">Externos calientes: <b style="color:#3b9dff">${esc(hotExternal)}</b></div>` : ""}
+    <div class="table-wrap panel" style="padding:0">
+      <table>
+        <thead><tr><th>Activo</th><th>Broker</th><th>Score</th><th>Riesgo</th><th>Señal</th><th>Motivo</th><th>Acción educativa</th><th>Prioridad</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:8px;text-align:right">Educativo · no es asesoría financiera · Q = señal Quiver</div>
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -2716,10 +2845,12 @@ ${renderHomePortal(pv, reg)}
   <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
 
-<a id="chart"></a><h2>Graficas — portafolio + TradingView</h2>
-<div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted">Eje, max, min, area y variacion. Se guarda en ${esc(HISTORY_FILE)}.</div></div>
-<h2>Chart profesional (${esc(best.symbol)}) — TradingView</h2>
-<div class="tv-embed"><iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&hidesidetoolbar=0&saveimage=0&studies=RSI@tv-basicstudies,MACD@tv-basicstudies" style="width:100%;height:100%;border:0"></iframe></div>
+<a id="chart"></a><h2>Gráficas — historial del portafolio</h2>
+<div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px"><span>📅 Hoy</span><span class="muted">${portfolioHistory.length < 7 ? "Histórico no disponible todavía; usando snapshot actual." : portfolioHistory.length + " snapshots guardados · " + (portfolioHistory.length >= 7 ? "7D disponible" : "") + (portfolioHistory.length >= 30 ? " · 30D disponible" : "")}</span></div></div>
+<div class="panel" style="max-width:1280px;margin:0 auto 8px;padding:14px 18px">
+  <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Gráficas por activo</div>
+  <div style="font-size:13px;color:#9fb3c8">Abre cada activo del portafolio para ver minigrafica, precio, señales y enlace a TradingView.</div>
+</div>
 
 <a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
@@ -2756,29 +2887,7 @@ ${(function(){
   ).join("");
 })()}
 
-<h2>Ranking Alfredo — score · riesgo · señal educativa</h2>
-<div class="ranking">${ranked.map((a, i) => {
-  const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length + quiverData.insider.filter(x => x.symbol === a.symbol).length;
-  const bullish = a.score >= 65 && a.ind.momentum >= 0;
-  const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
-  const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
-  const sigColor = bullish ? "#00ff99" : bearish ? "#ff4d6d" : "#ffd35c";
-  const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
-    a.score < 30 ? "No promediar — revisar tesis" :
-    a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
-  return `<div class="rank" style="grid-template-columns:auto 1fr auto">
-    <div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted" style="font-size:12px">${esc(a.source)} · ${esc(a.risk)}</div>${qCount > 0 ? `<div style="color:#00ff99;font-size:11px">Q×${qCount}</div>` : ""}</div>
-    <div>
-      <div class="bar"><span style="width:${a.score}%"></span></div>
-      <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap">
-        <span style="color:${sigColor};font-size:12px;font-weight:700">${sigLabel}</span>
-        <span class="muted" style="font-size:12px">${esc(a.signal)}</span>
-      </div>
-      <div class="muted" style="font-size:11px;margin-top:3px">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · ${esc(eduAction)}</div>
-    </div>
-    <div style="text-align:right"><b style="font-size:20px">${a.score}/100</b><div class="${a.gainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(a.gainPct)}</div></div>
-  </div>`;
-}).join("")}</div>
+${renderSignalCenter(pv, reg)}
 
 <a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
@@ -2786,14 +2895,10 @@ ${(function(){
 ${renderTradingAIStatus()}
 ${renderPaperTradingPanel()}
 
-<a id="vigilar"></a><h2>Radar Externo — Stocks calientes por sector</h2>
-${renderExternalRadarBySector()}
-
-<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
-
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
 <div id="mod-health" class="mod">
+${renderWhoopNotConnected()}
 ${renderHealthReadinessPanel()}
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
@@ -2893,7 +2998,7 @@ ${renderAutopilotPanel()}
 </div>
 </div>
 
-<div class="disclaimer">Cordelius Trading es educativo. No es asesoria financiera. El bot es 100% ficticio (paper trading) y no se conecta a ningun exchange real.</div>
+<div class="disclaimer">Cordelius OS es educativo. No es asesoria financiera. El bot de trading es 100% ficticio (paper trading) y no se conecta a ningun exchange real. WHOOP pendiente de conexion. Alpaca PAPER ONLY.</div>
 </body>
 <script>
 function showMod(name) {
@@ -3170,6 +3275,24 @@ const server = http.createServer(async (req, res) => {
         cloudReady: true,
         disclaimer: "PAPER TRADING / EDUCATIVO — SIN ORDENES REALES"
       }
+    }));
+  }
+  if (path === "/api/whoop/status") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      configured: WHOOP_CONFIGURED,
+      connected: false,
+      source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "not_configured",
+      reason: WHOOP_CONFIGURED
+        ? "WHOOP env vars detected but OAuth not yet implemented"
+        : "WHOOP env vars missing (WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)",
+      vars: {
+        clientId: !!process.env.WHOOP_CLIENT_ID,
+        clientSecret: !!process.env.WHOOP_CLIENT_SECRET,
+        redirectUri: !!process.env.WHOOP_REDIRECT_URI
+      },
+      note: "WHOOP OAuth implementation pending. No real health data available."
     }));
   }
   if (path === "/api/health-readiness") {
