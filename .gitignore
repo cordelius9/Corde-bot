@@ -19,6 +19,7 @@ alfredo_chat_history.json
 cordelius_intel.json
 cordelius_alerts.json
 cordelius_journal.json
+whoop_tokens.json
 
 # Backups y parches locales
 dashboard_backup_*.js

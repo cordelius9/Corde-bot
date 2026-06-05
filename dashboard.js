@@ -19,6 +19,8 @@ const CHAT_FILE = "alfredo_chat_history.json";
 const SETTINGS_FILE = "cordelius_settings.json";
 const INTEL_FILE = "cordelius_intel.json";
 const JOURNAL_FILE = "cordelius_journal.json";
+const WHOOP_TOKEN_FILE = "whoop_tokens.json";
+const WHOOP_CACHE_MS = 5 * 60 * 1000;
 
 function loadJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
@@ -49,6 +51,8 @@ let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
 let journalEntries = loadJSON(JOURNAL_FILE, []);
+let whoopTokens = loadJSON(WHOOP_TOKEN_FILE, null);
+let whoopCache = { profile: null, cycle: null, recovery: null, lastFetch: 0, connected: false };
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
@@ -78,8 +82,9 @@ const PORTFOLIO = [
 const TV_SYMBOL = {
   AAPL: "NASDAQ:AAPL", BBVA: "BMV:BBVA", MSFT: "NASDAQ:MSFT", GEV: "NYSE:GEV", IREN: "NASDAQ:IREN",
   PLTR: "NASDAQ:PLTR", AEP: "NASDAQ:AEP", UNH: "NYSE:UNH", SSYS: "NASDAQ:SSYS", PATH: "NYSE:PATH",
-  COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX", XRP: "BINANCE:XRPUSDT", BTC: "BINANCE:BTCUSDT",
-  ETH: "BINANCE:ETHUSDT", BCH: "BINANCE:BCHUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
+  COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX",
+  BTC: "BITSTAMP:BTCUSD", ETH: "BITSTAMP:ETHUSD", BCH: "COINBASE:BCHUSD",
+  XRP: "BINANCE:XRPUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
 };
 
 const MARKET_WATCHLIST = ["NVDA","TSLA","AMD","META","GOOGL","AMZN","AAPL","MSFT","PLTR","NFLX","SMCI","COIN","MSTR","SOFI","HOOD","RIVN","NIO","BABA","UNH","LLY","AVGO","QQQ","SPY"];
@@ -99,6 +104,93 @@ function apiGet(url) {
     req.on("error", () => resolve(null));
     req.setTimeout(12000, () => { req.destroy(); resolve(null); });
   });
+}
+
+function apiGetAuth(url, token) {
+  return new Promise(resolve => {
+    try {
+      const parsed = new URL(url);
+      const opts = { hostname: parsed.hostname, port: 443, path: parsed.pathname + parsed.search, method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } };
+      const req = https.request(opts, res => {
+        let data = "";
+        res.on("data", c => data += c);
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(12000, () => { req.destroy(); resolve(null); });
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+function apiPost(url, bodyStr, extraHeaders = {}) {
+  return new Promise(resolve => {
+    try {
+      const parsed = new URL(url);
+      const opts = { hostname: parsed.hostname, port: 443, path: parsed.pathname, method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(bodyStr), ...extraHeaders } };
+      const req = https.request(opts, res => {
+        let data = "";
+        res.on("data", c => data += c);
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(12000, () => { req.destroy(); resolve(null); });
+      req.write(bodyStr);
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+// ── WHOOP OAuth + API ─────────────────────────────────────────────────────────
+const WHOOP_API_BASE = "https://api.prod.whoop.com";
+const WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token";
+
+async function refreshWhoopToken() {
+  if (!whoopTokens || !whoopTokens.refresh_token) return false;
+  const cid = process.env.WHOOP_CLIENT_ID || "";
+  const csec = process.env.WHOOP_CLIENT_SECRET || "";
+  if (!cid || !csec) return false;
+  try {
+    const body = [
+      "grant_type=refresh_token",
+      "refresh_token=" + encodeURIComponent(whoopTokens.refresh_token),
+      "client_id=" + encodeURIComponent(cid),
+      "client_secret=" + encodeURIComponent(csec),
+      "scope=" + encodeURIComponent("offline read:profile read:body_measurement read:cycles read:recovery read:sleep read:workout")
+    ].join("&");
+    const result = await apiPost(WHOOP_TOKEN_URL, body);
+    if (result && result.access_token) {
+      whoopTokens = { ...whoopTokens, ...result, expires_at: Date.now() + (result.expires_in || 3600) * 1000 };
+      saveJSON(WHOOP_TOKEN_FILE, whoopTokens);
+      return true;
+    }
+  } catch (e) { console.log("WHOOP refresh error:", e.message); }
+  return false;
+}
+
+async function fetchWhoopAPI(path) {
+  if (!whoopTokens || !whoopTokens.access_token) return null;
+  if (whoopTokens.expires_at && Date.now() > whoopTokens.expires_at - 60000) {
+    const ok = await refreshWhoopToken();
+    if (!ok) return null;
+  }
+  return apiGetAuth(WHOOP_API_BASE + path, whoopTokens.access_token);
+}
+
+async function refreshWhoopCache() {
+  if (!whoopTokens || !whoopTokens.access_token) { whoopCache.connected = false; return; }
+  if (Date.now() - whoopCache.lastFetch < WHOOP_CACHE_MS) return;
+  try {
+    const [profile, cycleResp, recoveryResp] = await Promise.all([
+      fetchWhoopAPI("/developer/v1/user/profile/basic"),
+      fetchWhoopAPI("/developer/v1/cycle?limit=1"),
+      fetchWhoopAPI("/developer/v1/recovery?limit=1")
+    ]);
+    if (profile && profile.user_id) { whoopCache.profile = profile; whoopCache.connected = true; }
+    if (cycleResp && cycleResp.records && cycleResp.records[0]) whoopCache.cycle = cycleResp.records[0];
+    if (recoveryResp && recoveryResp.records && recoveryResp.records[0]) whoopCache.recovery = recoveryResp.records[0];
+    whoopCache.lastFetch = Date.now();
+  } catch (e) { console.log("WHOOP cache refresh error:", e.message); }
 }
 
 async function refreshQuotes() {
@@ -2215,21 +2307,112 @@ function computeOperatingMode(recovery) {
 }
 
 function computeHealthReadiness() {
+  const connected = whoopCache.connected && !!whoopTokens;
+  const cyc = whoopCache.cycle;
+  const rec = whoopCache.recovery;
+  const strain = cyc && cyc.score ? cyc.score.strain : null;
+  const avgHR = cyc && cyc.score ? cyc.score.average_heart_rate : null;
+  const maxHR = cyc && cyc.score ? cyc.score.max_heart_rate : null;
+  const recovery = rec && rec.score ? rec.score.recovery_score : null;
+  const sleep = rec && rec.score ? rec.score.sleep_performance_percentage : null;
+  const hrv = rec && rec.score ? rec.score.hrv_rmssd_milli : null;
+  const rhr = rec && rec.score ? rec.score.resting_heart_rate : null;
+  const mode = computeOperatingMode(recovery);
+  let suggestion = "usa modo neutral";
+  if (recovery !== null) {
+    suggestion = recovery >= 67 ? "condiciones OK para analizar señales" :
+      recovery >= 34 ? "modo moderado — evita decisiones impulsivas" :
+      "modo defensivo — no promediar posiciones";
+  } else if (strain !== null) {
+    suggestion = strain > 15 ? "strain elevado — sesión larga, reposa" :
+      strain > 8 ? "strain moderado" : "strain bajo — buena carga";
+  }
   return {
     ok: true,
     configured: WHOOP_CONFIGURED,
-    source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "whoop_pending",
-    recovery: null,
-    sleep: null,
-    strain: null,
-    hrv: null,
-    restingHeartRate: null,
-    operatingMode: computeOperatingMode(null),
-    message: WHOOP_CONFIGURED
-      ? "WHOOP API key detectada — implementación de datos en progreso."
-      : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
-    suggestion: "usa modo neutral",
+    connected,
+    source: connected ? "whoop_live" : WHOOP_CONFIGURED ? "whoop_tokens_missing" : "not_configured",
+    strain,
+    averageHeartRate: avgHR,
+    maxHeartRate: maxHR,
+    recovery,
+    sleep,
+    hrv,
+    restingHeartRate: rhr,
+    operatingMode: mode,
+    message: connected
+      ? `WHOOP conectado. Recovery: ${recovery !== null ? recovery + "%" : "—"}. Strain: ${strain !== null ? strain.toFixed(1) : "—"}.`
+      : WHOOP_CONFIGURED ? "WHOOP configurado — tokens pendientes de autorización OAuth." : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
+    suggestion,
     educationalNote: "No es consejo médico. Sirve para contexto personal."
+  };
+}
+
+function computeAutoJournal() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const idea = computeTradeIdea();
+  const cyc = whoopCache.cycle;
+  const dateStr = new Date().toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+
+  const kilojoule = cyc && cyc.score && cyc.score.kilojoule != null ? cyc.score.kilojoule : null;
+  const scoreState = cyc && cyc.score && cyc.score.state ? cyc.score.state : null;
+
+  let moodEstimated = "neutral";
+  if (h.recovery !== null) {
+    moodEstimated = h.recovery >= 67 ? "positivo" : h.recovery >= 34 ? "neutral" : "low-strain";
+  } else if (h.strain !== null) {
+    moodEstimated = h.strain > 15 ? "caution" : "neutral";
+  }
+
+  let bodyState = "sin datos biométricos";
+  if (h.connected) {
+    if (h.recovery !== null) {
+      bodyState = h.recovery >= 67 ? "cuerpo óptimo — recovery alto"
+        : h.recovery >= 34 ? "cuerpo moderado — en recuperación"
+        : "cuerpo bajo — priorizar descanso";
+    } else if (h.strain !== null) {
+      bodyState = h.strain > 15 ? "cuerpo cargado — strain elevado"
+        : h.strain > 8 ? "cuerpo activo — strain moderado"
+        : "cuerpo descansado — strain bajo";
+    }
+  }
+
+  const tradingModeSuggestion = h.recovery !== null
+    ? (h.recovery >= 67 ? "NORMAL — condiciones óptimas para analizar" : h.recovery >= 34 ? "MODERADO — evitar posiciones nuevas grandes" : "DEFENSIVO — solo monitorear, no entrar")
+    : "NEUTRAL — sin datos biométricos, proceder con cautela";
+
+  const alfredoAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
+    (idea.hasIdea ? `Idea paper: ${idea.type} en ${idea.symbol}. ` : "") +
+    `Modo operativo: ${h.operatingMode}. ${h.suggestion}. NO es consejo médico ni financiero.`;
+
+  return {
+    ok: true,
+    source: h.connected ? "WHOOP + Cordelius" : "local_only",
+    date: dateStr,
+    moodEstimated,
+    bodyState,
+    operatingMode: h.operatingMode,
+    mode: h.operatingMode,
+    tradingModeSuggestion,
+    alfredoNote: alfredoAdvice,
+    alfredoAdvice,
+    portfolioSnapshot: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct },
+    whoop: {
+      connected: h.connected,
+      strain: h.strain,
+      averageHeartRate: h.averageHeartRate,
+      maxHeartRate: h.maxHeartRate,
+      kilojoule,
+      scoreState,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      mode: h.operatingMode,
+      alfredoAdvice
+    },
+    educationalNote: "Generado automáticamente. No es consejo médico ni financiero."
   };
 }
 
@@ -2366,20 +2549,47 @@ function renderAutopilotPanel() {
 }
 
 function renderWhoopNotConnected() {
-  if (WHOOP_CONFIGURED) return "";
+  const h = computeHealthReadiness();
+  if (h.connected) {
+    // WHOOP is live — show status card with real data
+    const recColor = h.recovery !== null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+    return `<div style="max-width:1280px;margin:0 auto 12px">
+      <div style="border:1px solid rgba(0,255,153,.2);background:rgba(0,255,153,.05);border-radius:20px;padding:16px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div style="font-size:28px">◉</div>
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:12px;font-weight:900;color:#00ff99;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px">WHOOP CONECTADO</div>
+          ${h.profile ? `<div style="font-size:13px;color:#9fb3c8">Usuario: ${esc(h.profile.first_name || "")} ${esc(h.profile.last_name || "")}</div>` : ""}
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${h.strain !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#eaf6ff">${h.strain.toFixed(1)}</div><div class="muted" style="font-size:10px">Strain</div></div>` : ""}
+          ${h.averageHeartRate !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#f472b6">${h.averageHeartRate}</div><div class="muted" style="font-size:10px">Avg HR</div></div>` : ""}
+          ${h.maxHeartRate !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#ff4d6d">${h.maxHeartRate}</div><div class="muted" style="font-size:10px">Max HR</div></div>` : ""}
+          ${h.recovery !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:${recColor}">${h.recovery}%</div><div class="muted" style="font-size:10px">Recovery</div></div>` : ""}
+          ${h.hrv !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#818cf8">${h.hrv.toFixed(1)}</div><div class="muted" style="font-size:10px">HRV ms</div></div>` : ""}
+        </div>
+        <div style="width:100%;font-size:12px;color:#9fb3c8;padding-top:6px;border-top:1px solid rgba(0,255,153,.1)">
+          Modo: <b style="color:#00ff99">${esc(h.operatingMode)}</b> · ${esc(h.suggestion)}
+        </div>
+      </div>
+    </div>`;
+  }
+  // Not connected — show setup instructions
+  const vars = { clientId: !!process.env.WHOOP_CLIENT_ID, clientSecret: !!process.env.WHOOP_CLIENT_SECRET, redirectUri: !!process.env.WHOOP_REDIRECT_URI };
+  const hasVars = vars.clientId && vars.clientSecret;
   return `<div style="max-width:1280px;margin:0 auto 12px">
     <div style="border:1px solid rgba(244,114,182,.25);background:rgba(244,114,182,.06);border-radius:20px;padding:18px 22px;display:flex;align-items:flex-start;gap:16px">
       <div style="font-size:28px;margin-top:2px">◉</div>
       <div style="flex:1">
         <div style="font-size:13px;font-weight:900;color:#f472b6;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">WHOOP no conectado</div>
-        <div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Sin datos de recuperación, sueño, HRV o strain. Las métricas de Health Readiness usan valores por defecto.</div>
-        <div style="font-size:12px;color:#9fb3c8;margin-bottom:10px">Para conectar WHOOP, agrega en tu <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">.env</code>:</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px">
-          <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_ID=YOUR_CLIENT_ID</code>
-          <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_SECRET=YOUR_CLIENT_SECRET</code>
-          <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_REDIRECT_URI=http://localhost:3000/whoop/callback</code>
-        </div>
-        <div style="font-size:11px;color:#9fb3c8;margin-top:8px">Luego reinicia el servidor. Consulta DEPLOY.md para más detalles.</div>
+        ${hasVars
+          ? `<div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Env vars detectadas — necesitas completar el flujo OAuth para obtener tokens.</div><div style="font-size:12px;color:#9fb3c8">Visita <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">/whoop/auth</code> para iniciar la autorización.</div>`
+          : `<div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Sin datos de recuperación, sueño, HRV o strain.</div>
+             <div style="font-size:12px;color:#9fb3c8;margin-bottom:10px">Agrega en <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">.env</code>:</div>
+             <div style="display:flex;flex-wrap:wrap;gap:6px">
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_ID=YOUR_CLIENT_ID</code>
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_SECRET=YOUR_CLIENT_SECRET</code>
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_REDIRECT_URI=http://localhost:3000/whoop/callback</code>
+             </div>`}
       </div>
     </div>
   </div>`;
@@ -2525,7 +2735,9 @@ function renderHomePortal(pv, reg) {
 
 function renderJournalModule() {
   const jd = computeJournalData();
-  const moodColors = { positivo:"#00ff99", negativo:"#ff4d6d", neutral:"#ffd35c", reflexivo:"#818cf8", ansioso:"#f59e0b", motivado:"#3b9dff" };
+  const aj = computeAutoJournal();
+  const h = computeHealthReadiness();
+  const moodColors = { positivo:"#00ff99", negativo:"#ff4d6d", neutral:"#ffd35c", reflexivo:"#818cf8", ansioso:"#f59e0b", motivado:"#3b9dff", "low-strain":"#f472b6", caution:"#ff4d6d" };
   const moodOpts = ["positivo","neutral","negativo","reflexivo","motivado","ansioso"];
   const entriesHtml = jd.recent.length ? jd.recent.map(e => {
     const mc = moodColors[e.mood] || "#9fb3c8";
@@ -2538,61 +2750,83 @@ function renderJournalModule() {
       <div style="color:#dbeafe;font-size:14px;line-height:1.6">${esc((e.text||"").slice(0,300))}${(e.text||"").length > 300 ? "…" : ""}</div>
       ${e.tags && e.tags.length ? `<div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">${e.tags.map(t=>`<span style="font-size:11px;background:rgba(129,140,248,.12);color:#818cf8;border-radius:99px;padding:2px 9px">${esc(t)}</span>`).join("")}</div>` : ""}
     </div>`;
-  }).join("") : `<div class="muted" style="padding:20px 0;text-align:center">Sin entradas todavía. Escribe tu primera nota.</div>`;
+  }).join("") : `<div class="muted" style="padding:20px 0;text-align:center">Sin notas manuales todavía — el journal automático está activo arriba.</div>`;
+
+  const autoColor = moodColors[aj.moodEstimated] || "#ffd35c";
 
   return `<div style="max-width:1280px;margin:0 auto">
     <div style="padding:20px 0 14px">
       <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#818cf8;margin-bottom:4px">Cordelius Journal</div>
-      <div style="font-size:26px;font-weight:900;color:#eaf6ff">Diario personal</div>
-      <div class="muted" style="font-size:13px;margin-top:3px">Privado · ${jd.count} entradas · no enviado a terceros</div>
+      <div style="font-size:26px;font-weight:900;color:#eaf6ff">Journal automático</div>
+      <div class="muted" style="font-size:13px;margin-top:3px">Basado en WHOOP + snapshots locales · privado · no enviado a terceros</div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
-      <!-- Write form -->
-      <div class="panel" style="border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04);padding:18px 20px">
-        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Nueva entrada</div>
-        <form method="POST" action="/api/journal">
-          <textarea name="text" rows="5" placeholder="¿Cómo te sientes hoy? ¿Qué pasó? ¿Qué aprendiste?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
-          <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
-            <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
-              ${moodOpts.map(m => `<option value="${m}">${m}</option>`).join("")}
-            </select>
-            <select name="energy" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
-              <option value="">Energía</option>
-              ${[1,2,3,4,5].map(n => `<option value="${n}">${n}/5</option>`).join("")}
-            </select>
-            <input name="tags" placeholder="tags: trading, salud..." style="flex:1;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
-          </div>
-          <button type="submit" class="btn" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.3);color:#818cf8;font-size:14px;padding:10px 20px;width:100%">Guardar entrada</button>
-        </form>
+    <!-- AUTO JOURNAL — protagonista -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:18px">
+      <div class="panel" style="padding:16px 20px;border:1px solid ${autoColor}30;background:${autoColor}08">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:${autoColor};margin-bottom:6px">Mood estimado</div>
+        <div style="font-size:26px;font-weight:900;color:${autoColor}">${esc(aj.moodEstimated)}</div>
+        <div class="muted" style="font-size:11px">${esc(aj.date)}</div>
       </div>
-
-      <!-- Stats -->
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div class="panel" style="padding:14px 18px">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Resumen</div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap">
-            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:#818cf8">${jd.count}</div><div class="muted" style="font-size:11px">entradas</div></div>
-            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:${moodColors[jd.topMood]||"#9fb3c8"}">${jd.topMood||"—"}</div><div class="muted" style="font-size:11px">mood frecuente</div></div>
-          </div>
-        </div>
-        <div class="panel" style="padding:14px 18px;flex:1">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Pregunta a Alfredo</div>
-          <div style="display:flex;flex-direction:column;gap:6px">
-            ${["resume mi diario","cómo me he sentido","qué patrones ves"].map(q =>
-              `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;text-align:left;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
-            ).join("")}
-          </div>
-        </div>
+      <div class="panel" style="padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6;margin-bottom:6px">WHOOP · Strain</div>
+        <div style="font-size:26px;font-weight:900;color:#eaf6ff">${aj.strain !== null ? aj.strain.toFixed(1) : "—"}</div>
+        <div class="muted" style="font-size:11px">Avg HR: ${aj.averageHeartRate !== null ? aj.averageHeartRate + " bpm" : "—"} · Max: ${aj.maxHeartRate !== null ? aj.maxHeartRate + " bpm" : "—"}</div>
+      </div>
+      <div class="panel" style="padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Recovery</div>
+        <div style="font-size:26px;font-weight:900;color:${aj.recovery !== null ? (aj.recovery >= 67 ? "#00ff99" : aj.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8"}">${aj.recovery !== null ? aj.recovery + "%" : "—"}</div>
+        <div class="muted" style="font-size:11px">HRV: ${aj.hrv !== null ? aj.hrv.toFixed(1) + " ms" : "—"} · RHR: ${aj.restingHeartRate !== null ? aj.restingHeartRate + " bpm" : "—"}</div>
+      </div>
+      <div class="panel" style="padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Modo trading</div>
+        <div style="font-size:14px;font-weight:900;color:#ffd35c;line-height:1.3">${esc(aj.tradingModeSuggestion.split("—")[0])}</div>
+        <div class="muted" style="font-size:11px">${esc((aj.tradingModeSuggestion.split("—")[1] || "").trim())}</div>
       </div>
     </div>
 
-    <!-- Entries list -->
-    <div>
-      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:12px">Entradas recientes</div>
-      ${entriesHtml}
+    <div class="panel" style="padding:14px 18px;margin-bottom:18px;border:1px solid rgba(129,140,248,.15);background:rgba(129,140,248,.04)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#818cf8;margin-bottom:6px">Nota Alfredo</div>
+      <div style="font-size:13px;color:#c8d8f0;line-height:1.6">${esc(aj.alfredoNote)}</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${["resumen de mi día","cómo me he sentido","resume mi diario"].map(q =>
+          `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+        ).join("")}
+      </div>
     </div>
-    <div class="muted" style="font-size:11px;margin-top:12px;text-align:center">Datos guardados en ${esc(JOURNAL_FILE)} · solo en este dispositivo · no se envía a terceros</div>
+
+    <!-- NOTA MANUAL OPCIONAL -->
+    <details style="margin-bottom:18px">
+      <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 18px;background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.15);border-radius:16px;user-select:none">
+        <span style="font-size:13px;font-weight:700;color:#818cf8">◎ Nota manual opcional</span>
+        <span class="muted" style="font-size:12px">${jd.count} entradas guardadas ▾</span>
+      </summary>
+      <div style="padding:16px 0">
+        <div class="panel" style="padding:18px 20px;border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04)">
+          <form method="POST" action="/api/journal">
+            <textarea name="text" rows="4" placeholder="¿Algo extra que quieras anotar hoy?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
+            <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+              <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+                ${moodOpts.map(m => `<option value="${m}">${m}</option>`).join("")}
+              </select>
+              <select name="energy" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+                <option value="">Energía</option>
+                ${[1,2,3,4,5].map(n => `<option value="${n}">${n}/5</option>`).join("")}
+              </select>
+              <input name="tags" placeholder="tags..." style="flex:1;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+            </div>
+            <button type="submit" class="btn" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.3);color:#818cf8;font-size:14px;padding:10px 20px">Guardar</button>
+          </form>
+        </div>
+        <div style="margin-top:14px">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:10px">Entradas recientes</div>
+          ${entriesHtml}
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px;text-align:center">Guardado en ${esc(JOURNAL_FILE)} · solo en este dispositivo</div>
+      </div>
+    </details>
+
+    <div class="muted" style="font-size:11px">Fuente: ${esc(aj.source)} · ${esc(aj.educationalNote)}</div>
   </div>`;
 }
 
@@ -2921,7 +3155,9 @@ ${renderQuiverIntelligencePanel()}
 
 <a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
 
-<a id="intelligence"></a><h2>Cordelius Intelligence — Radar político · Intel manual</h2>
+<details style="max-width:1280px;margin:0 auto 8px"><summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.12);border-radius:20px;user-select:none"><span style="font-size:14px;font-weight:900;color:#00ff99">◆ Radar político · Intel manual</span><span class="btn" style="font-size:12px;padding:5px 12px">Ver detalle ▾</span></summary>
+<div>
+<a id="intelligence"></a><h2 style="display:none">Cordelius Intelligence</h2>
 ${(function(){
   const intel = computeIntelligence();
   const trending = computeQuiverTrending();
@@ -2981,6 +3217,7 @@ ${(function(){
     + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
 })()}
 
+</div></details>
 </div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
 <div id="mod-autopilot" class="mod">
@@ -3278,22 +3515,71 @@ const server = http.createServer(async (req, res) => {
     }));
   }
   if (path === "/api/whoop/status") {
+    const h = computeHealthReadiness();
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
       ok: true,
       configured: WHOOP_CONFIGURED,
-      connected: false,
-      source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "not_configured",
-      reason: WHOOP_CONFIGURED
-        ? "WHOOP env vars detected but OAuth not yet implemented"
-        : "WHOOP env vars missing (WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)",
+      connected: h.connected,
+      tokensPresent: !!(whoopTokens && whoopTokens.access_token),
+      source: h.source,
+      reason: h.connected
+        ? "WHOOP connected and data available"
+        : WHOOP_CONFIGURED
+          ? (whoopTokens && whoopTokens.access_token ? "Token present — awaiting cache refresh" : "Env vars set but tokens missing — complete OAuth flow")
+          : "WHOOP env vars missing (WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)",
       vars: {
         clientId: !!process.env.WHOOP_CLIENT_ID,
         clientSecret: !!process.env.WHOOP_CLIENT_SECRET,
         redirectUri: !!process.env.WHOOP_REDIRECT_URI
       },
-      note: "WHOOP OAuth implementation pending. No real health data available."
+      cacheAge: whoopCache.lastFetch ? Math.floor((Date.now() - whoopCache.lastFetch) / 1000) + "s" : null
     }));
+  }
+  if (path === "/api/whoop/profile") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (!whoopCache.connected) return res.end(JSON.stringify({ ok: false, connected: false, reason: "WHOOP not connected" }));
+    return res.end(JSON.stringify({ ok: true, connected: true, profile: whoopCache.profile }));
+  }
+  if (path === "/api/whoop/cycle") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (!whoopCache.connected) return res.end(JSON.stringify({ ok: false, connected: false, reason: "WHOOP not connected" }));
+    return res.end(JSON.stringify({ ok: true, connected: true, cycle: whoopCache.cycle }));
+  }
+  if (path === "/api/whoop/today") {
+    const h = computeHealthReadiness();
+    const _cyc = whoopCache.cycle;
+    const _kj = _cyc && _cyc.score && _cyc.score.kilojoule != null ? _cyc.score.kilojoule : null;
+    const _ss = _cyc && _cyc.score && _cyc.score.state ? _cyc.score.state : null;
+    const _pv = portfolioValue();
+    const _idea = computeTradeIdea();
+    const _alfredo = `Portafolio ${money(_pv.totalValueMXN)} (${pct(_pv.totalGainPct)}). ` +
+      (_idea.hasIdea ? `Idea paper: ${_idea.type} en ${_idea.symbol}. ` : "") +
+      `Modo: ${h.operatingMode}. ${h.suggestion}. NO es consejo médico.`;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      connected: h.connected,
+      date: new Date().toLocaleDateString("es-MX"),
+      strain: h.strain,
+      averageHeartRate: h.averageHeartRate,
+      maxHeartRate: h.maxHeartRate,
+      kilojoule: _kj,
+      scoreState: _ss,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      operatingMode: h.operatingMode,
+      mode: h.operatingMode,
+      suggestion: h.suggestion,
+      alfredoAdvice: _alfredo,
+      message: h.message
+    }));
+  }
+  if (path === "/api/journal/auto") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeAutoJournal()));
   }
   if (path === "/api/health-readiness") {
     const h = computeHealthReadiness();
@@ -3388,6 +3674,17 @@ async function boot() {
         new Promise(resolve => setTimeout(resolve, 10000))
       ]);
     } catch (e) { console.log("fetchQuiverData boot omitido:", e.message); }
+
+    try {
+      await Promise.race([
+        refreshWhoopCache(),
+        new Promise(resolve => setTimeout(resolve, 10000))
+      ]);
+    } catch (e) { console.log("refreshWhoopCache boot omitido:", e.message); }
+
+    setInterval(async () => {
+      try { await Promise.race([refreshWhoopCache(), new Promise(r => setTimeout(r, 10000))]); } catch (e) {}
+    }, WHOOP_CACHE_MS);
 
     setInterval(async () => {
       try {
