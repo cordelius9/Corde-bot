@@ -9,12 +9,16 @@ const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
 const QUIVER_CACHE_MS = 2 * 60 * 60 * 1000;
 // WHOOP vars — read at runtime, never logged
 const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLIENT_SECRET);
+// Alpaca — always paper unless explicitly disabled
+const ALPACA_PAPER = process.env.ALPACA_PAPER !== "false";
+const ALPACA_CONFIGURED = !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY);
 
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
 const CHAT_FILE = "alfredo_chat_history.json";
 const SETTINGS_FILE = "cordelius_settings.json";
 const INTEL_FILE = "cordelius_intel.json";
+const JOURNAL_FILE = "cordelius_journal.json";
 
 function loadJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
@@ -44,6 +48,7 @@ let news = [];
 let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
+let journalEntries = loadJSON(JOURNAL_FILE, []);
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
@@ -1313,6 +1318,36 @@ EDUCATIVO — no es asesoría financiera.`;
     const h = computeHealthReadiness();
     const idea = computeTradeIdea();
     reply = `Morning Report — ${nl.date}. ${nl.lines.slice(0, 2).join(" ")} Estado personal: WHOOP ${h.configured ? "ON" : "pendiente"}, modo ${h.operatingMode}, ${h.suggestion}. Trade idea: ${idea.hasIdea ? idea.type + " " + idea.symbol : "sin señal"}. NO es asesoría financiera ni consejo médico.`;
+  } else if (q.includes("diario") || q.includes("journal") || q.includes("debería escribir") || q.includes("deberia escribir")) {
+    const jd = computeJournalData();
+    const prompts = ["¿Cómo dormí?","¿Qué me preocupa?","¿Qué quiero lograr hoy?","¿Qué aprendí?","¿Cómo estuvo mi energía?"];
+    reply = `Cordelius Journal — ${jd.count} entradas registradas. Mood frecuente: ${jd.topMood || "sin datos"}. ${jd.summary} Prompts sugeridos para hoy: ${prompts.slice(0,3).join(" / ")}. Ve al módulo Journal (◎) para escribir.`;
+  } else if (q.includes("resume mi diario") || q.includes("cómo me he sentido") || q.includes("como me he sentido") || q.includes("patrones ves")) {
+    const jd = computeJournalData();
+    if (jd.count === 0) {
+      reply = "Aún no hay entradas en el diario. Empieza escribiendo en el módulo ◎ Journal. Unos minutos al día de reflexión ayudan a tomar mejores decisiones.";
+    } else {
+      const recent = jd.recent.slice(0,3).map(e => `${e.date}: ${(e.text||"").slice(0,60)}`).join("; ");
+      reply = `Resumen de tu diario: ${jd.count} entradas. Mood predominante: ${jd.topMood || "variado"}. Recientes: ${recent}. ${jd.summary} Analiza patrones: ¿hay correlación entre tu energía y tus decisiones?`;
+    }
+  } else if (q.includes("qué módulo") || q.includes("que modulo") || q.includes("módulo revisar") || q.includes("modulo revisar") || q.includes("qué abrir") || q.includes("que abrir")) {
+    const h = computeHealthReadiness();
+    const jd = computeJournalData();
+    const idea = computeTradeIdea();
+    const suggestions = [];
+    if (idea.hasIdea) suggestions.push(`◈ Trading — hay señal: ${idea.type} en ${idea.symbol}`);
+    if (!h.configured) suggestions.push("◉ Health — conecta WHOOP para readiness");
+    if (jd.count === 0) suggestions.push("◎ Journal — empieza tu diario hoy");
+    if (news.length > 0) suggestions.push(`◆ Intelligence — ${news.length} noticias nuevas`);
+    reply = suggestions.length > 0
+      ? `Módulos a revisar hoy: ${suggestions.join("; ")}. Usa los botones del menú superior para navegar.`
+      : `Todo en orden. Revisa ◈ Trading para portafolio y ◆ Intelligence para noticias. Modo: ${h.operatingMode}.`;
+  } else if (q.includes("resumen de mi día") || q.includes("resumen del día") || q.includes("resumen del dia") || q.includes("cómo va mi día") || q.includes("como va mi dia")) {
+    const h = computeHealthReadiness();
+    const jd = computeJournalData();
+    const idea = computeTradeIdea();
+    const nl = computeDailyNewsletter();
+    reply = `Resumen del día — ${nl.date}. Portafolio: ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). Estado físico: modo ${h.operatingMode}${h.configured ? "" : " (sin WHOOP)"}. Diario: ${jd.count} entradas${jd.topMood ? ", mood " + jd.topMood : ""}. ${idea.hasIdea ? "Idea paper: " + idea.type + " " + idea.symbol + "." : "Sin idea paper activa."} NO es asesoría financiera.`;
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
@@ -1336,6 +1371,7 @@ function brainHtml() {
   const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
   const hasHighRisk = pv.assets.some(a => a.score < 35 || a.risk === "ALTO");
   const idea = computeTradeIdea();
+  const jd = computeJournalData();
   const nodes = [
     { label: pct(pv.totalGainPct)+" port",                    delay: 0,    color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d" },
     { label: hasHighRisk ? "Risk ⚠" : "Risk ✓",               delay: 0.3,  color: hasHighRisk ? "#ff4d6d" : "#00ff99" },
@@ -1343,22 +1379,27 @@ function brainHtml() {
     { label: "Congress",                                        delay: 1.1 },
     { label: "Insiders",                                        delay: 0.5 },
     { label: "News "+news.length,                              delay: 0.9,  color: news.length > 0 ? "#3b9dff" : "#9fb3c8" },
-    { label: "BBVA",                                            delay: 0.2 },
+    { label: "Health "+(WHOOP_CONFIGURED?"✓":"—"),             delay: 0.2,  color: WHOOP_CONFIGURED ? "#f472b6" : "#9fb3c8" },
     { label: "MSFT",                                            delay: 0.6 },
     { label: "AI",                                              delay: 1.4,  color: "#818cf8" },
     { label: "PLTR",                                            delay: 0.8 },
     { label: idea.hasIdea ? idea.symbol+" "+idea.type.split("_")[0] : "Paper —", delay: 1.2, color: idea.hasIdea ? "#ffd35c" : "#9fb3c8" },
-    { label: "Scan",                                            delay: 0.4 },
+    { label: "Journal "+jd.count,                              delay: 0.4,  color: jd.count > 0 ? "#818cf8" : "#9fb3c8" },
     { label: "BTC",                                             delay: 1.0 },
     { label: "Cripto "+criptoPct.toFixed(0)+"%",               delay: 0.15, color: criptoPct > 45 ? "#ff4d6d" : "#f59e0b" },
     { label: "AAPL",                                            delay: 0.55 },
-    { label: "Macro",                                           delay: 0.95 },
+    { label: "XRP",                                             delay: 0.95 },
+    { label: "Sleep —",                                         delay: 1.3,  color: "#9fb3c8" },
+    { label: "Recovery —",                                      delay: 0.65, color: "#9fb3c8" },
+    { label: "Mood "+(jd.topMood||"—"),                        delay: 1.0,  color: "#818cf8" },
+    { label: "Macro",                                           delay: 0.35 },
   ];
   const positions = [
-    "left:4%;top:10%",  "left:20%;top:4%",  "left:38%;top:13%", "left:56%;top:4%",
-    "left:73%;top:13%", "left:86%;top:5%",  "left:8%;top:42%",  "left:26%;top:35%",
-    "left:44%;top:44%", "left:61%;top:36%", "left:78%;top:44%", "left:88%;top:34%",
-    "left:4%;top:74%",  "left:23%;top:68%", "left:45%;top:76%", "left:66%;top:70%",
+    "left:2%;top:8%",   "left:17%;top:3%",  "left:34%;top:11%", "left:52%;top:3%",
+    "left:69%;top:11%", "left:84%;top:4%",  "left:6%;top:38%",  "left:23%;top:31%",
+    "left:41%;top:40%", "left:58%;top:32%", "left:75%;top:40%", "left:87%;top:30%",
+    "left:2%;top:67%",  "left:19%;top:62%", "left:38%;top:70%", "left:56%;top:63%",
+    "left:72%;top:70%", "left:86%;top:61%", "left:10%;top:84%", "left:46%;top:88%",
   ];
   return `<div class="brain-card">
     <div class="brain-left">
@@ -2169,6 +2210,26 @@ function computeHealthReadiness() {
   };
 }
 
+function saveJournalEntry(entry) {
+  journalEntries.unshift(entry);
+  journalEntries = journalEntries.slice(0, 300);
+  saveJSON(JOURNAL_FILE, journalEntries);
+}
+
+function computeJournalData() {
+  const recent = journalEntries.slice(0, 7);
+  const moodCounts = {};
+  journalEntries.slice(0, 30).forEach(e => { moodCounts[e.mood || "neutral"] = (moodCounts[e.mood || "neutral"] || 0) + 1; });
+  const topMood = Object.entries(moodCounts).sort((a, b) => b[1] - a[1])[0];
+  return {
+    ok: true,
+    count: journalEntries.length,
+    recent,
+    topMood: topMood ? topMood[0] : null,
+    summary: journalEntries.length === 0 ? "Sin entradas todavía. Empieza a escribir en Journal." : `${journalEntries.length} entradas. Mood frecuente: ${topMood ? topMood[0] : "variado"}.`
+  };
+}
+
 function renderTradingAIStatus() {
   return `<div style="max-width:1280px;margin:0 auto 8px;border:1px solid rgba(255,211,92,.18);border-radius:24px;padding:18px 22px;background:linear-gradient(135deg,rgba(255,211,92,.04),rgba(59,157,255,.04))">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
@@ -2357,6 +2418,141 @@ function renderExecutiveHub(pv, reg) {
   </div>`;
 }
 
+function renderHomePortal(pv, reg) {
+  const h = computeHealthReadiness();
+  const jd = computeJournalData();
+  const idea = computeTradeIdea();
+  const nl = computeDailyNewsletter();
+  const modules = [
+    { id: "trading",      label: "Cordelius Trading",       emoji: "◈", color: "#3b9dff", sub: `${money(pv.totalValueMXN)} · ${pct(pv.totalGainPct)}`, badge: pv.totalGainPct >= 0 ? "↑" : "↓", badgeColor: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d", desc: "Portafolio · Paper Trade · Quiver · Market Radar" },
+    { id: "health",       label: "Cordelius Health",        emoji: "◉", color: "#f472b6", sub: `WHOOP ${h.configured ? "ON" : "pendiente"} · ${h.operatingMode}`, badge: h.configured ? "ON" : "—", badgeColor: h.configured ? "#00ff99" : "#9fb3c8", desc: "Recovery · Sleep · Strain · HRV · Readiness" },
+    { id: "journal",      label: "Cordelius Journal",       emoji: "◎", color: "#818cf8", sub: `${jd.count} entradas · ${jd.topMood ? "mood: " + jd.topMood : "sin entradas"}`, badge: jd.count > 0 ? String(jd.count) : "+", badgeColor: "#818cf8", desc: "Diario personal · Mood · Ideas · Reflexiones" },
+    { id: "intelligence", label: "Cordelius Intelligence",  emoji: "◆", color: "#00ff99", sub: `${news.length} noticias · Intel: ${intelItems.length}`, badge: news.length > 0 ? String(news.length) : "—", badgeColor: "#3b9dff", desc: "Noticias · Quiver · Congreso · Sectores · Radar" },
+    { id: "autopilot",    label: "Cordelius Autopilot",     emoji: "◇", color: "#ffd35c", sub: `Servidor ON · Paper Mode · ${quiverData.configured ? "Quiver ON" : "Quiver —"}`, badge: "ON", badgeColor: "#00ff99", desc: "Scripts · Cloud · Estado sistema · Automatización" },
+  ];
+  const greetHour = new Date().getHours();
+  const greet = greetHour < 12 ? "Buenos días" : greetHour < 19 ? "Buenas tardes" : "Buenas noches";
+  return `<div style="max-width:1280px;margin:0 auto">
+    <div style="padding:28px 0 18px">
+      <div style="font-size:13px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">CORDELIUS PERSONAL OS</div>
+      <div style="font-size:32px;font-weight:900;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${greet}, Pedro</div>
+      <div style="color:#9fb3c8;font-size:14px;margin-top:4px">${esc(nl.date)} · ${esc(nowMX())}</div>
+    </div>
+
+    <!-- 5 Module cards -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:20px">
+      ${modules.map(m => `<div onclick="showMod('${m.id}')" style="cursor:pointer;background:var(--panel);border:1px solid ${m.color}28;border-radius:22px;padding:20px 22px;transition:.2s;position:relative;overflow:hidden" onmouseover="this.style.borderColor='${m.color}70'" onmouseout="this.style.borderColor='${m.color}28'">
+        <div style="position:absolute;top:0;right:0;width:80px;height:80px;background:radial-gradient(circle,${m.color}12,transparent 70%);border-radius:50%"></div>
+        <div style="font-size:24px;margin-bottom:10px;color:${m.color}">${m.emoji}</div>
+        <div style="font-size:13px;font-weight:900;color:${m.color};letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">${esc(m.label)}</div>
+        <div style="font-size:22px;font-weight:900;color:#eaf6ff;margin-bottom:6px;line-height:1.1">${esc(m.sub)}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-bottom:12px">${esc(m.desc)}</div>
+        <div style="display:inline-flex;align-items:center;gap:6px;border:1px solid ${m.color}40;border-radius:99px;padding:5px 12px;font-size:12px;font-weight:900;color:${m.badgeColor}">${esc(m.badge)} Entrar →</div>
+      </div>`).join("")}
+    </div>
+
+    <!-- Mini daily brief -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04);padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Daily Brief</div>
+        <div style="font-size:15px;font-weight:700;color:#dbeafe;margin-bottom:10px">${esc(nl.greeting)}</div>
+        <ul style="margin:0;padding-left:16px;list-style:disc">
+          ${nl.lines.slice(0, 3).map(l => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(l)}</li>`).join("")}
+        </ul>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="panel" style="padding:12px 16px;flex:1">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">Trade Idea</div>
+          ${idea.hasIdea
+            ? `<div style="font-size:15px;font-weight:900;color:#ffd35c">${esc(idea.type)}</div><div style="font-size:13px;color:#9fb3c8">${esc(idea.symbol)} · ${esc(idea.reason.slice(0,50))}</div>`
+            : `<div style="font-size:14px;color:#9fb3c8">Sin señal activa</div>`}
+        </div>
+        <div class="panel" style="padding:12px 16px;flex:1">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">Estado</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border-radius:99px;padding:3px 9px">Servidor ON</span>
+            <span style="font-size:11px;font-weight:900;background:rgba(255,77,109,.1);color:#ff4d6d;border-radius:99px;padding:3px 9px">Real Trading OFF</span>
+            <span style="font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border-radius:99px;padding:3px 9px">Paper ON</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderJournalModule() {
+  const jd = computeJournalData();
+  const moodColors = { positivo:"#00ff99", negativo:"#ff4d6d", neutral:"#ffd35c", reflexivo:"#818cf8", ansioso:"#f59e0b", motivado:"#3b9dff" };
+  const moodOpts = ["positivo","neutral","negativo","reflexivo","motivado","ansioso"];
+  const entriesHtml = jd.recent.length ? jd.recent.map(e => {
+    const mc = moodColors[e.mood] || "#9fb3c8";
+    return `<div style="border:1px solid rgba(120,160,210,.12);background:rgba(255,255,255,.03);border-radius:16px;padding:14px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <span style="font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${mc}">${esc(e.mood||"neutral")}</span>
+        ${e.energy ? `<span style="font-size:11px;color:#9fb3c8">Energía: ${"▪".repeat(e.energy)}${"·".repeat(5-(e.energy||0))}</span>` : ""}
+        <span class="muted" style="font-size:11px;margin-left:auto">${esc(e.date||"")}</span>
+      </div>
+      <div style="color:#dbeafe;font-size:14px;line-height:1.6">${esc((e.text||"").slice(0,300))}${(e.text||"").length > 300 ? "…" : ""}</div>
+      ${e.tags && e.tags.length ? `<div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">${e.tags.map(t=>`<span style="font-size:11px;background:rgba(129,140,248,.12);color:#818cf8;border-radius:99px;padding:2px 9px">${esc(t)}</span>`).join("")}</div>` : ""}
+    </div>`;
+  }).join("") : `<div class="muted" style="padding:20px 0;text-align:center">Sin entradas todavía. Escribe tu primera nota.</div>`;
+
+  return `<div style="max-width:1280px;margin:0 auto">
+    <div style="padding:20px 0 14px">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#818cf8;margin-bottom:4px">Cordelius Journal</div>
+      <div style="font-size:26px;font-weight:900;color:#eaf6ff">Diario personal</div>
+      <div class="muted" style="font-size:13px;margin-top:3px">Privado · ${jd.count} entradas · no enviado a terceros</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
+      <!-- Write form -->
+      <div class="panel" style="border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04);padding:18px 20px">
+        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Nueva entrada</div>
+        <form method="POST" action="/api/journal">
+          <textarea name="text" rows="5" placeholder="¿Cómo te sientes hoy? ¿Qué pasó? ¿Qué aprendiste?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
+          <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+            <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+              ${moodOpts.map(m => `<option value="${m}">${m}</option>`).join("")}
+            </select>
+            <select name="energy" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+              <option value="">Energía</option>
+              ${[1,2,3,4,5].map(n => `<option value="${n}">${n}/5</option>`).join("")}
+            </select>
+            <input name="tags" placeholder="tags: trading, salud..." style="flex:1;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+          </div>
+          <button type="submit" class="btn" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.3);color:#818cf8;font-size:14px;padding:10px 20px;width:100%">Guardar entrada</button>
+        </form>
+      </div>
+
+      <!-- Stats -->
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="panel" style="padding:14px 18px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Resumen</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:#818cf8">${jd.count}</div><div class="muted" style="font-size:11px">entradas</div></div>
+            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:${moodColors[jd.topMood]||"#9fb3c8"}">${jd.topMood||"—"}</div><div class="muted" style="font-size:11px">mood frecuente</div></div>
+          </div>
+        </div>
+        <div class="panel" style="padding:14px 18px;flex:1">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Pregunta a Alfredo</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${["resume mi diario","cómo me he sentido","qué patrones ves"].map(q =>
+              `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;text-align:left;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+            ).join("")}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Entries list -->
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:12px">Entradas recientes</div>
+      ${entriesHtml}
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:12px;text-align:center">Datos guardados en ${esc(JOURNAL_FILE)} · solo en este dispositivo · no se envía a terceros</div>
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -2459,20 +2655,43 @@ table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px s
 th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overflow:auto}
 .quiver-box{max-width:1280px;margin:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
 .quiver-item{border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.04);padding:16px;border-radius:18px}
-.float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30}
+.float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
+.mod{display:none}.mod.active-mod{display:block}
+.nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
+.nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
+#alfredo-panel{position:fixed;right:20px;bottom:96px;width:min(400px,calc(100vw - 40px));z-index:99;max-height:72vh;overflow-y:auto;border-radius:24px;display:none}
 </style></head><body>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
-<a class="float" href="#alfredo">AI</a>
+<button class="float" onclick="toggleAlfredo()" title="Alfredo AI">AI</button>
+<div id="alfredo-panel" class="panel">
+  <div style="padding:16px 20px 20px">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">Alfredo AI · Educativo</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+      ${["Qué vigilar hoy","Morning report","Modo operativo","Resumen de mi día","Qué módulo revisar","Resume mi diario"].map(q =>
+        `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
+      ).join("")}
+    </div>
+    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <div style="max-height:300px;overflow-y:auto;margin-top:12px">
+      ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
+    </div>
+  </div>
+</div>
 
 <header>
   <div class="logo-wrap">
     <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
-    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">CORDΞLIUS · Trading · Intelligence · Law · Alfredo AI</div></div>
+    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
   </div>
-  <nav>
-    <a href="#home">Inicio</a><a href="#health">Health</a><a href="#vigilar">Vigilar hoy</a><a href="#scan">Scan Diario</a><a href="#intelligence">Intelligence</a><a href="#radar">Trading AI</a><a href="#portfolio">Portafolio</a><a href="#quiver">Quiver</a><a href="#chart">Graficas</a><a href="#alfredo">Alfredo AI</a><a href="#modulos">Law / Help</a><a href="#system">Sistema</a>
+  <nav style="display:flex;flex-wrap:wrap;gap:6px">
+    <button data-mod="home" class="nav-mod" onclick="showMod('home')">Inicio</button>
+    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">◈ Trading</button>
+    <button data-mod="health" class="nav-mod" onclick="showMod('health')">◉ Health</button>
+    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">◎ Journal</button>
+    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">◆ Intelligence</button>
+    <button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">◇ Autopilot</button>
   </nav>
 </header>
 
@@ -2483,12 +2702,13 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <span class="switch">Claude: <b class="${ANTHROPIC_API_KEY ? "green" : "yellow"}">${ANTHROPIC_API_KEY ? "OK" : "SIN KEY"}</b></span>
 </div>
 
-<a id="home"></a>
-${renderDailyBrief()}
-${renderExecutiveHub(pv, reg)}
-${renderMorningReport()}
-<a id="health"></a>
-${renderHealthReadinessPanel()}
+<!-- ── MOD: HOME ─────────────────────────────────────────── -->
+<div id="mod-home" class="mod">
+${renderHomePortal(pv, reg)}
+</div>
+
+<!-- ── MOD: TRADING ──────────────────────────────────────── -->
+<div id="mod-trading" class="mod">
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
   <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
@@ -2569,10 +2789,30 @@ ${renderPaperTradingPanel()}
 <a id="vigilar"></a><h2>Radar Externo — Stocks calientes por sector</h2>
 ${renderExternalRadarBySector()}
 
+<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
+
+</div>
+<!-- ── MOD: HEALTH ────────────────────────────────────────── -->
+<div id="mod-health" class="mod">
+${renderHealthReadinessPanel()}
+<div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
+  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
+</div>
+</div>
+<!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
+<div id="mod-journal" class="mod">
+${renderJournalModule()}
+</div>
+<!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
+<div id="mod-intelligence" class="mod">
+${renderDailyBrief()}
+${renderMorningReport()}
+
 <a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos · Políticos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
 ${renderQuiverIntelligencePanel()}
-
-<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
 
 <a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
 
@@ -2636,19 +2876,52 @@ ${(function(){
     + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
 })()}
 
-<a id="autopilot"></a><h2>Autopilot — Estado del sistema · Automatización</h2>
+</div>
+<!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
+<div id="mod-autopilot" class="mod">
+<h2>Autopilot — Estado del sistema · Automatización</h2>
 ${renderAutopilotPanel()}
 
-<a id="modulos"></a><h2>Modulos Cordelius (proximamente)</h2><div class="grid"><div class="card"><div class="label">Cordelius Health</div><div class="big" style="color:#818cf8">Proximamente</div><div class="muted">WHOOP API: sueno, HRV, recuperacion, habitos (pendiente)</div></div><div class="card"><div class="label">Cordelius Law</div><div class="big" style="color:#ffd35c">Proximamente</div><div class="muted">Cuaderno juridico, apuntes, casos (pendiente)</div></div><div class="card"><div class="label">Cordelius Intelligence</div><div class="big" style="color:#3b9dff">Grok / X manual</div><div class="muted">Pegar analisis de X o Grok (pendiente P2)</div></div><div class="card"><div class="label">Asia / China Tech</div><div class="big" style="color:#00ff99">Radar</div><div class="muted">Chips, cobre, IA, energia (pendiente, sin fuente)</div></div><div class="card"><div class="label">Alpaca</div><div class="big" style="color:#ffd35c">Pendiente</div><div class="muted">Solo paper trading futuro, sin ordenes reales</div></div></div><a id="system"></a><h2>Sistema</h2>
+<h2>Sistema</h2>
 <div class="grid">
   <div class="card"><div class="label">App</div><div class="big green">${esc(settings.appName)}</div></div>
   <div class="card"><div class="label">Alfredo AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
   <div class="card"><div class="label">Finnhub</div><div class="big ${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</div></div>
   <div class="card"><div class="label">Quiver</div><div class="big ${QUIVER_API_KEY ? "green" : "yellow"}">${QUIVER_API_KEY ? "OK" : "PENDIENTE"}</div></div>
+  <div class="card"><div class="label">WHOOP</div><div class="big ${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "ON" : "PENDIENTE"}</div></div>
+  <div class="card"><div class="label">Journal</div><div class="big" style="color:#818cf8">${journalEntries.length} entradas</div></div>
+</div>
 </div>
 
 <div class="disclaimer">Cordelius Trading es educativo. No es asesoria financiera. El bot es 100% ficticio (paper trading) y no se conecta a ningun exchange real.</div>
-</body></html>`;
+</body>
+<script>
+function showMod(name) {
+  document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
+  document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
+  var mod = document.getElementById('mod-' + name);
+  if (mod) mod.classList.add('active-mod');
+  var btn = document.querySelector('[data-mod="' + name + '"]');
+  if (btn) btn.classList.add('nav-active');
+  try { localStorage.setItem('corde_mod', name); } catch(e) {}
+}
+function toggleAlfredo() {
+  var p = document.getElementById('alfredo-panel');
+  if (p) p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'block' : 'none';
+}
+function setAlfredoQ(q) {
+  var inp = document.querySelector('#alfredo-panel [name=q]');
+  if (inp) { inp.value = q; }
+  var p = document.getElementById('alfredo-panel');
+  if (p) p.style.display = 'block';
+}
+document.addEventListener('DOMContentLoaded', function() {
+  var saved = '';
+  try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
+  showMod(saved || 'home');
+});
+</script>
+</html>`;
 }
 
 async function handleAsk(req, res) {
@@ -2657,7 +2930,7 @@ async function handleAsk(req, res) {
   req.on("end", async () => {
     const q = new URLSearchParams(body).get("q") || "";
     if (q.trim()) await alfredoReply(q.trim());
-    res.writeHead(302, { Location: "/#alfredo" }); res.end();
+    res.writeHead(302, { Location: "/" }); res.end();
   });
 }
 
@@ -2704,12 +2977,34 @@ function handleIntelClear(req, res) {
   res.end();
 }
 
+function handleJournal(req, res) {
+  let body = "";
+  req.on("data", c => body += c);
+  req.on("end", () => {
+    const p = new URLSearchParams(body);
+    const text = (p.get("text") || "").trim();
+    if (text) {
+      const entry = {
+        id: Date.now(),
+        date: nowMX(),
+        text,
+        mood: p.get("mood") || "neutral",
+        energy: parseInt(p.get("energy") || "0") || null,
+        tags: (p.get("tags") || "").split(",").map(t => t.trim()).filter(Boolean)
+      };
+      saveJournalEntry(entry);
+    }
+    res.writeHead(302, { Location: "/" }); res.end();
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const path = req.url.split("?")[0];
   if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && path === "/intel") return handleIntel(req, res);
   if (req.method === "POST" && path === "/intel/delete") return handleIntelDelete(req, res);
   if (req.method === "POST" && path === "/intel/clear") return handleIntelClear(req, res);
+  if (req.method === "POST" && path === "/api/journal") return handleJournal(req, res);
   if (path === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
@@ -2891,6 +3186,45 @@ const server = http.createServer(async (req, res) => {
       restingHeartRate: h.restingHeartRate,
       operatingMode: h.operatingMode,
       educationalNote: h.educationalNote
+    }));
+  }
+  if (path === "/api/journal/status") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      configured: false,
+      storage: journalEntries.length > 0 ? "active" : "empty",
+      count: journalEntries.length,
+      topMood: computeJournalData().topMood,
+      prompts: ["¿Cómo dormí?","¿Qué me preocupa?","¿Qué quiero lograr hoy?","¿Qué aprendí?","¿Cómo estuvo mi energía?"]
+    }));
+  }
+  if (path === "/api/journal") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeJournalData()));
+  }
+  if (path === "/api/os-status") {
+    const h = computeHealthReadiness();
+    const jd = computeJournalData();
+    const pv2 = portfolioValue();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      uptime: Math.floor(process.uptime()),
+      modules: {
+        trading: { active: true, portfolioMXN: pv2.totalValueMXN, gainPct: pv2.totalGainPct, quiver: quiverData.configured },
+        health: { active: true, configured: h.configured, operatingMode: h.operatingMode, whoop: WHOOP_CONFIGURED },
+        journal: { active: true, entries: jd.count, topMood: jd.topMood },
+        intelligence: { active: true, news: news.length, intel: intelItems.length, quiver: quiverData.configured },
+        autopilot: { active: true, paperMode: true, realTrading: false, alpaca: ALPACA_CONFIGURED }
+      },
+      systemFlags: {
+        serverOnline: true,
+        paperModeOnly: true,
+        realTradingOff: true,
+        alpacaPaperOnly: ALPACA_PAPER
+      }
     }));
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
