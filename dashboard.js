@@ -54,6 +54,20 @@ let journalEntries = loadJSON(JOURNAL_FILE, []);
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
+const BEHAVIOR_LOG_FILE = "health_behavior_log.json";
+const SNAPSHOTS_FILE = "health_daily_snapshots.json";
+let behaviorLog = loadJSON(BEHAVIOR_LOG_FILE, []);
+let dailySnapshots = loadJSON(SNAPSHOTS_FILE, []);
+
+let whoopDayCache = {
+  connected: false, lastFetch: 0, fetchInterval: 5 * 60 * 1000,
+  strain: null, averageHeartRate: null, maxHeartRate: null, kilojoule: null, scoreState: null,
+  recovery: null, hrv: null, restingHeartRate: null,
+  sleep: null, sleepEfficiency: null, timeAsleepMinutes: null,
+  operatingMode: "NORMAL", suggestion: "usa modo neutral", alfredoAdvice: null,
+  source: "local_only"
+};
+
 const FX_USD_MXN = Number(process.env.USD_MXN) || 18.50;
 
 const PORTFOLIO = [
