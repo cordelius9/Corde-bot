@@ -3505,6 +3505,120 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+
+  if (path === "/api/health/day-summary") {
+    try {
+      const http = require("http");
+
+      const getLocalJson = (localPath) => new Promise((resolve) => {
+        const req2 = http.get({
+          hostname: "127.0.0.1",
+          port: PORT,
+          path: localPath,
+          timeout: 8000
+        }, (rr) => {
+          let raw = "";
+          rr.on("data", c => raw += c);
+          rr.on("end", () => {
+            try {
+              resolve(JSON.parse(raw));
+            } catch (e) {
+              resolve(null);
+            }
+          });
+        });
+
+        req2.on("error", () => resolve(null));
+        req2.on("timeout", () => {
+          req2.destroy();
+          resolve(null);
+        });
+      });
+
+      const whoop = await getLocalJson("/api/whoop/today");
+
+      const summary = {
+        ok: true,
+        source: "WHOOP + Cordelius Health",
+        owner: "Pedro Cordero",
+        date: new Date().toLocaleDateString("es-MX"),
+
+        recovery: {
+          score: whoop?.recovery ?? null,
+          hrv_ms: whoop?.hrv ?? null,
+          rhr_bpm: whoop?.restingHeartRate ?? null
+        },
+
+        sleep: {
+          sleep_performance: whoop?.sleep ?? null,
+          time_in_bed_minutes: null,
+          time_asleep_minutes: null,
+          sleep_efficiency: null
+        },
+
+        strain: {
+          day_strain: whoop?.strain ?? null,
+          calories: null,
+          kilojoule: whoop?.kilojoule ?? null,
+          steps: null,
+          average_hr: whoop?.averageHeartRate ?? null,
+          max_hr: whoop?.maxHeartRate ?? null
+        },
+
+        activities: [],
+
+        behaviors: {
+          cannabis: null,
+          alcohol: null,
+          sauna: null,
+          cold_plunge: null,
+          supplements: [],
+          late_meal: null,
+          stress: null
+        },
+
+        ai_health_summary: (() => {
+          if (!whoop || whoop.connected !== true) {
+            return "WHOOP no está conectado todavía. Revisa la conexión antes de interpretar salud.";
+          }
+
+          const parts = [];
+
+          if (whoop.recovery != null) parts.push(`Recovery ${whoop.recovery}%`);
+          if (whoop.sleep != null) parts.push(`Sleep ${whoop.sleep}%`);
+          if (whoop.hrv != null) parts.push(`HRV ${Number(whoop.hrv).toFixed(1)} ms`);
+          if (whoop.restingHeartRate != null) parts.push(`RHR ${whoop.restingHeartRate} bpm`);
+          if (whoop.strain != null) parts.push(`Strain ${Number(whoop.strain).toFixed(1)}`);
+
+          let advice = "Resumen de salud de Pedro: " + parts.join(", ") + ".";
+
+          if (whoop.strain != null && whoop.strain >= 12) {
+            advice += " Carga física alta; conviene priorizar hidratación, comida completa, recuperación y no saturarte con estimulantes.";
+          } else if (whoop.recovery != null && whoop.recovery >= 75) {
+            advice += " Buen estado de recuperación; día favorable para actividad o enfoque mental, cuidando no sobrecargar.";
+          } else {
+            advice += " Día neutral; observa sueño, energía, cannabis, sauna, suplementos y estrés para encontrar patrones.";
+          }
+
+          advice += " No es consejo médico.";
+          return advice;
+        })(),
+
+        educationalNote: "Dashboard personal de salud. No es consejo médico."
+      };
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(summary));
+    } catch (e) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: false,
+        error: "health_day_summary_crash",
+        message: e.message
+      }));
+    }
+  }
+
   if (path === "/api/journal/auto") {
     try {
       const http = require("http");
