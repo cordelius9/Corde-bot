@@ -64,5 +64,3 @@ start-with-env.js
 # Backups / temp
 dashboard.backup*.js
 .gitignore.backup*
-=
-Perfecto.
