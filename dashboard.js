@@ -178,42 +178,43 @@ async function fetchWhoopAPI(path) {
 }
 
 async function refreshWhoopCache() {
-  if (!whoopTokens || !whoopTokens.access_token) { whoopCache.connected = false; return; }
-  if (Date.now() - whoopCache.lastFetch < WHOOP_CACHE_MS) return;
-  try {
-    const [profile, cycleResp, recoveryResp] = await Promise.all([
-      fetchWhoopAPI("/v2/user/profile/basic"),
-      fetchWhoopAPI("/v2/cycle?limit=1"),
-      fetchWhoopAPI("/v2/recovery?limit=1")
-    ]);
-    if (profile && profile.user_id) { whoopCache.profile = profile; whoopCache.connected = true; }
-    if (cycleResp && cycleResp.records && cycleResp.records[0]) whoopCache.cycle = cycleResp.records[0];
-    if (recoveryResp && recoveryResp.records && recoveryResp.records[0]) whoopCache.recovery = recoveryResp.records[0];
-    whoopCache.lastFetch = Date.now();
-  } catch (e) { console.log("WHOOP cache refresh error:", e.message); }
-}
+  if (!whoopTokens || !whoopTokens.access_token) {
+    whoopCache.connected = false;
+    return;
+  }
 
-async function refreshQuotes() {
-  for (const a of PORTFOLIO) {
-    if (a.type === "crypto") {
-      const drift = ((Math.random() - 0.5) * 1.8);
-      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/bitso" };
-      continue;
-    }
-    if (a.source === "GBM" || a.type === "stock_mx") {
-      const drift = ((Math.random() - 0.45) * 1.2);
-      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/gbm" };
-      continue;
-    }
-    if (FINNHUB_API_KEY && a.liveTicker) {
-      const j = await apiGet(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(a.liveTicker)}&token=${FINNHUB_API_KEY}`);
-      if (j && Number(j.c)) {
-        quotes[a.symbol] = { price: Number(j.c), value: Number(j.c) * a.units, day: Number(j.dp || 0), ok: true, source: "finnhub" };
-        continue;
-      }
-    }
-    const drift = ((Math.random() - 0.45) * 1.2);
-    quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/plata" };
+  if (Date.now() - whoopCache.lastFetch < WHOOP_CACHE_MS) return;
+
+  try {
+    const [profile, cycle, recovery, sleep] = await Promise.all([
+      fetchWhoopAPI("/developer/v2/user/profile/basic"),
+      fetchWhoopAPI("/developer/v2/cycle?limit=1"),
+      fetchWhoopAPI("/developer/v2/recovery?limit=1"),
+      fetchWhoopAPI("/developer/v2/activity/sleep?limit=1")
+    ]);
+
+    whoopCache.profile = profile;
+    whoopCache.cycle = cycle;
+    whoopCache.recovery = recovery;
+    whoopCache.sleep = sleep;
+    whoopCache.connected = !!(
+      (cycle && cycle.records && cycle.records.length) ||
+      (recovery && recovery.records && recovery.records.length) ||
+      (sleep && sleep.records && sleep.records.length)
+    );
+    whoopCache.lastFetch = Date.now();
+
+    saveJSON("whoop_today_cache.json", {
+      lastFetch: whoopCache.lastFetch,
+      connected: whoopCache.connected,
+      profile,
+      cycle,
+      recovery,
+      sleep
+    });
+  } catch (e) {
+    console.log("WHOOP refresh error:", e.message);
+    whoopCache.connected = false;
   }
 }
 
@@ -2307,44 +2308,72 @@ function computeOperatingMode(recovery) {
 }
 
 function computeHealthReadiness() {
-  const connected = whoopCache.connected && !!whoopTokens;
-  const cyc = whoopCache.cycle;
-  const rec = whoopCache.recovery;
-  const strain = cyc && cyc.score ? cyc.score.strain : null;
-  const avgHR = cyc && cyc.score ? cyc.score.average_heart_rate : null;
-  const maxHR = cyc && cyc.score ? cyc.score.max_heart_rate : null;
-  const recovery = rec && rec.score ? rec.score.recovery_score : null;
-  const sleep = rec && rec.score ? rec.score.sleep_performance_percentage : null;
-  const hrv = rec && rec.score ? rec.score.hrv_rmssd_milli : null;
-  const rhr = rec && rec.score ? rec.score.resting_heart_rate : null;
-  const mode = computeOperatingMode(recovery);
+  const cycleRec = whoopCache.cycle && whoopCache.cycle.records && whoopCache.cycle.records[0]
+    ? whoopCache.cycle.records[0]
+    : null;
+
+  const recoveryRec = whoopCache.recovery && whoopCache.recovery.records && whoopCache.recovery.records[0]
+    ? whoopCache.recovery.records[0]
+    : null;
+
+  const sleepRec = whoopCache.sleep && whoopCache.sleep.records && whoopCache.sleep.records[0]
+    ? whoopCache.sleep.records[0]
+    : null;
+
+  const cycleScore = cycleRec && cycleRec.score ? cycleRec.score : {};
+  const recoveryScore = recoveryRec && recoveryRec.score ? recoveryRec.score : {};
+  const sleepScore = sleepRec && sleepRec.score ? sleepRec.score : {};
+
+  const recovery = recoveryScore.recovery_score != null ? Math.round(recoveryScore.recovery_score) : null;
+  const sleep = sleepScore.sleep_performance_percentage != null ? Math.round(sleepScore.sleep_performance_percentage) : null;
+  const strain = cycleScore.strain != null ? cycleScore.strain : null;
+  const hrv = recoveryScore.hrv_rmssd_milli != null ? recoveryScore.hrv_rmssd_milli : null;
+  const restingHeartRate = recoveryScore.resting_heart_rate != null ? Math.round(recoveryScore.resting_heart_rate) : null;
+  const averageHeartRate = cycleScore.average_heart_rate != null ? Math.round(cycleScore.average_heart_rate) : null;
+  const maxHeartRate = cycleScore.max_heart_rate != null ? Math.round(cycleScore.max_heart_rate) : null;
+
+  const connected = !!(whoopTokens && whoopTokens.access_token && (recovery != null || sleep != null || strain != null || hrv != null));
+
+  let operatingMode = "NORMAL";
   let suggestion = "usa modo neutral";
-  if (recovery !== null) {
-    suggestion = recovery >= 67 ? "condiciones OK para analizar señales" :
-      recovery >= 34 ? "modo moderado — evita decisiones impulsivas" :
-      "modo defensivo — no promediar posiciones";
-  } else if (strain !== null) {
-    suggestion = strain > 15 ? "strain elevado — sesión larga, reposa" :
-      strain > 8 ? "strain moderado" : "strain bajo — buena carga";
+
+  if (connected) {
+    if (recovery != null && recovery < 40) {
+      operatingMode = "DEFENSIVO";
+      suggestion = "baja agresividad, evita decisiones impulsivas y prioriza recuperación";
+    } else if (recovery != null && recovery < 65) {
+      operatingMode = "NEUTRAL";
+      suggestion = "modo moderado — evita decisiones impulsivas";
+    } else if (recovery != null && recovery >= 80 && strain != null && strain < 10) {
+      operatingMode = "ÓPTIMO";
+      suggestion = "buen día para enfoque profundo y decisiones con calma";
+    } else {
+      operatingMode = "NORMAL";
+      suggestion = "operación normal con control de riesgo";
+    }
   }
+
   return {
     ok: true,
     configured: WHOOP_CONFIGURED,
     connected,
     source: connected ? "whoop_live" : WHOOP_CONFIGURED ? "whoop_tokens_missing" : "not_configured",
-    strain,
-    averageHeartRate: avgHR,
-    maxHeartRate: maxHR,
     recovery,
     sleep,
+    strain,
     hrv,
-    restingHeartRate: rhr,
-    operatingMode: mode,
-    message: connected
-      ? `WHOOP conectado. Recovery: ${recovery !== null ? recovery + "%" : "—"}. Strain: ${strain !== null ? strain.toFixed(1) : "—"}.`
-      : WHOOP_CONFIGURED ? "WHOOP configurado — tokens pendientes de autorización OAuth." : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
+    restingHeartRate,
+    averageHeartRate,
+    maxHeartRate,
+    operatingMode,
+    mode: operatingMode,
     suggestion,
-    educationalNote: "No es consejo médico. Sirve para contexto personal."
+    message: connected
+      ? `WHOOP conectado. Recovery: ${recovery ?? "—"}%. Sleep: ${sleep ?? "—"}%. Strain: ${strain != null ? strain.toFixed(1) : "—"}.`
+      : WHOOP_CONFIGURED
+        ? "WHOOP configurado — tokens pendientes o cache sin datos."
+        : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
+    educationalNote: "No es consejo médico ni financiero."
   };
 }
 
@@ -2663,6 +2692,177 @@ function renderHealthReadinessPanel() {
       <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
     </div>
   </div>`;
+}
+
+
+function renderHealthOSPanel() {
+  const h = computeHealthReadiness();
+
+  function clamp(n, min, max) {
+    n = Number(n);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function fmt(v, suffix) {
+    if (v === null || v === undefined || v === "") return "—";
+    if (typeof v === "number") {
+      const out = Math.abs(v) % 1 ? v.toFixed(1) : String(v);
+      return esc(out + (suffix || ""));
+    }
+    return esc(String(v) + (suffix || ""));
+  }
+
+  const recovery = clamp(h.recovery, 0, 100);
+  const sleep = clamp(h.sleep, 0, 100);
+  const strainRaw = Number(h.strain || 0);
+  const strainPct = clamp((strainRaw / 21) * 100, 0, 100);
+  const hrvScore = clamp((Number(h.hrv || 0) / 160) * 100, 0, 100);
+  const rhrScore = h.restingHeartRate ? clamp(100 - Math.max(0, Number(h.restingHeartRate) - 38) * 2, 0, 100) : 70;
+
+  const healthScore = Math.round(
+    recovery * 0.34 +
+    sleep * 0.24 +
+    hrvScore * 0.18 +
+    rhrScore * 0.12 +
+    (100 - strainPct) * 0.12
+  );
+
+  const status =
+    healthScore >= 85 ? "EXCELENTE" :
+    healthScore >= 70 ? "BUENO" :
+    healthScore >= 55 ? "MEDIO" :
+    healthScore >= 40 ? "BAJO" : "CRÍTICO";
+
+  const statusColor =
+    healthScore >= 70 ? "#00ff99" :
+    healthScore >= 55 ? "#ffd35c" :
+    "#ff4d6d";
+
+  const badgeLabel = h.connected ? "WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "WHOOP PENDIENTE";
+  const mode = h.operatingMode || "NORMAL";
+
+  function donut(label, value, raw, color) {
+    const v = clamp(value, 0, 100);
+    return `<div class="health-os-card health-os-donut-card">
+      <div class="health-os-donut" style="background:conic-gradient(${color} ${v}%, rgba(120,160,210,.13) 0)">
+        <div class="health-os-donut-inner">
+          <div class="health-os-donut-value">${esc(raw)}</div>
+          <div class="health-os-donut-label">${esc(label)}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const aiText = `Hoy tu sistema está en modo ${mode}. Recovery ${h.recovery ?? "—"}%, Sleep ${h.sleep ?? "—"}%, HRV ${h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—"} y Strain ${h.strain != null ? Number(h.strain).toFixed(1) : "—"}. Esto significa que tu cuerpo debe guiar el nivel de agresividad del día. Si la recuperación baja o el strain sube, conviene priorizar decisiones más lentas, menos impulsivas y con menor exposición. Para trading: evita sobreoperar, revenge trading y entradas grandes si estás cansado. Para estudio: enfócate en bloques profundos si la energía mental está alta; si no, usa tareas mecánicas. Para social: mantén planes que no drenen demasiado si el sistema nervioso está cargado. Prioridad: dormir bien, hidratarte, comer completo y registrar hábitos como sauna, cannabis, estrés o entrenamiento para detectar correlaciones.`;
+
+  return `<section id="health-os-shell" class="health-os-shell">
+    <style>
+      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.20),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
+      .health-os-hero{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
+      .health-os-title{font-size:44px;font-weight:950;letter-spacing:-.04em;background:linear-gradient(90deg,#f9a8d4,#3b9dff,#00ff99);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:6px 0}
+      .health-os-kicker{font-size:11px;font-weight:950;letter-spacing:.18em;text-transform:uppercase;color:#f472b6}
+      .health-os-sub{color:#9fb3c8;font-size:13px;line-height:1.6}
+      .health-os-badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;background:rgba(0,255,153,.12);border:1px solid rgba(0,255,153,.24);color:#00ff99;font-size:12px;font-weight:900}
+      .health-os-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
+      .health-os-card{border:1px solid rgba(120,160,210,.14);background:rgba(255,255,255,.045);border-radius:22px;padding:16px;box-shadow:inset 0 1px rgba(255,255,255,.04)}
+      .health-os-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px}
+      .health-os-value{font-size:30px;font-weight:950;color:#eaf6ff;line-height:1}
+      .health-os-small{font-size:12px;color:#9fb3c8;margin-top:7px;line-height:1.5}
+      .health-os-donut-row{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:14px;margin-bottom:14px}
+      .health-os-donut-card{display:flex;align-items:center;justify-content:center;min-height:230px}
+      .health-os-donut{width:178px;height:178px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 45px rgba(0,0,0,.35)}
+      .health-os-donut-inner{width:126px;height:126px;border-radius:50%;background:rgba(4,10,22,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.08)}
+      .health-os-donut-value{font-size:28px;font-weight:950;color:#eaf6ff}
+      .health-os-donut-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-top:4px}
+      .health-os-wide{grid-column:1/-1}
+      .health-os-ai{font-size:14px;color:#dbeafe;line-height:1.75}
+      .health-os-chip{display:inline-flex;border-radius:999px;padding:6px 11px;margin:4px;background:rgba(244,114,182,.08);border:1px solid rgba(244,114,182,.18);color:#f9a8d4;font-size:12px;font-weight:800}
+      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:24px}}
+    </style>
+
+    <div class="health-os-hero">
+      <div class="health-os-card">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <div class="health-os-kicker">Cordelius Health</div>
+            <div class="health-os-title">Biological Operating System</div>
+            <div class="health-os-sub">WHOOP-first · Health no depende del Journal · sistema educativo para energía, enfoque y riesgo de sobreoperar.</div>
+          </div>
+          <span id="health-os-whoop-badge" class="health-os-badge">● ${esc(badgeLabel)}</span>
+        </div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Health Score</div>
+        <div id="health-os-score" class="health-os-value" style="color:${statusColor}">${healthScore}</div>
+        <div id="health-os-status" class="health-os-small" style="font-weight:900;color:${statusColor}">${status}</div>
+        <div class="health-os-small">Modo operativo: <b id="health-os-mode" style="color:#ffd35c">${esc(mode)}</b></div>
+      </div>
+    </div>
+
+    <div class="health-os-grid">
+      <div class="health-os-card"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">${fmt(h.recovery, "%")}</div><div class="health-os-small">Capacidad de carga del día</div></div>
+      <div class="health-os-card"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">${fmt(h.sleep, "%")}</div><div class="health-os-small">Base de recuperación mental</div></div>
+      <div class="health-os-card"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">${fmt(h.hrv, " ms")}</div><div class="health-os-small">Sistema nervioso</div></div>
+      <div class="health-os-card"><div class="health-os-label">Resting HR</div><div id="health-os-rhr" class="health-os-value">${fmt(h.restingHeartRate, " bpm")}</div><div class="health-os-small">Carga fisiológica</div></div>
+      <div class="health-os-card"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">${fmt(h.strain, "")}</div><div class="health-os-small">Carga acumulada</div></div>
+      <div class="health-os-card"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">${esc(status)}</div><div class="health-os-small">Lectura Cordelius</div></div>
+    </div>
+
+    <div class="health-os-donut-row">
+      ${donut("Recovery", recovery, h.recovery != null ? h.recovery + "%" : "—", "#00ff99")}
+      ${donut("Sleep", sleep, h.sleep != null ? h.sleep + "%" : "—", "#3b9dff")}
+      ${donut("Strain", strainPct, h.strain != null ? Number(h.strain).toFixed(1) : "—", "#f472b6")}
+    </div>
+
+    <div class="health-os-grid">
+      <div class="health-os-card">
+        <div class="health-os-label">Energy Engine</div>
+        <div class="health-os-small">Physical Energy: <b id="health-os-energy-physical">${Math.round((recovery + sleep) / 2)}</b>/100</div>
+        <div class="health-os-small">Mental Energy: <b id="health-os-energy-mental">${Math.round((sleep + hrvScore) / 2)}</b>/100</div>
+        <div class="health-os-small">Focus Capacity: <b id="health-os-energy-focus">${Math.round((sleep + recovery + hrvScore) / 3)}</b>/100</div>
+        <div class="health-os-small">Deep Work: <b id="health-os-energy-deepwork">${Math.round((sleep + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
+        <div class="health-os-small">Trading Capacity: <b id="health-os-energy-trading">${Math.round((recovery + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Radar Health</div>
+        <div id="health-os-radar" class="health-os-small">
+          Recovery ${Math.round(recovery)} · Sleep ${Math.round(sleep)} · HRV ${Math.round(hrvScore)} · Nervous System ${Math.round(hrvScore)} · Energy ${Math.round((recovery + sleep)/2)} · Focus ${Math.round((sleep + hrvScore)/2)}
+        </div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Behavior Tracker</div>
+        <div id="health-os-behaviors">
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('sauna')">Sauna</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('cannabis')">Cannabis</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('training')">Training</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('stress')">High Stress</button>
+        </div>
+        <div class="health-os-small">Opcional. Sin formularios grandes.</div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Correlation Engine</div>
+        <div id="health-os-correlations" class="health-os-small">Recolectando datos. Se activará con más snapshots diarios.</div>
+      </div>
+
+      <div class="health-os-card health-os-wide">
+        <div class="health-os-label">Alfredo Health AI</div>
+        <div id="health-os-ai" class="health-os-ai">${esc(aiText)}</div>
+      </div>
+
+      <div class="health-os-card health-os-wide">
+        <div class="health-os-label">Trading Integration</div>
+        <div id="health-os-trading-risk" class="health-os-small">
+          Recovery &lt; 50 → modo defensivo · Recovery &gt; 80 → modo normal · Strain alto → bajar agresividad · Overtrading alto → no operar impulsivo.
+          <br>Educativo. No es asesoría médica ni financiera.
+        </div>
+      </div>
+    </div>
+  </section>`;
 }
 
 function renderPortfolioSnapshot(pv, reg) {
@@ -3166,14 +3366,7 @@ ${renderPaperTradingPanel()}
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
 <div id="mod-health" class="mod">
-${renderWhoopNotConnected()}
-${renderHealthReadinessPanel()}
-<div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
-  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
-  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
-  <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
-  <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
-</div>
+${renderHealthOSPanel()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
 <div id="mod-journal" class="mod">
@@ -3270,6 +3463,91 @@ ${renderAutopilotPanel()}
 </div>
 
 <div class="disclaimer">Cordelius OS es educativo. No es asesoria financiera. El bot de trading es 100% ficticio (paper trading) y no se conecta a ningun exchange real. WHOOP pendiente de conexion. Alpaca PAPER ONLY.</div>
+
+
+
+
+
+
+
+
+
+<script id="health-os-live-loader-final">
+(function(){
+  function set(id, v) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = (v === null || v === undefined || v === "") ? "—" : String(v);
+  }
+
+  function n(v) {
+    var x = Number(v);
+    return Number.isFinite(x) ? x : null;
+  }
+
+  async function loadHealthOSFinal() {
+    try {
+      var r = await fetch("/api/whoop/today", { cache: "no-store" });
+      if (!r.ok) return;
+      var d = await r.json();
+
+      var recovery = n(d.recovery);
+      var sleep = n(d.sleep);
+      var strain = n(d.strain);
+      var hrv = n(d.hrv);
+      var rhr = n(d.restingHeartRate);
+
+      set("health-os-recovery", recovery != null ? recovery + "%" : "—");
+      set("health-os-sleep", sleep != null ? sleep + "%" : "—");
+      set("health-os-strain", strain != null ? strain.toFixed(1) : "—");
+      set("health-os-hrv", hrv != null ? hrv.toFixed(1) + " ms" : "—");
+      set("health-os-rhr", rhr != null ? Math.round(rhr) + " bpm" : "—");
+
+      var rec = recovery || 0;
+      var slp = sleep || 0;
+      var hrvScore = hrv != null ? Math.max(0, Math.min(100, hrv / 160 * 100)) : 0;
+      var rhrScore = rhr != null ? Math.max(0, Math.min(100, 100 - Math.max(0, rhr - 38) * 2)) : 70;
+      var strainPct = strain != null ? Math.max(0, Math.min(100, strain / 21 * 100)) : 0;
+
+      var score = Math.round(rec * .34 + slp * .24 + hrvScore * .18 + rhrScore * .12 + (100 - strainPct) * .12);
+      var status = score >= 85 ? "EXCELENTE" : score >= 70 ? "BUENO" : score >= 55 ? "MEDIO" : score >= 40 ? "BAJO" : "CRÍTICO";
+
+      set("health-os-score", score);
+      set("health-os-status", status);
+      set("health-os-readiness", status);
+      set("health-os-mode", d.operatingMode || d.mode || "NORMAL");
+
+      set("health-os-energy-physical", Math.round((rec + slp) / 2));
+      set("health-os-energy-mental", Math.round((slp + hrvScore) / 2));
+      set("health-os-energy-focus", Math.round((slp + rec + hrvScore) / 3));
+      set("health-os-energy-deepwork", Math.round((slp + hrvScore + (100 - strainPct)) / 3));
+      set("health-os-energy-trading", Math.round((rec + hrvScore + (100 - strainPct)) / 3));
+
+      var badge = document.getElementById("health-os-whoop-badge");
+      if (badge) badge.textContent = d.connected ? "● WHOOP LIVE" : "WHOOP PENDIENTE";
+
+      var ai = document.getElementById("health-os-ai");
+      if (ai && d.alfredoAdvice) ai.textContent = d.alfredoAdvice;
+
+      console.log("Health OS final loaded", d);
+    } catch(e) {
+      console.error("Health OS final loader failed", e);
+    }
+  }
+
+  window.loadHealthOS = loadHealthOSFinal;
+  window.loadHealthOSFinal = loadHealthOSFinal;
+
+  document.addEventListener("DOMContentLoaded", function(){
+    setTimeout(loadHealthOSFinal, 300);
+    setTimeout(loadHealthOSFinal, 1300);
+  });
+
+  setTimeout(loadHealthOSFinal, 300);
+  setTimeout(loadHealthOSFinal, 1300);
+  setInterval(loadHealthOSFinal, 60000);
+})();
+</script>
+
 </body>
 <script>
 function showMod(name) {
@@ -3280,7 +3558,95 @@ function showMod(name) {
   var btn = document.querySelector('[data-mod="' + name + '"]');
   if (btn) btn.classList.add('nav-active');
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
+  if (name === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
 }
+
+function healthOSSet(id, value) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = value == null || value === '' ? '—' : String(value);
+}
+
+function healthOSFmt(n, d) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return '—';
+  return Number(n).toFixed(d == null ? 0 : d);
+}
+
+async function toggleHealthBehavior(key) {
+  try {
+    await fetch('/api/health/behavior', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ behavior:key })
+    });
+    await loadHealthOS();
+  } catch(e) {
+    console.warn('toggleHealthBehavior failed', e);
+  }
+}
+
+async function loadHealthOS() {
+  if (!document.getElementById('health-os-shell')) return;
+
+  try {
+    var insights = {};
+    var whoop = {};
+
+    try {
+      var ir = await fetch('/api/health/insights', { cache:'no-store' });
+      if (ir.ok) insights = await ir.json();
+    } catch(e) {}
+
+    try {
+      var wr = await fetch('/api/whoop/today', { cache:'no-store' });
+      if (wr.ok) whoop = await wr.json();
+    } catch(e) {}
+
+    var m = insights.metrics || {};
+    var recovery = m.recovery ?? whoop.recovery;
+    var sleep = m.sleep ?? whoop.sleep;
+    var strain = m.strain ?? whoop.strain;
+    var hrv = m.hrv_ms ?? whoop.hrv;
+    var rhr = m.resting_hr_bpm ?? whoop.restingHeartRate;
+
+    healthOSSet('health-os-recovery', recovery != null ? recovery + '%' : '—');
+    healthOSSet('health-os-sleep', sleep != null ? sleep + '%' : '—');
+    healthOSSet('health-os-strain', strain != null ? healthOSFmt(strain, 1) : '—');
+    healthOSSet('health-os-hrv', hrv != null ? healthOSFmt(hrv, 1) + ' ms' : '—');
+    healthOSSet('health-os-rhr', rhr != null ? rhr + ' bpm' : '—');
+
+    var rec = Number(recovery || 0);
+    var slp = Number(sleep || 0);
+    var hrvScore = Math.max(0, Math.min(100, Number(hrv || 0) / 160 * 100));
+    var strainPct = Math.max(0, Math.min(100, Number(strain || 0) / 21 * 100));
+    var score = Math.round(rec * .34 + slp * .24 + hrvScore * .18 + (100 - strainPct) * .24);
+    var status = score >= 85 ? 'EXCELENTE' : score >= 70 ? 'BUENO' : score >= 55 ? 'MEDIO' : score >= 40 ? 'BAJO' : 'CRÍTICO';
+    var mode = insights.readiness || whoop.mode || whoop.operatingMode || (rec < 50 ? 'DEFENSIVO' : 'NORMAL');
+
+    healthOSSet('health-os-score', score);
+    healthOSSet('health-os-status', status);
+    healthOSSet('health-os-readiness', status);
+    healthOSSet('health-os-mode', mode);
+
+    healthOSSet('health-os-energy-physical', Math.round((rec + slp) / 2));
+    healthOSSet('health-os-energy-mental', Math.round((slp + hrvScore) / 2));
+    healthOSSet('health-os-energy-focus', Math.round((slp + rec + hrvScore) / 3));
+    healthOSSet('health-os-energy-deepwork', Math.round((slp + hrvScore + (100 - strainPct)) / 3));
+    healthOSSet('health-os-energy-trading', Math.round((rec + hrvScore + (100 - strainPct)) / 3));
+
+    var ai = document.getElementById('health-os-ai');
+    if (ai && (insights.aiBrief || whoop.alfredoAdvice)) {
+      ai.textContent = insights.aiBrief || whoop.alfredoAdvice;
+    }
+
+    var badge = document.getElementById('health-os-whoop-badge');
+    if (badge) badge.textContent = whoop.connected ? '● WHOOP LIVE' : 'WHOOP DETECTADO';
+
+  } catch(e) {
+    healthOSSet('health-os-ai', 'No se pudo cargar Health OS. Revisa /api/health/insights y /api/whoop/today.');
+    console.error('loadHealthOS failed', e);
+  }
+}
+
 function toggleAlfredo() {
   var p = document.getElementById('alfredo-panel');
   if (p) p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'block' : 'none';
@@ -3294,7 +3660,8 @@ function setAlfredoQ(q) {
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
-  showMod(saved || 'home');
+  var hashMod = (window.location.hash || '').replace('#', '');
+  showMod(hashMod || saved || 'home');
   // Live-update Health Readiness panel from /api/whoop/today
   (function whoopHealthLive() {
     function set(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; }
@@ -3578,6 +3945,89 @@ const server = http.createServer(async (req, res) => {
       }
     }));
   }
+
+  if (path === "/whoop/auth") {
+    const clientId = process.env.WHOOP_CLIENT_ID || "";
+    const redirectUri = process.env.WHOOP_REDIRECT_URI || "";
+    if (!clientId || !redirectUri) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Faltan WHOOP_CLIENT_ID o WHOOP_REDIRECT_URI en .env");
+    }
+
+    const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const scope = "offline read:profile read:cycles read:recovery read:sleep read:workout";
+
+    const authUrl = "https://api.prod.whoop.com/oauth/oauth2/auth"
+      + "?response_type=code"
+      + "&client_id=" + encodeURIComponent(clientId)
+      + "&redirect_uri=" + encodeURIComponent(redirectUri)
+      + "&scope=" + encodeURIComponent(scope)
+      + "&state=" + encodeURIComponent(state);
+
+    res.writeHead(302, { Location: authUrl });
+    return res.end();
+  }
+
+  if (path === "/api/whoop/callback") {
+    const qs = new URL(req.url, "http://localhost").search || "";
+    res.writeHead(302, { Location: "/whoop/callback" + qs });
+    return res.end();
+  }
+
+  if (path === "/whoop/callback") {
+    const code = new URL(req.url, "http://localhost").searchParams.get("code");
+    const err = new URL(req.url, "http://localhost").searchParams.get("error");
+
+    if (err) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("WHOOP OAuth error: " + err);
+    }
+
+    if (!code) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Falta code en callback WHOOP.");
+    }
+
+    try {
+      const body = [
+        "grant_type=authorization_code",
+        "code=" + encodeURIComponent(code),
+        "client_id=" + encodeURIComponent(process.env.WHOOP_CLIENT_ID || ""),
+        "client_secret=" + encodeURIComponent(process.env.WHOOP_CLIENT_SECRET || ""),
+        "redirect_uri=" + encodeURIComponent(process.env.WHOOP_REDIRECT_URI || "")
+      ].join("&");
+
+      const tokenResult = await apiPost(WHOOP_TOKEN_URL, body);
+
+      if (!tokenResult || !tokenResult.access_token) {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        return res.end("WHOOP no regresó access_token.");
+      }
+
+      whoopTokens = {
+        ...tokenResult,
+        expires_at: Date.now() + (tokenResult.expires_in || 3600) * 1000
+      };
+
+      saveJSON(WHOOP_TOKEN_FILE, whoopTokens);
+
+      whoopCache.lastFetch = 0;
+      await refreshWhoopCache();
+
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(`<!doctype html>
+<html><head><meta charset="utf-8"><title>WHOOP conectado</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial;background:#02040a;color:#eaf6ff;padding:28px">
+<h1>WHOOP conectado ✅</h1>
+<p>Tokens guardados en el servidor. Ya puedes volver a Cordelius Health.</p>
+<p><a href="/#health" style="color:#00ff99">Abrir Health OS</a></p>
+</body></html>`);
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Error intercambiando code por token WHOOP: " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
   if (path === "/api/whoop/status") {
     const h = computeHealthReadiness();
     res.writeHead(200, { "Content-Type": "application/json" });

@@ -45,3 +45,24 @@ reports/*.txt
 # Temporales
 *.tmp
 tmp/
+
+# Secrets / local env
+.env
+whoop_tokens.json
+whoop_today_cache.json
+health_profile.json
+health_daily_snapshots.json
+health_behaviors.json
+
+# Logs
+server.log
+cloudflared.log
+
+# Local launch wrapper
+start-with-env.js
+
+# Backups / temp
+dashboard.backup*.js
+.gitignore.backup*
+=
+Perfecto.
