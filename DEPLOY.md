@@ -41,7 +41,7 @@ Todo lo que necesitas: Node 18+, las variables de entorno del `.env.example`, y 
 3. Crear app: `fly launch` (en la raíz del repo)
 4. Configurar secretos:
    ```bash
-   fly secrets set ANTHROPIC_API_KEY=sk-ant-...
+   fly secrets set ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY_HERE
    fly secrets set TELEGRAM_BOT_TOKEN=...
    # (repetir para cada variable)
    ```
@@ -108,7 +108,7 @@ Nunca subir `.env` al repo. En cada plataforma:
 Variables mínimas para arrancar en cloud:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY_HERE
 PORT=3000
 USD_MXN=18.50
 ```

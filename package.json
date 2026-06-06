@@ -14,7 +14,7 @@
     "check": "node --check dashboard.js && node --check bot.js && node --check trading_ai.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.34.0",
+    "@anthropic-ai/sdk": "^0.68.0",
     "dotenv": "^16.4.7",
     "node-telegram-bot-api": "^0.66.0"
   }

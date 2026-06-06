@@ -178,6 +178,3 @@ Cordelius está listo para migrar a un servidor VPS o PaaS. No requiere cambios 
 | WHOOP live data | 🔲 Pendiente — vars WHOOP_CLIENT_ID/SECRET en .env.example |
 | Alertas push Telegram | 🔲 Pendiente (F3b) |
 | Portfolio editable en runtime | 🔲 Pendiente (F3c) |
-| Cloud deploy | ✅ Documentado en DEPLOY.md — Render, Railway, Fly.io, VPS |
-| Cordelius Journal | ✅ Módulo en Mega 9 — diario personal local |
-| Home portal modular | ✅ Mega 9 — 5 módulos con navegación por tabs |
