@@ -18,6 +18,8 @@ ai_chat_history.json
 alfredo_chat_history.json
 cordelius_intel.json
 cordelius_alerts.json
+cordelius_journal.json
+whoop_tokens.json
 
 # Backups y parches locales
 dashboard_backup_*.js
@@ -35,19 +37,30 @@ node_modules/
 # Directorios de runtime
 runtime/
 
-# Local health/journal runtime files
-whoop_tokens.json
-cordelius_journal.json
+# Reportes automáticos (generados por scripts/)
+reports/*.json
+reports/*.log
+reports/*.txt
 
-corda_journal.json
-data/secrets/
-data/*.token
-data/*tokens*.json
-.env.*
-*.local
-*.secret
-*.token
-data/*secret*.json
-data/*.secrets.json
+# Temporales
+*.tmp
+tmp/
+
+# Secrets / local env
+.env
+whoop_tokens.json
+whoop_today_cache.json
 health_profile.json
-health_behavior_log.json
+health_daily_snapshots.json
+health_behaviors.json
+
+# Logs
+server.log
+cloudflared.log
+
+# Local launch wrapper
+start-with-env.js
+
+# Backups / temp
+dashboard.backup*.js
+.gitignore.backup*

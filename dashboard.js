@@ -19,6 +19,8 @@ const CHAT_FILE = "alfredo_chat_history.json";
 const SETTINGS_FILE = "cordelius_settings.json";
 const INTEL_FILE = "cordelius_intel.json";
 const JOURNAL_FILE = "cordelius_journal.json";
+const WHOOP_TOKEN_FILE = "whoop_tokens.json";
+const WHOOP_CACHE_MS = 5 * 60 * 1000;
 
 function loadJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
@@ -40,10 +42,8 @@ function nowMX() { return new Date().toLocaleString("es-MX"); }
 
 let settings = loadJSON(SETTINGS_FILE, {
   thinkingEnabled: true, autoRefreshSeconds: 60, themeMode: "neural",
-  appName: "Corda", assistantName: "Alfredo"
+  appName: "Cordelius OS", assistantName: "Alfredo AI"
 });
-const CORDA_APP_NAME = "Corda";
-const CORDA_APP_SUBTITLE = "Personal intelligence OS";
 
 let quotes = {};
 let news = [];
@@ -51,6 +51,8 @@ let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
 let journalEntries = loadJSON(JOURNAL_FILE, []);
+let whoopTokens = loadJSON(WHOOP_TOKEN_FILE, null);
+let whoopCache = { profile: null, cycle: null, recovery: null, lastFetch: 0, connected: false };
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
@@ -80,8 +82,9 @@ const PORTFOLIO = [
 const TV_SYMBOL = {
   AAPL: "NASDAQ:AAPL", BBVA: "BMV:BBVA", MSFT: "NASDAQ:MSFT", GEV: "NYSE:GEV", IREN: "NASDAQ:IREN",
   PLTR: "NASDAQ:PLTR", AEP: "NASDAQ:AEP", UNH: "NYSE:UNH", SSYS: "NASDAQ:SSYS", PATH: "NYSE:PATH",
-  COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX", XRP: "BINANCE:XRPUSDT", BTC: "BINANCE:BTCUSDT",
-  ETH: "BINANCE:ETHUSDT", BCH: "BINANCE:BCHUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
+  COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX",
+  BTC: "BITSTAMP:BTCUSD", ETH: "BITSTAMP:ETHUSD", BCH: "COINBASE:BCHUSD",
+  XRP: "BINANCE:XRPUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
 };
 
 const MARKET_WATCHLIST = ["NVDA","TSLA","AMD","META","GOOGL","AMZN","AAPL","MSFT","PLTR","NFLX","SMCI","COIN","MSTR","SOFI","HOOD","RIVN","NIO","BABA","UNH","LLY","AVGO","QQQ","SPY"];
@@ -103,27 +106,115 @@ function apiGet(url) {
   });
 }
 
-async function refreshQuotes() {
-  for (const a of PORTFOLIO) {
-    if (a.type === "crypto") {
-      const drift = ((Math.random() - 0.5) * 1.8);
-      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/bitso" };
-      continue;
+function apiGetAuth(url, token) {
+  return new Promise(resolve => {
+    try {
+      const parsed = new URL(url);
+      const opts = { hostname: parsed.hostname, port: 443, path: parsed.pathname + parsed.search, method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } };
+      const req = https.request(opts, res => {
+        let data = "";
+        res.on("data", c => data += c);
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(12000, () => { req.destroy(); resolve(null); });
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+function apiPost(url, bodyStr, extraHeaders = {}) {
+  return new Promise(resolve => {
+    try {
+      const parsed = new URL(url);
+      const opts = { hostname: parsed.hostname, port: 443, path: parsed.pathname, method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(bodyStr), ...extraHeaders } };
+      const req = https.request(opts, res => {
+        let data = "";
+        res.on("data", c => data += c);
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(12000, () => { req.destroy(); resolve(null); });
+      req.write(bodyStr);
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+// ── WHOOP OAuth + API ─────────────────────────────────────────────────────────
+const WHOOP_API_BASE = "https://api.prod.whoop.com";
+const WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token";
+
+async function refreshWhoopToken() {
+  if (!whoopTokens || !whoopTokens.refresh_token) return false;
+  const cid = process.env.WHOOP_CLIENT_ID || "";
+  const csec = process.env.WHOOP_CLIENT_SECRET || "";
+  if (!cid || !csec) return false;
+  try {
+    const body = [
+      "grant_type=refresh_token",
+      "refresh_token=" + encodeURIComponent(whoopTokens.refresh_token),
+      "client_id=" + encodeURIComponent(cid),
+      "client_secret=" + encodeURIComponent(csec),
+      "scope=" + encodeURIComponent("offline read:profile read:body_measurement read:cycles read:recovery read:sleep read:workout")
+    ].join("&");
+    const result = await apiPost(WHOOP_TOKEN_URL, body);
+    if (result && result.access_token) {
+      whoopTokens = { ...whoopTokens, ...result, expires_at: Date.now() + (result.expires_in || 3600) * 1000 };
+      saveJSON(WHOOP_TOKEN_FILE, whoopTokens);
+      return true;
     }
-    if (a.source === "GBM" || a.type === "stock_mx") {
-      const drift = ((Math.random() - 0.45) * 1.2);
-      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/gbm" };
-      continue;
-    }
-    if (FINNHUB_API_KEY && a.liveTicker) {
-      const j = await apiGet(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(a.liveTicker)}&token=${FINNHUB_API_KEY}`);
-      if (j && Number(j.c)) {
-        quotes[a.symbol] = { price: Number(j.c), value: Number(j.c) * a.units, day: Number(j.dp || 0), ok: true, source: "finnhub" };
-        continue;
-      }
-    }
-    const drift = ((Math.random() - 0.45) * 1.2);
-    quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/plata" };
+  } catch (e) { console.log("WHOOP refresh error:", e.message); }
+  return false;
+}
+
+async function fetchWhoopAPI(path) {
+  if (!whoopTokens || !whoopTokens.access_token) return null;
+  if (whoopTokens.expires_at && Date.now() > whoopTokens.expires_at - 60000) {
+    const ok = await refreshWhoopToken();
+    if (!ok) return null;
+  }
+  return apiGetAuth(WHOOP_API_BASE + path, whoopTokens.access_token);
+}
+
+async function refreshWhoopCache() {
+  if (!whoopTokens || !whoopTokens.access_token) {
+    whoopCache.connected = false;
+    return;
+  }
+
+  if (Date.now() - whoopCache.lastFetch < WHOOP_CACHE_MS) return;
+
+  try {
+    const [profile, cycle, recovery, sleep] = await Promise.all([
+      fetchWhoopAPI("/developer/v2/user/profile/basic"),
+      fetchWhoopAPI("/developer/v2/cycle?limit=1"),
+      fetchWhoopAPI("/developer/v2/recovery?limit=1"),
+      fetchWhoopAPI("/developer/v2/activity/sleep?limit=1")
+    ]);
+
+    whoopCache.profile = profile;
+    whoopCache.cycle = cycle;
+    whoopCache.recovery = recovery;
+    whoopCache.sleep = sleep;
+    whoopCache.connected = !!(
+      (cycle && cycle.records && cycle.records.length) ||
+      (recovery && recovery.records && recovery.records.length) ||
+      (sleep && sleep.records && sleep.records.length)
+    );
+    whoopCache.lastFetch = Date.now();
+
+    saveJSON("whoop_today_cache.json", {
+      lastFetch: whoopCache.lastFetch,
+      connected: whoopCache.connected,
+      profile,
+      cycle,
+      recovery,
+      sleep
+    });
+  } catch (e) {
+    console.log("WHOOP refresh error:", e.message);
+    whoopCache.connected = false;
   }
 }
 
@@ -331,8 +422,8 @@ async function fetchNews() {
   }
   if (!out.length) {
     out = [
-      { headline: "Mercado atento a tasas, inflacion y tecnologia AI", source: "Corda Local", summary: "Modo local educativo: no hay API de noticias activa o no respondio.", url: "#", image: "", datetime: Date.now() / 1000 },
-      { headline: "Cripto corrige mientras acciones de AI mantienen atencion", source: "Corda Local", summary: "BTC, XRP y ETH suelen reaccionar fuerte a cambios de liquidez global.", url: "#", image: "", datetime: Date.now() / 1000 }
+      { headline: "Mercado atento a tasas, inflacion y tecnologia AI", source: "Cordelius Local", summary: "Modo local educativo: no hay API de noticias activa o no respondio.", url: "#", image: "", datetime: Date.now() / 1000 },
+      { headline: "Cripto corrige mientras acciones de AI mantienen atencion", source: "Cordelius Local", summary: "BTC, XRP y ETH suelen reaccionar fuerte a cambios de liquidez global.", url: "#", image: "", datetime: Date.now() / 1000 }
     ];
   }
   news = out.slice(0, 30).map(n => ({ ...n, classification: classifyNews(n), impacted: impactedAssets(n) }));
@@ -715,7 +806,7 @@ function computeDailyNewsletter() {
   lines.push(`Régimen: ${reg.label}. ${reg.detail}`);
   lines.push("EDUCATIVO — no es asesoría financiera.");
   return {
-    ok: true, ts: Date.now(), date: today, greeting: "Corda OS · " + today, lines,
+    ok: true, ts: Date.now(), date: today, greeting: "Cordelius OS · " + today, lines,
     fullSummary: lines.join(" "),
     portfolio: pi,
     external: { hotCount: emi.externalHot.length, topSectors: emi.sectors.slice(0,3).map(s => s.sector) },
@@ -974,7 +1065,7 @@ function generateLiveThought(pv, reg) {
     qCount > 0 ? { text: `Quiver: ${qCount} registros institucionales en activos del portafolio · congreso, insiders, contratos.`, level: "scan" } : null,
     { text: `Momentum dominante del portafolio: ${reg.avg >= 0 ? "positivo" : "negativo"} · ${pv.assets.filter(a => a.ind.momentum > 0).length}/${pv.assets.length} activos con momentum alcista.`, level: reg.avg >= 0 ? "buy" : "risk" },
     { text: `${pv.assets.filter(a => a.signal.includes("BUY")).length} señales BUY activas · ${pv.assets.filter(a => a.signal.includes("TOMAR")).length} señales de toma de ganancia.`, level: "scan" },
-    intelItems.length > 0 ? { text: `${intelItems.length} items en Corda Intelligence · ${intelItems.filter(x => x.mood === "POSITIVO").length} positivos, ${intelItems.filter(x => x.mood === "NEGATIVO").length} negativos.`, level: "scan" } : null,
+    intelItems.length > 0 ? { text: `${intelItems.length} items en Cordelius Intelligence · ${intelItems.filter(x => x.mood === "POSITIVO").length} positivos, ${intelItems.filter(x => x.mood === "NEGATIVO").length} negativos.`, level: "scan" } : null,
   ].filter(Boolean);
 
   const pick = pool[Math.floor(Math.random() * pool.length)];
@@ -1074,7 +1165,7 @@ async function askClaude(question, localReply, pv, reg, botEq, botPnl) {
   };
 
   const prompt = `
-Eres Alfredo AI dentro de Corda. Responde en español mexicano, claro, directo y útil.
+Eres Alfredo AI dentro de Cordelius OS. Responde en español mexicano, claro, directo y útil.
 No eres asesor financiero. Da análisis educativo, no órdenes definitivas.
 Usa SIEMPRE los costos originales y valores reales del portafolio cuando hables de rendimiento.
 
@@ -1256,7 +1347,7 @@ EDUCATIVO — no es asesoría financiera.`;
   } else if (q.includes("intel") || q.includes("inteligencia") || q.includes("grok")) {
     const positivos = intelItems.filter(x => x.mood === "POSITIVO").length;
     const negativos = intelItems.filter(x => x.mood === "NEGATIVO").length;
-    reply = `Corda Intelligence: ${intelItems.length} items. ${positivos} positivos, ${negativos} negativos. Tickers cubiertos: ${[...new Set(intelItems.flatMap(x => x.affected || []))].slice(0, 6).join(", ") || "sin items aun"}.`;
+    reply = `Cordelius Intelligence: ${intelItems.length} items. ${positivos} positivos, ${negativos} negativos. Tickers cubiertos: ${[...new Set(intelItems.flatMap(x => x.affected || []))].slice(0, 6).join(", ") || "sin items aun"}.`;
   } else if (q.includes("noticia")) {
     reply = `Hay ${news.length} noticias cargadas. Las cruzo contra tus activos para mostrar impacto probable por ticker.`;
   } else if (q.includes("bot")) {
@@ -1297,13 +1388,13 @@ EDUCATIVO — no es asesoría financiera.`;
     const idea = computeTradeIdea();
     reply = `Morning Report — ${nl.date}. ${nl.lines.slice(0,3).join(" ")} ${idea.hasIdea ? "Idea: " + idea.type + " " + idea.symbol + " — " + idea.reason + "." : "Sin idea de trade destacada."} Endpoint: GET /api/morning-report`;
   } else if (q.includes("automatiz") || q.includes("autopilot") || q.includes("auto pilot")) {
-    reply = `Automatización Corda — Scripts disponibles: health_check.sh (verifica /health), restart_safe.sh (reinicio seguro), morning_report.sh (guarda JSON en reports/), final_check.sh (valida antes de push). Usa bash scripts/health_check.sh desde ~/corde-bot. Cloud: conceptualmente listo para migrar a VPS/Railway. NO hay trading real ni órdenes automáticas.`;
+    reply = `Automatización Cordelius — Scripts disponibles: health_check.sh (verifica /health), restart_safe.sh (reinicio seguro), morning_report.sh (guarda JSON en reports/), final_check.sh (valida antes de push). Usa bash scripts/health_check.sh desde ~/corde-bot. Cloud: conceptualmente listo para migrar a VPS/Railway. NO hay trading real ni órdenes automáticas.`;
   } else if (q.includes("estado del sistema") || q.includes("system status") || (q.includes("health") && !q.includes("healthcare"))) {
-    reply = `Sistema Corda — Servidor: ONLINE (si ves esto). Paper Mode: ON. Real Trading: OFF. Alpaca: PENDIENTE. Quiver: ${quiverData.configured ? "ON" : "pendiente API key"}. Bot ficticio: equity ${money(botEq)}, P&L ${money(botPnl)}. Revisa /health para JSON completo.`;
+    reply = `Sistema Cordelius — Servidor: ONLINE (si ves esto). Paper Mode: ON. Real Trading: OFF. Alpaca: PENDIENTE. Quiver: ${quiverData.configured ? "ON" : "pendiente API key"}. Bot ficticio: equity ${money(botEq)}, P&L ${money(botPnl)}. Revisa /health para JSON completo.`;
   } else if (q.includes("cloud") || q.includes("nube") || q.includes("migrar") || q.includes("vps") || q.includes("servidor")) {
-    reply = `Cloud / Migración — Corda puede migrar a VPS (Railway, Render, Fly.io) o servidor propio. Scripts de automatización ya preparados en scripts/. Requeriría: .env en variables de entorno del host, PM2 o systemd para proceso, HTTPS con reverse proxy. Sin Alpaca real no hay riesgo financiero. Actualmente: Termux/Android.`;
+    reply = `Cloud / Migración — Cordelius puede migrar a VPS (Railway, Render, Fly.io) o servidor propio. Scripts de automatización ya preparados en scripts/. Requeriría: .env en variables de entorno del host, PM2 o systemd para proceso, HTTPS con reverse proxy. Sin Alpaca real no hay riesgo financiero. Actualmente: Termux/Android.`;
   } else if (q.includes("termux") || q.includes("android") || q.includes("watchdog")) {
-    reply = `Termux — Corda corre en Termux (Android). Scripts: ./start.sh, ./stop.sh, ./watchdog.sh (reinicio automático si cae). Para inicio automático al boot: Termux:Boot (app separada) + script en ~/.termux/boot/. Sin Termux:Boot, iniciar manualmente tras reiniciar Android.`;
+    reply = `Termux — Cordelius corre en Termux (Android). Scripts: ./start.sh, ./stop.sh, ./watchdog.sh (reinicio automático si cae). Para inicio automático al boot: Termux:Boot (app separada) + script en ~/.termux/boot/. Sin Termux:Boot, iniciar manualmente tras reiniciar Android.`;
   } else if (q.includes("paper status") || q.includes("estado paper") || q.includes("bot status")) {
     const idea = computeTradeIdea();
     const m = botMetrics();
@@ -1323,7 +1414,7 @@ EDUCATIVO — no es asesoría financiera.`;
   } else if (q.includes("diario") || q.includes("journal") || q.includes("debería escribir") || q.includes("deberia escribir")) {
     const jd = computeJournalData();
     const prompts = ["¿Cómo dormí?","¿Qué me preocupa?","¿Qué quiero lograr hoy?","¿Qué aprendí?","¿Cómo estuvo mi energía?"];
-    reply = `Corda Journal — ${jd.count} entradas registradas. Mood frecuente: ${jd.topMood || "sin datos"}. ${jd.summary} Prompts sugeridos para hoy: ${prompts.slice(0,3).join(" / ")}. Ve al módulo Journal (◎) para escribir.`;
+    reply = `Cordelius Journal — ${jd.count} entradas registradas. Mood frecuente: ${jd.topMood || "sin datos"}. ${jd.summary} Prompts sugeridos para hoy: ${prompts.slice(0,3).join(" / ")}. Ve al módulo Journal (◎) para escribir.`;
   } else if (q.includes("resume mi diario") || q.includes("cómo me he sentido") || q.includes("como me he sentido") || q.includes("patrones ves")) {
     const jd = computeJournalData();
     if (jd.count === 0) {
@@ -1351,7 +1442,7 @@ EDUCATIVO — no es asesoría financiera.`;
     const nl = computeDailyNewsletter();
     reply = `Resumen del día — ${nl.date}. Portafolio: ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). Estado físico: modo ${h.operatingMode}${h.configured ? "" : " (sin WHOOP)"}. Diario: ${jd.count} entradas${jd.topMood ? ", mood " + jd.topMood : ""}. ${idea.hasIdea ? "Idea paper: " + idea.type + " " + idea.symbol + "." : "Sin idea paper activa."} NO es asesoría financiera.`;
   } else {
-    reply = `Corda activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
+    reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
   const ai = await askClaude(question, reply, pv, reg, botEq, botPnl);
   if (ai) reply = ai;
@@ -1403,10 +1494,16 @@ function brainHtml() {
     "left:2%;top:67%",  "left:19%;top:62%", "left:38%;top:70%", "left:56%;top:63%",
     "left:72%;top:70%", "left:86%;top:61%", "left:10%;top:84%", "left:46%;top:88%",
   ];
-  return `<div class="brain-card">
+  return `<details class="brain-card" style="cursor:pointer">
+    <summary style="list-style:none;display:flex;align-items:center;justify-content:space-between;padding:14px 20px;user-select:none">
+      <div>
+        <div class="brain-title" style="font-size:16px">Mapa vivo del sistema</div>
+        <div class="brain-sub">Vista visual de conexiones entre portafolio, riesgo, cripto, noticias y health.</div>
+      </div>
+      <span class="btn" style="font-size:12px;padding:5px 12px">Expandir ▾</span>
+    </summary>
     <div class="brain-left">
-      <div class="brain-title">Cerebro Alfredo AI</div>
-      <div class="brain-sub">Red neuronal viva: datos → análisis → señales → decisiones</div>
+      <div class="brain-sub" style="margin:8px 16px 4px">Red neuronal viva: datos → análisis → señales → decisiones</div>
       <div class="brain" style="min-height:380px">
         ${nodes.map((n, i) => `<span class="brain-node" style="${positions[i]};${n.color ? "color:"+n.color+";border-color:"+n.color+"44" : ""}">${esc(n.label)}<i class="pulse" style="animation-delay:${n.delay}s"></i></span>`).join("")}
         <svg viewBox="0 0 700 380" class="brain-lines" preserveAspectRatio="none">
@@ -1436,7 +1533,7 @@ function brainHtml() {
       <div class="feed-title">Pensamientos en vivo</div>
       ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando señales del mercado...</div>`}
     </div>
-  </div>`;
+  </details>`;
 }
 
 function renderPortfolioRows(assets) {
@@ -1468,12 +1565,16 @@ function renderPortfolioRows(assets) {
       <div class="asset-detail">
         <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
         <div class="detail-grid" style="margin-bottom:14px">
+          <div><span>Broker / origen</span><b>${esc(a.source)}</b></div>
           <div><span>Cantidad</span><b>${unitsLabel}</b></div>
           <div><span>Costo original</span><b>${money(a.costMXN)}</b></div>
           <div><span>Valor actual</span><b>${money(a.valueMXN)}</b></div>
           <div><span>Ganancia MXN</span><b class="${a.gainMXN >= 0 ? "green" : "red"}">${money(a.gainMXN)}</b></div>
+          <div><span>Ganancia %</span><b class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)}</b></div>
           <div><span>Promedio compra</span><b>${avgLabel}</b></div>
           <div><span>Precio actual</span><b>${curLabel}</b></div>
+          <div><span>Cambio del día</span><b class="muted">N/D — sin feed en tiempo real</b></div>
+          <div><span>Última actualización</span><b class="muted">${esc(a.quoteSource === "live" ? "Live feed" : "Local: " + nowMX())}</b></div>
         </div>
         <div class="ind-row">
           <div class="ind"><span>RSI</span><b class="${ind.rsi > 70 ? "red" : ind.rsi < 30 ? "green" : ""}">${ind.rsi}</b></div>
@@ -1489,13 +1590,26 @@ function renderPortfolioRows(assets) {
           <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Score ${act.score}/100</span></div>
           <ul>${act.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
         </div>
+        <div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:14px;padding:12px 16px;margin-bottom:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">¿Por qué vigilarlo?</div>
+          <div style="font-size:13px;color:#c8d8f0">
+            ${a.risk === "ALTO" ? `⚠ Riesgo alto — score ${a.score}/100. ` : ""}
+            ${a.gainPct < -15 ? `Caída de ${pct(a.gainPct)} desde costo. ` : a.gainPct > 50 ? `Ganancia de ${pct(a.gainPct)} — evaluar toma parcial. ` : ""}
+            ${a.type === "crypto" ? "Activo cripto: volatilidad elevada. " : ""}
+            ${a.signal.includes("BUY") ? "Señal educativa de entrada detectada. " : a.signal.includes("VIGILAR") ? "Señal de vigilancia activa. " : ""}
+            ${a.score >= 65 ? "Score sólido — mantener y monitorear." : a.score < 35 ? "Score bajo — no promediar sin revisar la tesis." : "Score neutro — monitoreo regular recomendado."}
+          </div>
+        </div>
         <div class="detail-grid">
           <div><span>Zona compra</span><b>${a.currency === "USD" ? money(z.buy, "USD") : money(z.buy)}</b></div>
           <div><span>Zona venta</span><b>${a.currency === "USD" ? money(z.sell, "USD") : money(z.sell)}</b></div>
           <div><span>Stop educativo</span><b>${a.currency === "USD" ? money(z.stop, "USD") : money(z.stop)}</b></div>
           <div><span>Fuente precio</span><b>${esc(a.quoteSource)}</b></div>
         </div>
-        <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Abrir TradingView de ${esc(a.symbol)}</a>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
+          <button onclick="setAlfredoQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+        </div>
       </div>
     </details>`;
   }).join("");
@@ -1600,7 +1714,7 @@ function renderIntelPanel() {
     + '<textarea name="intel" style="width:100%;min-height:150px;border-radius:18px;background:#07111f;color:#e5f2ff;border:1px solid rgba(120,160,210,.25);padding:14px;font-size:15px" placeholder="Pega aqui analisis de Grok, X, noticias, China, IA, cripto, cobre, politica, etc..."></textarea>'
     + '<div style="margin-top:12px"><button class="btn">Guardar analisis</button></div>'
     + '</form>'
-    + '<p class="muted">Modo manual: pega texto externo y Corda lo cruza contra tus activos. No opera dinero real.</p>'
+    + '<p class="muted">Modo manual: pega texto externo y Cordelius lo cruza contra tus activos. No opera dinero real.</p>'
     + '</div>'
     + '<div class="panel">' + filterBar + rows
     + (items.length > 20 ? '<div class="muted" style="text-align:center;padding:10px 0;font-size:13px">Mostrando 20 de ' + items.length + ' analisis &mdash; borra los mas antiguos para ver los recientes arriba.</div>' : '')
@@ -2194,21 +2308,148 @@ function computeOperatingMode(recovery) {
 }
 
 function computeHealthReadiness() {
+  const cycleRec = whoopCache.cycle && whoopCache.cycle.records && whoopCache.cycle.records[0]
+    ? whoopCache.cycle.records[0]
+    : null;
+
+  const recoveryRec = whoopCache.recovery && whoopCache.recovery.records && whoopCache.recovery.records[0]
+    ? whoopCache.recovery.records[0]
+    : null;
+
+  const sleepRec = whoopCache.sleep && whoopCache.sleep.records && whoopCache.sleep.records[0]
+    ? whoopCache.sleep.records[0]
+    : null;
+
+  const cycleScore = cycleRec && cycleRec.score ? cycleRec.score : {};
+  const recoveryScore = recoveryRec && recoveryRec.score ? recoveryRec.score : {};
+  const sleepScore = sleepRec && sleepRec.score ? sleepRec.score : {};
+
+  const recovery = recoveryScore.recovery_score != null ? Math.round(recoveryScore.recovery_score) : null;
+  const sleep = sleepScore.sleep_performance_percentage != null ? Math.round(sleepScore.sleep_performance_percentage) : null;
+  const strain = cycleScore.strain != null ? cycleScore.strain : null;
+  const hrv = recoveryScore.hrv_rmssd_milli != null ? recoveryScore.hrv_rmssd_milli : null;
+  const restingHeartRate = recoveryScore.resting_heart_rate != null ? Math.round(recoveryScore.resting_heart_rate) : null;
+  const averageHeartRate = cycleScore.average_heart_rate != null ? Math.round(cycleScore.average_heart_rate) : null;
+  const maxHeartRate = cycleScore.max_heart_rate != null ? Math.round(cycleScore.max_heart_rate) : null;
+
+  const connected = !!(whoopTokens && whoopTokens.access_token && (recovery != null || sleep != null || strain != null || hrv != null));
+
+  let operatingMode = "NORMAL";
+  let suggestion = "usa modo neutral";
+
+  if (connected) {
+    if (recovery != null && recovery < 40) {
+      operatingMode = "DEFENSIVO";
+      suggestion = "baja agresividad, evita decisiones impulsivas y prioriza recuperación";
+    } else if (recovery != null && recovery < 65) {
+      operatingMode = "NEUTRAL";
+      suggestion = "modo moderado — evita decisiones impulsivas";
+    } else if (recovery != null && recovery >= 80 && strain != null && strain < 10) {
+      operatingMode = "ÓPTIMO";
+      suggestion = "buen día para enfoque profundo y decisiones con calma";
+    } else {
+      operatingMode = "NORMAL";
+      suggestion = "operación normal con control de riesgo";
+    }
+  }
+
   return {
     ok: true,
     configured: WHOOP_CONFIGURED,
-    source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "whoop_pending",
-    recovery: null,
-    sleep: null,
-    strain: null,
-    hrv: null,
-    restingHeartRate: null,
-    operatingMode: computeOperatingMode(null),
-    message: WHOOP_CONFIGURED
-      ? "WHOOP API key detectada — implementación de datos en progreso."
-      : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
-    suggestion: "usa modo neutral",
-    educationalNote: "No es consejo médico. Sirve para contexto personal."
+    connected,
+    source: connected ? "whoop_live" : WHOOP_CONFIGURED ? "whoop_tokens_missing" : "not_configured",
+    recovery,
+    sleep,
+    strain,
+    hrv,
+    restingHeartRate,
+    averageHeartRate,
+    maxHeartRate,
+    operatingMode,
+    mode: operatingMode,
+    suggestion,
+    message: connected
+      ? `WHOOP conectado. Recovery: ${recovery ?? "—"}%. Sleep: ${sleep ?? "—"}%. Strain: ${strain != null ? strain.toFixed(1) : "—"}.`
+      : WHOOP_CONFIGURED
+        ? "WHOOP configurado — tokens pendientes o cache sin datos."
+        : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
+    educationalNote: "No es consejo médico ni financiero."
+  };
+}
+
+function computeAutoJournal() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const idea = computeTradeIdea();
+  const cyc = whoopCache.cycle;
+  const dateStr = new Date().toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+
+  const kilojoule = cyc && cyc.score && cyc.score.kilojoule != null ? cyc.score.kilojoule : null;
+  const scoreState = cyc && cyc.score && cyc.score.state ? cyc.score.state : null;
+
+  let moodEstimated = "neutral";
+  if (h.recovery !== null) {
+    moodEstimated = h.recovery >= 67 ? "positivo" : h.recovery >= 34 ? "neutral" : "low-strain";
+  } else if (h.strain !== null) {
+    moodEstimated = h.strain > 15 ? "caution" : "neutral";
+  }
+
+  let bodyState = "sin datos biométricos";
+  if (h.connected) {
+    if (h.recovery !== null) {
+      bodyState = h.recovery >= 67 ? "cuerpo óptimo — recovery alto"
+        : h.recovery >= 34 ? "cuerpo moderado — en recuperación"
+        : "cuerpo bajo — priorizar descanso";
+    } else if (h.strain !== null) {
+      bodyState = h.strain > 15 ? "cuerpo cargado — strain elevado"
+        : h.strain > 8 ? "cuerpo activo — strain moderado"
+        : "cuerpo descansado — strain bajo";
+    }
+  }
+
+  const tradingModeSuggestion = h.recovery !== null
+    ? (h.recovery >= 67 ? "NORMAL — condiciones óptimas para analizar" : h.recovery >= 34 ? "MODERADO — evitar posiciones nuevas grandes" : "DEFENSIVO — solo monitorear, no entrar")
+    : "NEUTRAL — sin datos biométricos, proceder con cautela";
+
+  const alfredoAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
+    (idea.hasIdea ? `Idea paper: ${idea.type} en ${idea.symbol}. ` : "") +
+    `Modo operativo: ${h.operatingMode}. ${h.suggestion}. NO es consejo médico ni financiero.`;
+
+  return {
+    ok: true,
+    source: h.connected ? "WHOOP + Cordelius" : "local_only",
+    date: dateStr,
+    moodEstimated,
+    bodyState,
+    operatingMode: h.operatingMode,
+    mode: h.operatingMode,
+    tradingModeSuggestion,
+    alfredoNote: alfredoAdvice,
+    alfredoAdvice,
+    // Top-level biometrics (used by renderJournalModule)
+    strain: h.strain,
+    averageHeartRate: h.averageHeartRate,
+    maxHeartRate: h.maxHeartRate,
+    recovery: h.recovery,
+    sleep: h.sleep,
+    hrv: h.hrv,
+    restingHeartRate: h.restingHeartRate,
+    portfolioSnapshot: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct },
+    whoop: {
+      connected: h.connected,
+      strain: h.strain,
+      averageHeartRate: h.averageHeartRate,
+      maxHeartRate: h.maxHeartRate,
+      kilojoule,
+      scoreState,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      mode: h.operatingMode,
+      alfredoAdvice
+    },
+    educationalNote: "Generado automáticamente. No es consejo médico ni financiero."
   };
 }
 
@@ -2313,7 +2554,7 @@ function renderMorningReport() {
 
 function renderAutopilotPanel() {
   const statusCards = [
-    { label: "SERVIDOR",     value: "ON",       sub: "Corda OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
+    { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
     { label: "CLOUDFLARE",   value: "MANUAL",   sub: "bash tunnel.sh",    bg: "rgba(255,211,92,.07)",   border: "rgba(255,211,92,.18)",   color: "#ffd35c" },
     { label: "PAPER MODE",   value: "ON",       sub: "Sin dinero real",   bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
     { label: "REAL TRADING", value: "OFF",      sub: "Desactivado",       bg: "rgba(255,77,109,.07)",   border: "rgba(255,77,109,.18)",   color: "#ff4d6d" },
@@ -2344,37 +2585,109 @@ function renderAutopilotPanel() {
   </div>`;
 }
 
+function renderWhoopNotConnected() {
+  const h = computeHealthReadiness();
+  if (h.connected) {
+    // WHOOP is live — show status card with real data
+    const recColor = h.recovery !== null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+    return `<div style="max-width:1280px;margin:0 auto 12px">
+      <div style="border:1px solid rgba(0,255,153,.2);background:rgba(0,255,153,.05);border-radius:20px;padding:16px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div style="font-size:28px">◉</div>
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:12px;font-weight:900;color:#00ff99;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px">WHOOP CONECTADO</div>
+          ${h.profile ? `<div style="font-size:13px;color:#9fb3c8">Usuario: ${esc(h.profile.first_name || "")} ${esc(h.profile.last_name || "")}</div>` : ""}
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${h.strain !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#eaf6ff">${h.strain.toFixed(1)}</div><div class="muted" style="font-size:10px">Strain</div></div>` : ""}
+          ${h.averageHeartRate !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#f472b6">${h.averageHeartRate}</div><div class="muted" style="font-size:10px">Avg HR</div></div>` : ""}
+          ${h.maxHeartRate !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#ff4d6d">${h.maxHeartRate}</div><div class="muted" style="font-size:10px">Max HR</div></div>` : ""}
+          ${h.recovery !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:${recColor}">${h.recovery}%</div><div class="muted" style="font-size:10px">Recovery</div></div>` : ""}
+          ${h.hrv !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#818cf8">${h.hrv.toFixed(1)}</div><div class="muted" style="font-size:10px">HRV ms</div></div>` : ""}
+        </div>
+        <div style="width:100%;font-size:12px;color:#9fb3c8;padding-top:6px;border-top:1px solid rgba(0,255,153,.1)">
+          Modo: <b style="color:#00ff99">${esc(h.operatingMode)}</b> · ${esc(h.suggestion)}
+        </div>
+      </div>
+    </div>`;
+  }
+  // Not connected — show setup instructions
+  const vars = { clientId: !!process.env.WHOOP_CLIENT_ID, clientSecret: !!process.env.WHOOP_CLIENT_SECRET, redirectUri: !!process.env.WHOOP_REDIRECT_URI };
+  const hasVars = vars.clientId && vars.clientSecret;
+  return `<div style="max-width:1280px;margin:0 auto 12px">
+    <div style="border:1px solid rgba(244,114,182,.25);background:rgba(244,114,182,.06);border-radius:20px;padding:18px 22px;display:flex;align-items:flex-start;gap:16px">
+      <div style="font-size:28px;margin-top:2px">◉</div>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:900;color:#f472b6;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">WHOOP no conectado</div>
+        ${hasVars
+          ? `<div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Env vars detectadas — necesitas completar el flujo OAuth para obtener tokens.</div><div style="font-size:12px;color:#9fb3c8">Visita <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">/whoop/auth</code> para iniciar la autorización.</div>`
+          : `<div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Sin datos de recuperación, sueño, HRV o strain.</div>
+             <div style="font-size:12px;color:#9fb3c8;margin-bottom:10px">Agrega en <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">.env</code>:</div>
+             <div style="display:flex;flex-wrap:wrap;gap:6px">
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_ID=YOUR_CLIENT_ID</code>
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_SECRET=YOUR_CLIENT_SECRET</code>
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_REDIRECT_URI=http://localhost:3000/whoop/callback</code>
+             </div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderHealthReadinessPanel() {
   const h = computeHealthReadiness();
+  const cyc = whoopCache.cycle;
+  const scoreState = cyc && cyc.score && cyc.score.state ? cyc.score.state : null;
+  const kilojoule = cyc && cyc.score && cyc.score.kilojoule != null ? cyc.score.kilojoule : null;
+
+  const recColor = h.recovery !== null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const slpColor = h.sleep !== null ? (h.sleep >= 70 ? "#00ff99" : h.sleep >= 50 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const strColor = h.strain !== null ? (h.strain > 15 ? "#ff4d6d" : h.strain > 8 ? "#ffd35c" : "#00ff99") : "#9fb3c8";
+  const hrvColor = h.hrv !== null ? (h.hrv >= 50 ? "#00ff99" : h.hrv >= 30 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const stateColor = scoreState === "SCORED" ? "#00ff99" : scoreState ? "#ffd35c" : "#9fb3c8";
+
+  // id attr for each metric so JS can update live
   const metrics = [
-    { id: "health-recovery",       label: "Recovery",       value: h.recovery !== null ? h.recovery + "%" : "—", color: "#9fb3c8" },
-    { id: "health-sleep",          label: "Sleep",          value: h.sleep !== null ? h.sleep + "%" : "—", color: "#9fb3c8" },
-    { id: "health-strain",         label: "Strain",         value: h.strain !== null ? String(h.strain) : "—", color: "#9fb3c8" },
-    { id: "health-avg-hr",         label: "Avg HR",         value: "—", color: "#9fb3c8" },
-    { id: "health-max-hr",         label: "Max HR",         value: "—", color: "#9fb3c8" },
-    { id: "health-hrv",            label: "HRV",            value: h.hrv !== null ? h.hrv + " ms" : "—", color: "#9fb3c8" },
-    { id: "health-resting-hr",     label: "Resting HR",     value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
-    { id: "health-operating-mode", label: "Modo Operativo", value: h.operatingMode || "NORMAL", color: "#ffd35c" },
+    { id: "hr-recovery", label: "Recovery",   value: h.recovery !== null ? h.recovery + "%" : "—",                       color: recColor },
+    { id: "hr-sleep",    label: "Sleep",       value: h.sleep !== null ? h.sleep + "%" : "—",                             color: slpColor },
+    { id: "hr-strain",   label: "Strain",      value: h.strain !== null ? h.strain.toFixed(1) : "—",                      color: strColor },
+    { id: "hr-avghr",    label: "Avg HR",      value: h.averageHeartRate !== null ? h.averageHeartRate + " bpm" : "—",    color: "#f472b6" },
+    { id: "hr-maxhr",    label: "Max HR",      value: h.maxHeartRate !== null ? h.maxHeartRate + " bpm" : "—",            color: "#ff4d6d" },
+    { id: "hr-hrv",      label: "HRV",         value: h.hrv !== null ? h.hrv.toFixed(1) + " ms" : "—",                   color: hrvColor },
+    { id: "hr-rhr",      label: "Resting HR",  value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—",   color: "#9fb3c8" },
+    { id: "hr-kj",       label: "Kilojoule",   value: kilojoule !== null ? kilojoule.toFixed(0) + " kJ" : "—",           color: "#9fb3c8" },
+    { id: "hr-state",    label: "Estado",      value: scoreState || "—",                                                   color: stateColor },
+    { id: "hr-mode",     label: "Modo",        value: h.operatingMode,                                                     color: "#ffd35c" },
   ];
-  return `<div id="health-readiness-panel" style="max-width:1280px;margin:0 auto 12px">
+
+  const badgeBg    = h.connected ? "rgba(0,255,153,.15)" : h.configured ? "rgba(255,211,92,.12)" : "rgba(120,160,210,.08)";
+  const badgeColor = h.connected ? "#00ff99" : h.configured ? "#ffd35c" : "#9fb3c8";
+  const badgeLabel = h.connected ? "● WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "SIN DATOS";
+
+  const pv = portfolioValue();
+  const idea = computeTradeIdea();
+  const alfredoAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
+    (idea.hasIdea ? `Idea paper: ${idea.type} en ${idea.symbol}. ` : "") +
+    `Modo: ${h.operatingMode}. ${h.suggestion}.`;
+
+  return `<div style="max-width:1280px;margin:0 auto 12px">
     <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Corda Health Spotlight</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Readiness personal · no es consejo médico</div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health Readiness</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · no consejo médico</div>
         </div>
-        <span id="health-whoop-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
+        <span id="hr-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${badgeBg};color:${badgeColor}">${badgeLabel}</span>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         ${metrics.map(m =>
-          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:90px">
+          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:80px">
             <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
-            <div id="${esc(m.id)}" style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
+            <div id="${m.id}" style="font-size:${m.id === "hr-state" ? "13px" : "16px"};font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
           </div>`
         ).join("")}
       </div>
-      <div id="health-advice" style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
-        ${esc(h.message || h.suggestion || "Esperando datos de salud.")}
+      <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
+        <b id="hr-mode-footer" style="color:#ffd35c">${esc(h.operatingMode)}</b> · <span id="hr-suggestion">${esc(h.suggestion)}</span>
+        <div style="margin-top:5px;font-size:12px;color:#9fb3c8"><span id="hr-advice">${esc(alfredoAdvice)}</span> <span style="opacity:.6">· No es consejo financiero.</span></div>
       </div>
       <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
     </div>
@@ -2382,35 +2695,174 @@ function renderHealthReadinessPanel() {
 }
 
 
-function renderHealthTrendPlaceholders() {
-  const trends = [
-    { label: "Recovery trend", color: "#f472b6", note: "histórico local pendiente" },
-    { label: "Sleep trend", color: "#818cf8", note: "histórico local pendiente" },
-    { label: "Strain trend", color: "#ffd35c", note: "histórico local pendiente" },
-    { label: "HRV trend", color: "#00ff99", note: "histórico local pendiente" },
-    { label: "Resting HR trend", color: "#3b9dff", note: "histórico local pendiente" },
-  ];
-  return `<div style="max-width:1280px;margin:0 auto 12px">
-    <div class="panel" style="border:1px solid rgba(244,114,182,.12);background:rgba(255,255,255,.025);padding:15px 18px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health graphs</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Micrográficas listas para snapshots locales; no bloquean WHOOP live.</div>
+function renderHealthOSPanel() {
+  const h = computeHealthReadiness();
+
+  function clamp(n, min, max) {
+    n = Number(n);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function fmt(v, suffix) {
+    if (v === null || v === undefined || v === "") return "—";
+    if (typeof v === "number") {
+      const out = Math.abs(v) % 1 ? v.toFixed(1) : String(v);
+      return esc(out + (suffix || ""));
+    }
+    return esc(String(v) + (suffix || ""));
+  }
+
+  const recovery = clamp(h.recovery, 0, 100);
+  const sleep = clamp(h.sleep, 0, 100);
+  const strainRaw = Number(h.strain || 0);
+  const strainPct = clamp((strainRaw / 21) * 100, 0, 100);
+  const hrvScore = clamp((Number(h.hrv || 0) / 160) * 100, 0, 100);
+  const rhrScore = h.restingHeartRate ? clamp(100 - Math.max(0, Number(h.restingHeartRate) - 38) * 2, 0, 100) : 70;
+
+  const healthScore = Math.round(
+    recovery * 0.34 +
+    sleep * 0.24 +
+    hrvScore * 0.18 +
+    rhrScore * 0.12 +
+    (100 - strainPct) * 0.12
+  );
+
+  const status =
+    healthScore >= 85 ? "EXCELENTE" :
+    healthScore >= 70 ? "BUENO" :
+    healthScore >= 55 ? "MEDIO" :
+    healthScore >= 40 ? "BAJO" : "CRÍTICO";
+
+  const statusColor =
+    healthScore >= 70 ? "#00ff99" :
+    healthScore >= 55 ? "#ffd35c" :
+    "#ff4d6d";
+
+  const badgeLabel = h.connected ? "WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "WHOOP PENDIENTE";
+  const mode = h.operatingMode || "NORMAL";
+
+  function donut(label, value, raw, color) {
+    const v = clamp(value, 0, 100);
+    return `<div class="health-os-card health-os-donut-card">
+      <div class="health-os-donut" style="background:conic-gradient(${color} ${v}%, rgba(120,160,210,.13) 0)">
+        <div class="health-os-donut-inner">
+          <div class="health-os-donut-value">${esc(raw)}</div>
+          <div class="health-os-donut-label">${esc(label)}</div>
         </div>
-        <span style="font-size:11px;color:#9fb3c8;border:1px solid rgba(120,160,210,.14);border-radius:999px;padding:4px 10px">histórico: próximo</span>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-        ${trends.map(t => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;background:rgba(0,0,0,.18);padding:11px 12px">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${t.color}">${esc(t.label)}</div>
-          <div style="height:34px;margin:10px 0 6px;border-radius:10px;background:linear-gradient(90deg,${t.color}14,rgba(255,255,255,.04));position:relative;overflow:hidden">
-            <span style="position:absolute;left:8%;right:10%;top:16px;height:2px;background:${t.color};box-shadow:0 0 12px ${t.color};opacity:.7"></span>
+    </div>`;
+  }
+
+  const aiText = `Hoy tu sistema está en modo ${mode}. Recovery ${h.recovery ?? "—"}%, Sleep ${h.sleep ?? "—"}%, HRV ${h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—"} y Strain ${h.strain != null ? Number(h.strain).toFixed(1) : "—"}. Esto significa que tu cuerpo debe guiar el nivel de agresividad del día. Si la recuperación baja o el strain sube, conviene priorizar decisiones más lentas, menos impulsivas y con menor exposición. Para trading: evita sobreoperar, revenge trading y entradas grandes si estás cansado. Para estudio: enfócate en bloques profundos si la energía mental está alta; si no, usa tareas mecánicas. Para social: mantén planes que no drenen demasiado si el sistema nervioso está cargado. Prioridad: dormir bien, hidratarte, comer completo y registrar hábitos como sauna, cannabis, estrés o entrenamiento para detectar correlaciones.`;
+
+  return `<section id="health-os-shell" class="health-os-shell">
+    <style>
+      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.20),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
+      .health-os-hero{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
+      .health-os-title{font-size:44px;font-weight:950;letter-spacing:-.04em;background:linear-gradient(90deg,#f9a8d4,#3b9dff,#00ff99);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:6px 0}
+      .health-os-kicker{font-size:11px;font-weight:950;letter-spacing:.18em;text-transform:uppercase;color:#f472b6}
+      .health-os-sub{color:#9fb3c8;font-size:13px;line-height:1.6}
+      .health-os-badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;background:rgba(0,255,153,.12);border:1px solid rgba(0,255,153,.24);color:#00ff99;font-size:12px;font-weight:900}
+      .health-os-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
+      .health-os-card{border:1px solid rgba(120,160,210,.14);background:rgba(255,255,255,.045);border-radius:22px;padding:16px;box-shadow:inset 0 1px rgba(255,255,255,.04)}
+      .health-os-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px}
+      .health-os-value{font-size:30px;font-weight:950;color:#eaf6ff;line-height:1}
+      .health-os-small{font-size:12px;color:#9fb3c8;margin-top:7px;line-height:1.5}
+      .health-os-donut-row{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:14px;margin-bottom:14px}
+      .health-os-donut-card{display:flex;align-items:center;justify-content:center;min-height:230px}
+      .health-os-donut{width:178px;height:178px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 45px rgba(0,0,0,.35)}
+      .health-os-donut-inner{width:126px;height:126px;border-radius:50%;background:rgba(4,10,22,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.08)}
+      .health-os-donut-value{font-size:28px;font-weight:950;color:#eaf6ff}
+      .health-os-donut-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-top:4px}
+      .health-os-wide{grid-column:1/-1}
+      .health-os-ai{font-size:14px;color:#dbeafe;line-height:1.75}
+      .health-os-chip{display:inline-flex;border-radius:999px;padding:6px 11px;margin:4px;background:rgba(244,114,182,.08);border:1px solid rgba(244,114,182,.18);color:#f9a8d4;font-size:12px;font-weight:800}
+      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:24px}}
+    </style>
+
+    <div class="health-os-hero">
+      <div class="health-os-card">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <div class="health-os-kicker">Cordelius Health</div>
+            <div class="health-os-title">Biological Operating System</div>
+            <div class="health-os-sub">WHOOP-first · Health no depende del Journal · sistema educativo para energía, enfoque y riesgo de sobreoperar.</div>
           </div>
-          <div class="muted" style="font-size:11px">${esc(t.note)}</div>
-        </div>`).join("")}
+          <span id="health-os-whoop-badge" class="health-os-badge">● ${esc(badgeLabel)}</span>
+        </div>
       </div>
-      <div class="muted" style="font-size:11px;margin-top:10px">No es consejo médico. Usa esto solo como referencia personal.</div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Health Score</div>
+        <div id="health-os-score" class="health-os-value" style="color:${statusColor}">${healthScore}</div>
+        <div id="health-os-status" class="health-os-small" style="font-weight:900;color:${statusColor}">${status}</div>
+        <div class="health-os-small">Modo operativo: <b id="health-os-mode" style="color:#ffd35c">${esc(mode)}</b></div>
+      </div>
     </div>
-  </div>`;
+
+    <div class="health-os-grid">
+      <div class="health-os-card"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">${fmt(h.recovery, "%")}</div><div class="health-os-small">Capacidad de carga del día</div></div>
+      <div class="health-os-card"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">${fmt(h.sleep, "%")}</div><div class="health-os-small">Base de recuperación mental</div></div>
+      <div class="health-os-card"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">${fmt(h.hrv, " ms")}</div><div class="health-os-small">Sistema nervioso</div></div>
+      <div class="health-os-card"><div class="health-os-label">Resting HR</div><div id="health-os-rhr" class="health-os-value">${fmt(h.restingHeartRate, " bpm")}</div><div class="health-os-small">Carga fisiológica</div></div>
+      <div class="health-os-card"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">${fmt(h.strain, "")}</div><div class="health-os-small">Carga acumulada</div></div>
+      <div class="health-os-card"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">${esc(status)}</div><div class="health-os-small">Lectura Cordelius</div></div>
+    </div>
+
+    <div class="health-os-donut-row">
+      ${donut("Recovery", recovery, h.recovery != null ? h.recovery + "%" : "—", "#00ff99")}
+      ${donut("Sleep", sleep, h.sleep != null ? h.sleep + "%" : "—", "#3b9dff")}
+      ${donut("Strain", strainPct, h.strain != null ? Number(h.strain).toFixed(1) : "—", "#f472b6")}
+    </div>
+
+    <div class="health-os-grid">
+      <div class="health-os-card">
+        <div class="health-os-label">Energy Engine</div>
+        <div class="health-os-small">Physical Energy: <b id="health-os-energy-physical">${Math.round((recovery + sleep) / 2)}</b>/100</div>
+        <div class="health-os-small">Mental Energy: <b id="health-os-energy-mental">${Math.round((sleep + hrvScore) / 2)}</b>/100</div>
+        <div class="health-os-small">Focus Capacity: <b id="health-os-energy-focus">${Math.round((sleep + recovery + hrvScore) / 3)}</b>/100</div>
+        <div class="health-os-small">Deep Work: <b id="health-os-energy-deepwork">${Math.round((sleep + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
+        <div class="health-os-small">Trading Capacity: <b id="health-os-energy-trading">${Math.round((recovery + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Radar Health</div>
+        <div id="health-os-radar" class="health-os-small">
+          Recovery ${Math.round(recovery)} · Sleep ${Math.round(sleep)} · HRV ${Math.round(hrvScore)} · Nervous System ${Math.round(hrvScore)} · Energy ${Math.round((recovery + sleep)/2)} · Focus ${Math.round((sleep + hrvScore)/2)}
+        </div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Behavior Tracker</div>
+        <div id="health-os-behaviors">
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('sauna')">Sauna</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('cannabis')">Cannabis</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('training')">Training</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('stress')">High Stress</button>
+        </div>
+        <div class="health-os-small">Opcional. Sin formularios grandes.</div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Correlation Engine</div>
+        <div id="health-os-correlations" class="health-os-small">Recolectando datos. Se activará con más snapshots diarios.</div>
+      </div>
+
+      <div class="health-os-card health-os-wide">
+        <div class="health-os-label">Alfredo Health AI</div>
+        <div id="health-os-ai" class="health-os-ai">${esc(aiText)}</div>
+      </div>
+
+      <div class="health-os-card health-os-wide">
+        <div class="health-os-label">Trading Integration</div>
+        <div id="health-os-trading-risk" class="health-os-small">
+          Recovery &lt; 50 → modo defensivo · Recovery &gt; 80 → modo normal · Strain alto → bajar agresividad · Overtrading alto → no operar impulsivo.
+          <br>Educativo. No es asesoría médica ni financiera.
+        </div>
+      </div>
+    </div>
+  </section>`;
 }
 
 function renderPortfolioSnapshot(pv, reg) {
@@ -2453,85 +2905,63 @@ function renderExecutiveHub(pv, reg) {
   </div>`;
 }
 
-function alfredoDailyContext(h, pv, reg) {
-  const mode = h.operatingMode || "NORMAL";
-  const recovery = h.recovery;
-  const sleep = h.sleep;
-  const strain = h.strain;
-  const bbva = (pv.assets || []).find(a => a.symbol === "BBVA");
-  let oneLiner = "Corda listo: revisa salud, portafolio y contexto antes de decidir.";
-  let question = "¿Quieres que Alfredo conecte salud, BBVA y noticias antes de revisar el día?";
-  if (strain !== null && strain >= 10) {
-    oneLiner = "Veo strain alto: modo defensivo y decisiones más simples.";
-    question = "Veo strain alto; ¿quieres que hoy Alfredo limite el paper trading a observación?";
-  } else if (recovery !== null && recovery >= 75 && sleep !== null && sleep >= 80) {
-    oneLiner = "Buen estado físico: analiza con calma, sin forzar acciones.";
-    question = "Buen recovery y sleep; ¿quieres revisar ideas educativas sin ejecutar nada?";
-  } else if (bbva) {
-    oneLiner = "BBVA sigue como ancla del panel; conviene revisar score y contexto.";
-    question = "BBVA está en tu radar; ¿quieres revisar noticias antes de decidir?";
-  } else if (reg && reg.label) {
-    question = `Mercado en ${reg.label}; ¿quieres ver el resumen de riesgo antes de entrar a trading?`;
-  }
-  const nextActions = [
-    { mod: "trading", label: "Revisar Corda Trading" },
-    { mod: "journal", label: "Registrar nota rápida" },
-    { mod: "health", label: "Ver Corda Health" }
-  ];
-  return { mode, oneLiner, question, nextActions };
-}
-
 function renderHomePortal(pv, reg) {
   const h = computeHealthReadiness();
   const jd = computeJournalData();
-  const ctx = alfredoDailyContext(h, pv, reg);
-  const bbva = (pv.assets || []).find(a => a.symbol === "BBVA");
+  const idea = computeTradeIdea();
+  const nl = computeDailyNewsletter();
   const modules = [
-    { id: "trading", label: "Corda Trading", emoji: "◈", color: "#3b9dff", sub: `${money(pv.totalValueMXN)} · ${pct(pv.totalGainPct)}`, desc: "Portafolio · BBVA · riesgo · paper" },
-    { id: "health", label: "Corda Health", emoji: "◉", color: "#f472b6", sub: `${h.operatingMode || "NORMAL"} · WHOOP ${h.configured ? "OK" : "—"}`, desc: "Recovery · Sleep · Strain · HRV" },
-    { id: "journal", label: "Corda Journal", emoji: "◎", color: "#818cf8", sub: `${jd.count} entradas`, desc: "Diario · memoria · correlaciones" },
-    { id: "intelligence", label: "Corda Intelligence", emoji: "◆", color: "#00ff99", sub: `${news.length} noticias · ${intelItems.length} intel`, desc: "Noticias · Quiver · contexto" },
-    { id: "alfredo", label: "Alfredo", emoji: "AI", color: "#ffd35c", sub: "Jarvis personal", desc: "Preguntas · acciones · memoria" }
+    { id: "trading",      label: "Cordelius Trading",       emoji: "◈", color: "#3b9dff", sub: `${money(pv.totalValueMXN)} · ${pct(pv.totalGainPct)}`, badge: pv.totalGainPct >= 0 ? "↑" : "↓", badgeColor: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d", desc: "Portafolio · Paper Trade · Quiver · Market Radar" },
+    { id: "health",       label: "Cordelius Health",        emoji: "◉", color: "#f472b6", sub: `WHOOP ${h.configured ? "ON" : "pendiente"} · ${h.operatingMode}`, badge: h.configured ? "ON" : "—", badgeColor: h.configured ? "#00ff99" : "#9fb3c8", desc: "Recovery · Sleep · Strain · HRV · Readiness" },
+    { id: "journal",      label: "Cordelius Journal",       emoji: "◎", color: "#818cf8", sub: `${jd.count} entradas · ${jd.topMood ? "mood: " + jd.topMood : "sin entradas"}`, badge: jd.count > 0 ? String(jd.count) : "+", badgeColor: "#818cf8", desc: "Diario personal · Mood · Ideas · Reflexiones" },
+    { id: "intelligence", label: "Cordelius Intelligence",  emoji: "◆", color: "#00ff99", sub: `${news.length} noticias · Intel: ${intelItems.length}`, badge: news.length > 0 ? String(news.length) : "—", badgeColor: "#3b9dff", desc: "Noticias · Quiver · Congreso · Sectores · Radar" },
+    { id: "autopilot",    label: "Cordelius Autopilot",     emoji: "◇", color: "#ffd35c", sub: `Servidor ON · Paper Mode · ${quiverData.configured ? "Quiver ON" : "Quiver —"}`, badge: "ON", badgeColor: "#00ff99", desc: "Scripts · Cloud · Estado sistema · Automatización" },
   ];
-  const cards = [
-    { label: "Portfolio", value: money(pv.totalValueMXN), sub: pct(pv.totalGainPct), color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d" },
-    { label: "Daily P&L", value: money(pv.totalGainMXN), sub: "global", color: pv.totalGainMXN >= 0 ? "#00ff99" : "#ff4d6d" },
-    { label: "BBVA", value: bbva ? `${bbva.score}/100` : "—", sub: bbva ? pct(bbva.gainPct) : "sin dato", color: "#3b9dff" },
-    { label: "Recovery", value: h.recovery !== null ? h.recovery + "%" : "—", sub: "WHOOP", color: "#f472b6", id: "home-recovery" },
-    { label: "Sleep", value: h.sleep !== null ? h.sleep + "%" : "—", sub: "WHOOP", color: "#f472b6", id: "home-sleep" },
-    { label: "Strain", value: h.strain !== null ? String(h.strain) : "—", sub: "today", color: "#ffd35c", id: "home-strain" },
-    { label: "HRV", value: h.hrv !== null ? h.hrv + " ms" : "—", sub: "recovery", color: "#00ff99", id: "home-hrv" },
-    { label: "Journal", value: jd.count ? String(jd.count) : "—", sub: jd.topMood || "sin mood", color: "#818cf8" }
-  ];
+  const greetHour = new Date().getHours();
+  const greet = greetHour < 12 ? "Buenos días" : greetHour < 19 ? "Buenas tardes" : "Buenas noches";
   return `<div style="max-width:1280px;margin:0 auto">
-    <section class="panel" style="padding:22px;margin-bottom:16px;border:1px solid rgba(59,157,255,.18);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,255,153,.025),rgba(0,0,0,.12))">
-      <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
-        <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Today Snapshot</div>
-          <div id="home-operating-mode" style="font-size:34px;font-weight:950;line-height:1;color:#eaf6ff">${esc(ctx.mode)}</div>
-          <div id="home-alfredo-line" style="color:#9fb3c8;font-size:14px;margin-top:8px;max-width:720px">${esc(ctx.oneLiner)}</div>
-        </div>
-        <div style="text-align:right;color:#9fb3c8;font-size:12px">
-          <div>${esc(nowMX())}</div>
-          <div style="margin-top:6px"><span class="status-dot"></span>Server OK · WHOOP ${h.configured ? "OK" : "—"} · Market Data ${FINNHUB_API_KEY ? "OK" : "LOCAL"} · Journal OK</div>
-        </div>
-      </div>
-    </section>
-
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:16px">
-      ${cards.map(c => `<div class="card" style="padding:14px 15px;border-color:${c.color}24;background:rgba(255,255,255,.035)"><div class="label">${esc(c.label)}</div><div ${c.id ? `id="${esc(c.id)}"` : ""} class="big" style="font-size:21px;color:${c.color}">${esc(c.value)}</div><div class="muted" style="font-size:11px">${esc(c.sub)}</div></div>`).join("")}
+    <div style="padding:28px 0 18px">
+      <div style="font-size:13px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">CORDELIUS PERSONAL OS</div>
+      <div style="font-size:32px;font-weight:900;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${greet}, Pedro</div>
+      <div style="color:#9fb3c8;font-size:14px;margin-top:4px">${esc(nl.date)} · ${esc(nowMX())}</div>
     </div>
 
-    <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,.8fr);gap:12px;margin-bottom:16px">
-      <div class="panel" style="padding:16px 18px;border-color:rgba(255,211,92,.16);background:rgba(255,211,92,.035)">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Alfredo asks</div>
-        <div id="home-alfredo-question" style="font-size:17px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          ${ctx.nextActions.map(a => `<button class="btn" onclick="showMod('${a.mod}')" style="font-size:12px;padding:7px 12px">${esc(a.label)}</button>`).join("")}
-        </div>
+    <!-- 5 Module cards -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:20px">
+      ${modules.map(m => `<div onclick="showMod('${m.id}')" style="cursor:pointer;background:var(--panel);border:1px solid ${m.color}28;border-radius:22px;padding:20px 22px;transition:.2s;position:relative;overflow:hidden" onmouseover="this.style.borderColor='${m.color}70'" onmouseout="this.style.borderColor='${m.color}28'">
+        <div style="position:absolute;top:0;right:0;width:80px;height:80px;background:radial-gradient(circle,${m.color}12,transparent 70%);border-radius:50%"></div>
+        <div style="font-size:24px;margin-bottom:10px;color:${m.color}">${m.emoji}</div>
+        <div style="font-size:13px;font-weight:900;color:${m.color};letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">${esc(m.label)}</div>
+        <div style="font-size:22px;font-weight:900;color:#eaf6ff;margin-bottom:6px;line-height:1.1">${esc(m.sub)}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-bottom:12px">${esc(m.desc)}</div>
+        <div style="display:inline-flex;align-items:center;gap:6px;border:1px solid ${m.color}40;border-radius:99px;padding:5px 12px;font-size:12px;font-weight:900;color:${m.badgeColor}">${esc(m.badge)} Entrar →</div>
+      </div>`).join("")}
+    </div>
+
+    <!-- Mini daily brief -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04);padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Daily Brief</div>
+        <div style="font-size:15px;font-weight:700;color:#dbeafe;margin-bottom:10px">${esc(nl.greeting)}</div>
+        <ul style="margin:0;padding-left:16px;list-style:disc">
+          ${nl.lines.slice(0, 3).map(l => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(l)}</li>`).join("")}
+        </ul>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-        ${modules.map(m => `<div onclick="showMod('${m.id}')" class="panel" style="cursor:pointer;padding:15px;border-color:${m.color}28;background:rgba(255,255,255,.03)"><div style="color:${m.color};font-size:18px;font-weight:950">${esc(m.emoji)}</div><div style="font-size:13px;font-weight:900;margin-top:7px">${esc(m.label)}</div><div class="muted" style="font-size:11px;margin-top:4px">${esc(m.sub)}</div></div>`).join("")}
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="panel" style="padding:12px 16px;flex:1">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">Trade Idea</div>
+          ${idea.hasIdea
+            ? `<div style="font-size:15px;font-weight:900;color:#ffd35c">${esc(idea.type)}</div><div style="font-size:13px;color:#9fb3c8">${esc(idea.symbol)} · ${esc(idea.reason.slice(0,50))}</div>`
+            : `<div style="font-size:14px;color:#9fb3c8">Sin señal activa</div>`}
+        </div>
+        <div class="panel" style="padding:12px 16px;flex:1">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">Estado</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <span style="font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border-radius:99px;padding:3px 9px">Servidor ON</span>
+            <span style="font-size:11px;font-weight:900;background:rgba(255,77,109,.1);color:#ff4d6d;border-radius:99px;padding:3px 9px">Real Trading OFF</span>
+            <span style="font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border-radius:99px;padding:3px 9px">Paper ON</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>`;
@@ -2539,7 +2969,9 @@ function renderHomePortal(pv, reg) {
 
 function renderJournalModule() {
   const jd = computeJournalData();
-  const moodColors = { positivo:"#00ff99", negativo:"#ff4d6d", neutral:"#ffd35c", reflexivo:"#818cf8", ansioso:"#f59e0b", motivado:"#3b9dff" };
+  const aj = computeAutoJournal();
+  const h = computeHealthReadiness();
+  const moodColors = { positivo:"#00ff99", negativo:"#ff4d6d", neutral:"#ffd35c", reflexivo:"#818cf8", ansioso:"#f59e0b", motivado:"#3b9dff", "low-strain":"#f472b6", caution:"#ff4d6d" };
   const moodOpts = ["positivo","neutral","negativo","reflexivo","motivado","ansioso"];
   const entriesHtml = jd.recent.length ? jd.recent.map(e => {
     const mc = moodColors[e.mood] || "#9fb3c8";
@@ -2552,122 +2984,169 @@ function renderJournalModule() {
       <div style="color:#dbeafe;font-size:14px;line-height:1.6">${esc((e.text||"").slice(0,300))}${(e.text||"").length > 300 ? "…" : ""}</div>
       ${e.tags && e.tags.length ? `<div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">${e.tags.map(t=>`<span style="font-size:11px;background:rgba(129,140,248,.12);color:#818cf8;border-radius:99px;padding:2px 9px">${esc(t)}</span>`).join("")}</div>` : ""}
     </div>`;
-  }).join("") : `<div class="muted" style="padding:20px 0;text-align:center">Sin entradas todavía. Escribe tu primera nota.</div>`;
+  }).join("") : `<div class="muted" style="padding:20px 0;text-align:center">Sin notas manuales todavía — el journal automático está activo arriba.</div>`;
+
+  const autoColor = moodColors[aj.moodEstimated] || "#ffd35c";
 
   return `<div style="max-width:1280px;margin:0 auto">
     <div style="padding:20px 0 14px">
-      <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#818cf8;margin-bottom:4px">Corda Journal</div>
-      <div style="font-size:26px;font-weight:900;color:#eaf6ff">Diario personal</div>
-      <div class="muted" style="font-size:13px;margin-top:3px">Privado · ${jd.count} entradas · no enviado a terceros</div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#818cf8;margin-bottom:4px">Cordelius Journal</div>
+      <div style="font-size:26px;font-weight:900;color:#eaf6ff">Journal automático</div>
+      <div class="muted" style="font-size:13px;margin-top:3px">Basado en WHOOP + snapshots locales · privado · no enviado a terceros</div>
     </div>
 
-    <div id="journal-auto-preview" class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.035);padding:16px 18px;margin-bottom:16px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-        <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8">Auto Journal · /api/journal/auto</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Bitácora diaria generada con WHOOP, mercado y Alfredo.</div>
+    <!-- AUTO JOURNAL — protagonista -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:18px">
+      <div class="panel" style="padding:16px 20px;border:1px solid ${autoColor}30;background:${autoColor}08">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:${autoColor};margin-bottom:6px">Mood estimado</div>
+        <div style="font-size:26px;font-weight:900;color:${autoColor}">${esc(aj.moodEstimated)}</div>
+        <div class="muted" style="font-size:11px">${esc(aj.date)}</div>
+      </div>
+      <div class="panel" style="padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6;margin-bottom:6px">WHOOP · Strain</div>
+        <div style="font-size:26px;font-weight:900;color:#eaf6ff">${aj.strain !== null ? aj.strain.toFixed(1) : "—"}</div>
+        <div class="muted" style="font-size:11px">Avg HR: ${aj.averageHeartRate !== null ? aj.averageHeartRate + " bpm" : "—"} · Max: ${aj.maxHeartRate !== null ? aj.maxHeartRate + " bpm" : "—"}</div>
+      </div>
+      <div class="panel" style="padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Recovery</div>
+        <div style="font-size:26px;font-weight:900;color:${aj.recovery !== null ? (aj.recovery >= 67 ? "#00ff99" : aj.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8"}">${aj.recovery !== null ? aj.recovery + "%" : "—"}</div>
+        <div class="muted" style="font-size:11px">HRV: ${aj.hrv !== null ? aj.hrv.toFixed(1) + " ms" : "—"} · RHR: ${aj.restingHeartRate !== null ? aj.restingHeartRate + " bpm" : "—"}</div>
+      </div>
+      <div class="panel" style="padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Modo trading</div>
+        <div style="font-size:14px;font-weight:900;color:#ffd35c;line-height:1.3">${esc(aj.tradingModeSuggestion.split("—")[0])}</div>
+        <div class="muted" style="font-size:11px">${esc((aj.tradingModeSuggestion.split("—")[1] || "").trim())}</div>
+      </div>
+    </div>
+
+    <div class="panel" style="padding:14px 18px;margin-bottom:18px;border:1px solid rgba(129,140,248,.15);background:rgba(129,140,248,.04)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#818cf8;margin-bottom:6px">Nota Alfredo</div>
+      <div style="font-size:13px;color:#c8d8f0;line-height:1.6">${esc(aj.alfredoNote)}</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${["resumen de mi día","cómo me he sentido","resume mi diario"].map(q =>
+          `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+        ).join("")}
+      </div>
+    </div>
+
+    <!-- NOTA MANUAL OPCIONAL -->
+    <details style="margin-bottom:18px">
+      <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 18px;background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.15);border-radius:16px;user-select:none">
+        <span style="font-size:13px;font-weight:700;color:#818cf8">◎ Nota manual opcional</span>
+        <span class="muted" style="font-size:12px">${jd.count} entradas guardadas ▾</span>
+      </summary>
+      <div style="padding:16px 0">
+        <div class="panel" style="padding:18px 20px;border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04)">
+          <form method="POST" action="/api/journal">
+            <textarea name="text" rows="4" placeholder="¿Algo extra que quieras anotar hoy?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
+            <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+              <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+                ${moodOpts.map(m => `<option value="${m}">${m}</option>`).join("")}
+              </select>
+              <select name="energy" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+                <option value="">Energía</option>
+                ${[1,2,3,4,5].map(n => `<option value="${n}">${n}/5</option>`).join("")}
+              </select>
+              <input name="tags" placeholder="tags..." style="flex:1;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+            </div>
+            <button type="submit" class="btn" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.3);color:#818cf8;font-size:14px;padding:10px 20px">Guardar</button>
+          </form>
         </div>
-        <span id="journal-auto-source" style="font-size:11px;color:#9fb3c8;border:1px solid rgba(129,140,248,.2);border-radius:999px;padding:4px 10px">cargando</span>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-bottom:12px">
-        <div class="card" style="padding:12px"><div class="label">Mood</div><div id="journal-auto-mood" class="big" style="font-size:20px;color:#818cf8">—</div></div>
-        <div class="card" style="padding:12px"><div class="label">Body state</div><div id="journal-auto-body" class="big" style="font-size:20px;color:#f472b6">—</div></div>
-        <div class="card" style="padding:12px"><div class="label">Trading mode</div><div id="journal-auto-trading-mode" class="big" style="font-size:20px;color:#ffd35c">—</div></div>
-        <div class="card" style="padding:12px"><div class="label">WHOOP summary</div><div id="journal-auto-whoop" class="big" style="font-size:20px;color:#00ff99">—</div></div>
-      </div>
-      <div id="journal-auto-note" style="border:1px solid rgba(129,140,248,.12);border-radius:12px;background:rgba(0,0,0,.18);padding:10px 12px;color:#dbeafe;font-size:13px">Cargando bitácora automática...</div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
-      <!-- Write form -->
-      <div class="panel" style="border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04);padding:18px 20px">
-        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Nueva entrada</div>
-        <form method="POST" action="/api/journal">
-          <textarea name="text" rows="5" placeholder="¿Cómo te sientes hoy? ¿Qué pasó? ¿Qué aprendiste?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
-          <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
-            <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
-              ${moodOpts.map(m => `<option value="${m}">${m}</option>`).join("")}
-            </select>
-            <select name="energy" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
-              <option value="">Energía</option>
-              ${[1,2,3,4,5].map(n => `<option value="${n}">${n}/5</option>`).join("")}
-            </select>
-            <input name="tags" placeholder="tags: trading, salud..." style="flex:1;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
-          </div>
-          <button type="submit" class="btn" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.3);color:#818cf8;font-size:14px;padding:10px 20px;width:100%">Guardar entrada</button>
-        </form>
-      </div>
-
-      <!-- Stats -->
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div class="panel" style="padding:14px 18px">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Resumen</div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap">
-            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:#818cf8">${jd.count}</div><div class="muted" style="font-size:11px">entradas</div></div>
-            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:${moodColors[jd.topMood]||"#9fb3c8"}">${jd.topMood||"—"}</div><div class="muted" style="font-size:11px">mood frecuente</div></div>
-          </div>
+        <div style="margin-top:14px">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:10px">Entradas recientes</div>
+          ${entriesHtml}
         </div>
-        <div class="panel" style="padding:14px 18px;flex:1">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Pregunta a Alfredo</div>
-          <div style="display:flex;flex-direction:column;gap:6px">
-            ${["resume mi diario","cómo me he sentido","qué patrones ves"].map(q =>
-              `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;text-align:left;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
-            ).join("")}
-          </div>
-        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px;text-align:center">Guardado en ${esc(JOURNAL_FILE)} · solo en este dispositivo</div>
       </div>
-    </div>
+    </details>
 
-    <!-- Entries list -->
-    <div>
-      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:12px">Entradas recientes</div>
-      ${entriesHtml}
-    </div>
-    <div class="muted" style="font-size:11px;margin-top:12px;text-align:center">Datos guardados en ${esc(JOURNAL_FILE)} · solo en este dispositivo · no se envía a terceros</div>
+    <div class="muted" style="font-size:11px">Fuente: ${esc(aj.source)} · ${esc(aj.educationalNote)}</div>
   </div>`;
 }
 
+function renderSignalCenter(pv, reg) {
+  const assets = pv.assets;
+  const cripto = assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
+  const ranked = assets.slice().sort((a, b) => b.score - a.score);
+  const external = computeExternalMarketIntelligence();
+  const scan = computeDailyScan();
 
-function renderCordaIntelligenceFeedPreview() {
-  const now = Date.now();
-  const liveNews = news.slice(0, 4).map(n => {
-    const publishedMs = n.datetime ? Number(n.datetime) * 1000 : now;
-    return {
-      ticker: (n.related || n.symbol || "MARKET").toString().toUpperCase(),
-      source: n.source || "news",
-      publishedDate: new Date(publishedMs).toISOString().slice(0, 10),
-      type: "news",
-      sentiment: "uncertain",
-      summary: (n.summary || n.headline || "Noticia sin resumen").toString().slice(0, 130),
-      delayBadge: Math.max(0, Math.round((now - publishedMs) / 86400000)) <= 7 ? "1-7d" : "stale"
-    };
+  // Assign priority
+  const withPriority = assets.map(a => {
+    const isHighRisk = a.score < 35 || a.risk === "ALTO" || a.gainPct < -20;
+    const isCryptoConc = a.type === "crypto" && criptoPct > 50;
+    const priority = (isHighRisk || isCryptoConc) ? "ALTA" :
+      (a.score >= 35 && a.score <= 60) ? "MEDIA" : "BAJA";
+    const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length
+                 + quiverData.insider.filter(x => x.symbol === a.symbol).length;
+    const bullish = a.score >= 65 && a.ind.momentum >= 0;
+    const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
+    const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
+    const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
+      a.score < 30 ? "No promediar — revisar tesis" :
+      a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
+    const motivo = a.risk === "ALTO" ? "Riesgo alto" :
+      a.gainPct < -20 ? "Caída fuerte" :
+      a.score >= 65 ? "Score sólido" :
+      a.type === "crypto" ? "Cripto volatil" : "Score neutro";
+    return { ...a, priority, sigLabel, eduAction, motivo, qCount };
+  }).sort((a, b) => {
+    const p = { ALTA: 0, MEDIA: 1, BAJA: 2 };
+    return (p[a.priority] - p[b.priority]) || b.score - a.score;
   });
-  const manual = intelItems.slice(0, 2).map(i => ({
-    ticker: (i.symbols && i.symbols[0]) || "CONTEXT",
-    source: "manual",
-    publishedDate: (i.date || nowMX()).toString().slice(0, 10),
-    type: "health/context",
-    sentiment: "uncertain",
-    summary: i.summary || i.text || "Contexto manual pendiente de resumen.",
-    delayBadge: "local"
-  }));
-  const items = liveNews.concat(manual).slice(0, 5);
-  const rows = items.length ? items.map(x => `<div style="display:grid;grid-template-columns:86px 92px 1fr 70px;gap:8px;align-items:center;border-top:1px solid rgba(120,160,210,.08);padding:9px 0">
-      <div style="font-weight:900;color:#eaf6ff;font-size:12px">${esc(x.ticker)}</div>
-      <div class="muted" style="font-size:11px">${esc(x.publishedDate)}</div>
-      <div style="min-width:0"><div style="font-size:12px;color:#dbeafe;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(x.summary)}</div><div class="muted" style="font-size:10px">${esc(x.source)} · ${esc(x.type)} · ${esc(x.sentiment)}</div></div>
-      <div style="text-align:right"><span style="border:1px solid rgba(0,255,153,.2);border-radius:999px;padding:3px 7px;color:#00ff99;font-size:10px">${esc(x.delayBadge)}</span></div>
-    </div>`).join("") : `<div class="muted" style="padding:14px 0">Pendiente de proveedor de noticias. No se inventan noticias reales.</div>`;
-  return `<div class="panel" style="max-width:1280px;margin:0 auto 14px;border:1px solid rgba(0,255,153,.14);background:rgba(0,255,153,.035);padding:16px 18px">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-      <div>
-        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99">Corda Intelligence Feed</div>
-        <div class="muted" style="font-size:12px;margin-top:2px">Mercado · insiders · noticias · salud/contexto, siempre con fecha visible.</div>
+
+  const alertAsset = withPriority.find(a => a.priority === "ALTA") || withPriority[0];
+  const bestOpp = ranked[0];
+  const prioColor = { ALTA: "#ff4d6d", MEDIA: "#ffd35c", BAJA: "#00ff99" };
+
+  const hotExternal = external.hot ? external.hot.slice(0, 3).map(t => `${t.symbol} (${t.sector})`).join(", ") : "—";
+  const scanAlerts = scan.alerts ? scan.alerts.slice(0, 3) : [];
+
+  const rows = withPriority.map(a => `<tr>
+    <td><b>${esc(a.symbol)}</b>${a.qCount > 0 ? `<span style="color:#00ff99;font-size:10px;margin-left:4px">Q${a.qCount}</span>` : ""}</td>
+    <td class="muted" style="font-size:12px">${esc(a.source)}</td>
+    <td><b>${a.score}</b>/100</td>
+    <td><b class="${a.risk === "ALTO" ? "red" : a.risk === "BAJO" ? "green" : "yellow"}">${esc(a.risk)}</b></td>
+    <td style="font-size:12px;color:${a.sigLabel === "Bullish" ? "#00ff99" : a.sigLabel === "Risk/Vigilar" ? "#ff4d6d" : "#ffd35c"}">${esc(a.sigLabel)}</td>
+    <td class="muted" style="font-size:12px">${esc(a.motivo)}</td>
+    <td class="muted" style="font-size:11px">${esc(a.eduAction)}</td>
+    <td><span style="background:${prioColor[a.priority]}22;color:${prioColor[a.priority]};border-radius:99px;padding:3px 9px;font-size:11px;font-weight:900">${esc(a.priority)}</span></td>
+  </tr>`).join("");
+
+  return `<div style="max-width:1280px;margin:0 auto 8px">
+    <h2>Centro de Señales Alfredo</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div class="card" style="padding:12px 18px;flex:1;min-width:200px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ff4d6d;margin-bottom:4px">Vigilar primero</div>
+        <div style="font-size:18px;font-weight:900;color:#eaf6ff">${esc(alertAsset ? alertAsset.symbol : "—")}</div>
+        <div class="muted" style="font-size:11px">${alertAsset ? esc(alertAsset.motivo) + " · score " + alertAsset.score : "—"}</div>
       </div>
-      <span style="font-size:11px;color:#9fb3c8;border:1px solid rgba(0,255,153,.18);border-radius:999px;padding:4px 10px">educativo · no señal</span>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:200px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99;margin-bottom:4px">Mejor oportunidad educativa</div>
+        <div style="font-size:18px;font-weight:900;color:#eaf6ff">${esc(bestOpp ? bestOpp.symbol : "—")}</div>
+        <div class="muted" style="font-size:11px">${bestOpp ? "Score " + bestOpp.score + " · " + esc(bestOpp.signal) : "—"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:180px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f59e0b;margin-bottom:4px">Concentración cripto</div>
+        <div style="font-size:18px;font-weight:900;color:${criptoPct > 45 ? "#ff4d6d" : "#ffd35c"}">${criptoPct.toFixed(1)}%</div>
+        <div class="muted" style="font-size:11px">${criptoPct > 50 ? "⚠ Concentración alta" : criptoPct > 35 ? "Revisar balance" : "Bajo control"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:160px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:${reg.color};margin-bottom:4px">Régimen</div>
+        <div style="font-size:18px;font-weight:900;color:${reg.color}">${esc(reg.label)}</div>
+        <div class="muted" style="font-size:11px">${pct(reg.avg)} promedio</div>
+      </div>
     </div>
-    <div id="intelligence-feed-list">${rows}</div>
-    <div class="muted" style="font-size:11px;margin-top:10px">Si no hay proveedor activo, se muestran placeholders honestos y contexto local.</div>
+    ${scanAlerts.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${scanAlerts.map(al => `<span style="background:rgba(255,77,109,.1);color:#ff4d6d;border:1px solid rgba(255,77,109,.25);border-radius:99px;padding:4px 12px;font-size:12px;font-weight:700">⚑ ${esc(al)}</span>`).join("")}</div>` : ""}
+    ${hotExternal !== "—" ? `<div style="margin-bottom:12px;font-size:12px;color:#9fb3c8">Externos calientes: <b style="color:#3b9dff">${esc(hotExternal)}</b></div>` : ""}
+    <div class="table-wrap panel" style="padding:0">
+      <table>
+        <thead><tr><th>Activo</th><th>Broker</th><th>Score</th><th>Riesgo</th><th>Señal</th><th>Motivo</th><th>Acción educativa</th><th>Prioridad</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:8px;text-align:right">Educativo · no es asesoría financiera · Q = señal Quiver</div>
   </div>`;
 }
 
@@ -2682,12 +3161,12 @@ function render() {
   for (const a of assets) { const key = `${a.source} · ${a.category}`; grouped[key] = grouped[key] || []; grouped[key].push(a); }
   const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Alfredo AI:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
   const botTables = renderBotTables();
-  const topTV = TV_SYMBOL.BBVA || "BMV:BBVA";
+  const topTV = TV_SYMBOL[best.symbol] || "NASDAQ:MSFT";
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="${settings.autoRefreshSeconds}">
-<title>${esc(CORDA_APP_NAME)}</title>
+<title>${esc(settings.appName)}</title>
 <style>
 :root{--bg:#02040a;--panel:rgba(7,16,30,.72);--line:rgba(120,160,210,.16);--muted:#9fb3c8;--green:#00ff99;--red:#ff4d6d;--blue:#3b9dff;--gold:#ffd35c;--text:#eaf6ff}
 *{box-sizing:border-box}
@@ -2779,8 +3258,6 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .mod{display:none}.mod.active-mod{display:block}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
-.status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
-@media(max-width:820px){.panel{border-radius:18px}.card{border-radius:16px}}
 #alfredo-panel{position:fixed;right:20px;bottom:96px;width:min(400px,calc(100vw - 40px));z-index:99;max-height:72vh;overflow-y:auto;border-radius:24px;display:none}
 </style></head><body>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
@@ -2803,15 +3280,15 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 <header>
   <div class="logo-wrap">
     <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
-    <div><h1>${esc(CORDA_APP_NAME)}</h1><div class="subtitle">${esc(CORDA_APP_SUBTITLE)}</div></div>
+    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
   </div>
   <nav style="display:flex;flex-wrap:wrap;gap:6px">
-    <button data-mod="home" class="nav-mod" onclick="showMod('home')">Home</button>
-    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">Corda Trading</button>
-    <button data-mod="health" class="nav-mod" onclick="showMod('health')">Corda Health</button>
-    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">Corda Journal</button>
-    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">Corda Intelligence</button>
-    <button data-mod="alfredo" class="nav-mod" onclick="showMod('alfredo')">Alfredo</button><button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">System</button>
+    <button data-mod="home" class="nav-mod" onclick="showMod('home')">Inicio</button>
+    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">◈ Trading</button>
+    <button data-mod="health" class="nav-mod" onclick="showMod('health')">◉ Health</button>
+    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">◎ Journal</button>
+    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">◆ Intelligence</button>
+    <button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">◇ Autopilot</button>
   </nav>
 </header>
 
@@ -2819,10 +3296,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <a class="switch" href="/toggle-thinking"><span class="dot"></span>Thinking Mode: <b>${settings.thinkingEnabled ? "ON" : "OFF"}</b></a>
   <span class="switch">Refresh: <b>${settings.autoRefreshSeconds}s</b></span>
   <span class="switch">Finnhub: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
-  <span class="switch"><span class="status-dot"></span>Server OK</span>
-  <span class="switch">WHOOP: <b class="${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "OK" : "PENDIENTE"}</b></span>
-  <span class="switch">Market Data: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
-  <span class="switch">Journal: <b class="green">OK</b></span>
+  <span class="switch">Claude: <b class="${ANTHROPIC_API_KEY ? "green" : "yellow"}">${ANTHROPIC_API_KEY ? "OK" : "SIN KEY"}</b></span>
 </div>
 
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
@@ -2832,7 +3306,6 @@ ${renderHomePortal(pv, reg)}
 
 <!-- ── MOD: TRADING ──────────────────────────────────────── -->
 <div id="mod-trading" class="mod">
-<h2>Corda Trading</h2>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
   <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
@@ -2840,15 +3313,16 @@ ${renderHomePortal(pv, reg)}
   <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
 
-<a id="chart"></a><h2>Chart zone — portafolio + TradingView</h2>
-<div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted">Eje, max, min, area y variacion. Se guarda en ${esc(HISTORY_FILE)}.</div></div>
-<h2>Chart profesional BBVA — TradingView</h2>
-<div class="panel" style="max-width:1280px;margin:0 auto 10px;padding:10px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:12px">Activo principal:</span><b>BBVA</b><span class="muted" style="font-size:12px">Selector futuro: mantiene BBVA como default estable.</span></div>
-<div class="tv-embed"><iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&hidesidetoolbar=0&saveimage=0&studies=RSI@tv-basicstudies,MACD@tv-basicstudies" style="width:100%;height:100%;border:0"></iframe></div>
+<a id="chart"></a><h2>Gráficas — historial del portafolio</h2>
+<div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px"><span>📅 Hoy</span><span class="muted">${portfolioHistory.length < 7 ? "Histórico no disponible todavía; usando snapshot actual." : portfolioHistory.length + " snapshots guardados · " + (portfolioHistory.length >= 7 ? "7D disponible" : "") + (portfolioHistory.length >= 30 ? " · 30D disponible" : "")}</span></div></div>
+<div class="panel" style="max-width:1280px;margin:0 auto 8px;padding:14px 18px">
+  <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Gráficas por activo</div>
+  <div style="font-size:13px;color:#9fb3c8">Abre cada activo del portafolio para ver minigrafica, precio, señales y enlace a TradingView.</div>
+</div>
 
-<a id="brain"></a><h2>Alfredo Score · Corda Brain</h2>${brainHtml()}
+<a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
-<a id="alfredo-inline"></a><h2>Alfredo — Jarvis educativo</h2>
+<a id="alfredo"></a><h2>Alfredo AI — asistente educativo</h2>
 <div class="panel" style="padding:0"><details class="chat-details">
   <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:rgba(59,157,255,.07);border-radius:24px;user-select:none">
     <span style="display:flex;align-items:center;gap:12px">
@@ -2881,29 +3355,7 @@ ${(function(){
   ).join("");
 })()}
 
-<h2>Ranking Alfredo — score · riesgo · señal educativa</h2>
-<div class="ranking">${ranked.map((a, i) => {
-  const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length + quiverData.insider.filter(x => x.symbol === a.symbol).length;
-  const bullish = a.score >= 65 && a.ind.momentum >= 0;
-  const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
-  const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
-  const sigColor = bullish ? "#00ff99" : bearish ? "#ff4d6d" : "#ffd35c";
-  const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
-    a.score < 30 ? "No promediar — revisar tesis" :
-    a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
-  return `<div class="rank" style="grid-template-columns:auto 1fr auto">
-    <div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted" style="font-size:12px">${esc(a.source)} · ${esc(a.risk)}</div>${qCount > 0 ? `<div style="color:#00ff99;font-size:11px">Q×${qCount}</div>` : ""}</div>
-    <div>
-      <div class="bar"><span style="width:${a.score}%"></span></div>
-      <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap">
-        <span style="color:${sigColor};font-size:12px;font-weight:700">${sigLabel}</span>
-        <span class="muted" style="font-size:12px">${esc(a.signal)}</span>
-      </div>
-      <div class="muted" style="font-size:11px;margin-top:3px">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · ${esc(eduAction)}</div>
-    </div>
-    <div style="text-align:right"><b style="font-size:20px">${a.score}/100</b><div class="${a.gainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(a.gainPct)}</div></div>
-  </div>`;
-}).join("")}</div>
+${renderSignalCenter(pv, reg)}
 
 <a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
@@ -2911,42 +3363,28 @@ ${(function(){
 ${renderTradingAIStatus()}
 ${renderPaperTradingPanel()}
 
-<a id="vigilar"></a><h2>Radar Externo — Stocks calientes por sector</h2>
-${renderExternalRadarBySector()}
-
-<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
-
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
 <div id="mod-health" class="mod">
-<h2>Corda Health</h2>
-${renderHealthReadinessPanel()}
-${renderHealthTrendPlaceholders()}
-<div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
-  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
-  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
-  <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
-  <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
-</div>
+${renderHealthOSPanel()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
 <div id="mod-journal" class="mod">
-<h2>Corda Journal</h2>
 ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
 <div id="mod-intelligence" class="mod">
-<h2>Corda Intelligence</h2>
-${renderCordaIntelligenceFeedPreview()}
 ${renderDailyBrief()}
 ${renderMorningReport()}
 
 <a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos · Políticos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
 ${renderQuiverIntelligencePanel()}
 
-<a id="intel"></a><h2>Corda Intelligence — Intel manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
+<a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
 
-<a id="intelligence"></a><h2>Corda Intelligence — Radar político · Intel manual</h2>
+<details style="max-width:1280px;margin:0 auto 8px"><summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.12);border-radius:20px;user-select:none"><span style="font-size:14px;font-weight:900;color:#00ff99">◆ Radar político · Intel manual</span><span class="btn" style="font-size:12px;padding:5px 12px">Ver detalle ▾</span></summary>
+<div>
+<a id="intelligence"></a><h2 style="display:none">Cordelius Intelligence</h2>
 ${(function(){
   const intel = computeIntelligence();
   const trending = computeQuiverTrending();
@@ -3006,21 +3444,7 @@ ${(function(){
     + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
 })()}
 
-</div>
-<!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
-<div id="mod-alfredo" class="mod">
-<h2>Alfredo — Jarvis personal</h2>
-<div class="panel" style="max-width:960px;margin:0 auto 12px;padding:18px 20px;border-color:rgba(255,211,92,.18);background:rgba(255,211,92,.04)">
-  <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Context Engine</div>
-  <div id="alfredo-context-line" style="font-size:18px;font-weight:800;color:#fff;margin-bottom:8px">Conecto salud, trading, journal e inteligencia sin inventar datos.</div>
-  <div id="alfredo-context-question" class="muted" style="font-size:14px">¿Qué módulo quieres revisar primero?</div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-    <button class="btn" onclick="showMod('trading')">Corda Trading</button>
-    <button class="btn" onclick="showMod('health')">Corda Health</button>
-    <button class="btn" onclick="showMod('journal')">Corda Journal</button>
-  </div>
-</div>
-${renderMorningReport()}
+</div></details>
 </div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
 <div id="mod-autopilot" class="mod">
@@ -3029,7 +3453,7 @@ ${renderAutopilotPanel()}
 
 <h2>Sistema</h2>
 <div class="grid">
-  <div class="card"><div class="label">App</div><div class="big green">${esc(CORDA_APP_NAME)}</div></div>
+  <div class="card"><div class="label">App</div><div class="big green">${esc(settings.appName)}</div></div>
   <div class="card"><div class="label">Alfredo AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
   <div class="card"><div class="label">Finnhub</div><div class="big ${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</div></div>
   <div class="card"><div class="label">Quiver</div><div class="big ${QUIVER_API_KEY ? "green" : "yellow"}">${QUIVER_API_KEY ? "OK" : "PENDIENTE"}</div></div>
@@ -3038,7 +3462,92 @@ ${renderAutopilotPanel()}
 </div>
 </div>
 
-<div class="disclaimer">Corda es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
+<div class="disclaimer">Cordelius OS es educativo. No es asesoria financiera. El bot de trading es 100% ficticio (paper trading) y no se conecta a ningun exchange real. WHOOP pendiente de conexion. Alpaca PAPER ONLY.</div>
+
+
+
+
+
+
+
+
+
+<script id="health-os-live-loader-final">
+(function(){
+  function set(id, v) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = (v === null || v === undefined || v === "") ? "—" : String(v);
+  }
+
+  function n(v) {
+    var x = Number(v);
+    return Number.isFinite(x) ? x : null;
+  }
+
+  async function loadHealthOSFinal() {
+    try {
+      var r = await fetch("/api/whoop/today", { cache: "no-store" });
+      if (!r.ok) return;
+      var d = await r.json();
+
+      var recovery = n(d.recovery);
+      var sleep = n(d.sleep);
+      var strain = n(d.strain);
+      var hrv = n(d.hrv);
+      var rhr = n(d.restingHeartRate);
+
+      set("health-os-recovery", recovery != null ? recovery + "%" : "—");
+      set("health-os-sleep", sleep != null ? sleep + "%" : "—");
+      set("health-os-strain", strain != null ? strain.toFixed(1) : "—");
+      set("health-os-hrv", hrv != null ? hrv.toFixed(1) + " ms" : "—");
+      set("health-os-rhr", rhr != null ? Math.round(rhr) + " bpm" : "—");
+
+      var rec = recovery || 0;
+      var slp = sleep || 0;
+      var hrvScore = hrv != null ? Math.max(0, Math.min(100, hrv / 160 * 100)) : 0;
+      var rhrScore = rhr != null ? Math.max(0, Math.min(100, 100 - Math.max(0, rhr - 38) * 2)) : 70;
+      var strainPct = strain != null ? Math.max(0, Math.min(100, strain / 21 * 100)) : 0;
+
+      var score = Math.round(rec * .34 + slp * .24 + hrvScore * .18 + rhrScore * .12 + (100 - strainPct) * .12);
+      var status = score >= 85 ? "EXCELENTE" : score >= 70 ? "BUENO" : score >= 55 ? "MEDIO" : score >= 40 ? "BAJO" : "CRÍTICO";
+
+      set("health-os-score", score);
+      set("health-os-status", status);
+      set("health-os-readiness", status);
+      set("health-os-mode", d.operatingMode || d.mode || "NORMAL");
+
+      set("health-os-energy-physical", Math.round((rec + slp) / 2));
+      set("health-os-energy-mental", Math.round((slp + hrvScore) / 2));
+      set("health-os-energy-focus", Math.round((slp + rec + hrvScore) / 3));
+      set("health-os-energy-deepwork", Math.round((slp + hrvScore + (100 - strainPct)) / 3));
+      set("health-os-energy-trading", Math.round((rec + hrvScore + (100 - strainPct)) / 3));
+
+      var badge = document.getElementById("health-os-whoop-badge");
+      if (badge) badge.textContent = d.connected ? "● WHOOP LIVE" : "WHOOP PENDIENTE";
+
+      var ai = document.getElementById("health-os-ai");
+      if (ai && d.alfredoAdvice) ai.textContent = d.alfredoAdvice;
+
+      console.log("Health OS final loaded", d);
+    } catch(e) {
+      console.error("Health OS final loader failed", e);
+    }
+  }
+
+  window.loadHealthOS = loadHealthOSFinal;
+  window.loadHealthOSFinal = loadHealthOSFinal;
+
+  document.addEventListener("DOMContentLoaded", function(){
+    setTimeout(loadHealthOSFinal, 300);
+    setTimeout(loadHealthOSFinal, 1300);
+  });
+
+  setTimeout(loadHealthOSFinal, 300);
+  setTimeout(loadHealthOSFinal, 1300);
+  setInterval(loadHealthOSFinal, 60000);
+})();
+</script>
+
 </body>
 <script>
 function showMod(name) {
@@ -3049,145 +3558,95 @@ function showMod(name) {
   var btn = document.querySelector('[data-mod="' + name + '"]');
   if (btn) btn.classList.add('nav-active');
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
-  if (name === 'health') loadWhoopToday();
-  if (name === 'journal') loadJournalAuto();
-  if (name === 'intelligence') loadIntelligenceFeed();
-  if (name === 'alfredo') loadAlfredoContext();
+  if (name === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
 }
-function healthSet(id, value) {
+
+function healthOSSet(id, value) {
   var el = document.getElementById(id);
   if (el) el.textContent = value == null || value === '' ? '—' : String(value);
 }
-function healthMetric(value, suffix) {
-  if (value === null || value === undefined || value === '') return '—';
-  if (typeof value === 'number' && !Number.isFinite(value)) return '—';
-  var text = typeof value === 'number' && Math.round(value * 10) !== value * 10 ? value.toFixed(1) : String(value);
-  return suffix ? text + suffix : text;
+
+function healthOSFmt(n, d) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return '—';
+  return Number(n).toFixed(d == null ? 0 : d);
 }
-function applyWhoopToday(d) {
-  if (!d || typeof d !== 'object') return;
-  healthSet('health-recovery', healthMetric(d.recovery, '%'));
-  healthSet('health-sleep', healthMetric(d.sleep, '%'));
-  healthSet('health-strain', healthMetric(d.strain, ''));
-  healthSet('health-avg-hr', healthMetric(d.averageHeartRate, ' bpm'));
-  healthSet('health-max-hr', healthMetric(d.maxHeartRate, ' bpm'));
-  healthSet('health-hrv', healthMetric(d.hrv, ' ms'));
-  healthSet('health-resting-hr', healthMetric(d.restingHeartRate, ' bpm'));
-  healthSet('health-operating-mode', d.operatingMode || d.mode || 'NORMAL');
-  healthSet('home-recovery', healthMetric(d.recovery, '%'));
-  healthSet('home-sleep', healthMetric(d.sleep, '%'));
-  healthSet('home-strain', healthMetric(d.strain, ''));
-  healthSet('home-hrv', healthMetric(d.hrv, ' ms'));
-  healthSet('home-operating-mode', d.operatingMode || d.mode || 'NORMAL');
 
-  var homeLine = document.getElementById('home-alfredo-line');
-  if (homeLine) homeLine.textContent = d.alfredoAdvice || d.suggestion || 'Corda listo: revisa salud, portafolio y contexto antes de decidir.';
-  var homeQuestion = document.getElementById('home-alfredo-question');
-  if (homeQuestion) {
-    if (d.strain != null && d.strain >= 10) homeQuestion.textContent = 'Veo strain alto; ¿quieres que Alfredo limite el paper trading a observación?';
-    else if (d.recovery != null && d.sleep != null && d.recovery >= 75 && d.sleep >= 80) homeQuestion.textContent = 'Buen recovery y sleep; ¿quieres revisar ideas educativas sin ejecutar nada?';
-    else homeQuestion.textContent = '¿Quieres que Alfredo conecte salud, BBVA y noticias antes de revisar el día?';
-  }
-  var contextLine = document.getElementById('alfredo-context-line');
-  if (contextLine) contextLine.textContent = d.alfredoAdvice || 'Alfredo no tiene datos WHOOP completos todavía.';
-  var contextQuestion = document.getElementById('alfredo-context-question');
-  if (contextQuestion) contextQuestion.textContent = homeQuestion ? homeQuestion.textContent : '¿Qué módulo quieres revisar primero?';
-
-  var badge = document.getElementById('health-whoop-badge');
-  if (badge) {
-    var connected = d.connected === true;
-    badge.textContent = connected ? 'WHOOP DETECTADO' : 'WHOOP PENDIENTE';
-    badge.style.background = connected ? 'rgba(0,255,153,.15)' : 'rgba(255,211,92,.12)';
-    badge.style.color = connected ? '#00ff99' : '#ffd35c';
-  }
-
-  var advice = document.getElementById('health-advice');
-  if (advice) {
-    advice.textContent = d.alfredoAdvice || d.suggestion || d.message || 'Esperando datos de WHOOP.';
-  }
-}
-async function loadWhoopToday() {
-  var panel = document.getElementById('health-readiness-panel');
-  if (!panel || panel.dataset.loading === '1') return;
-  panel.dataset.loading = '1';
+async function toggleHealthBehavior(key) {
   try {
-    var response = await fetch('/api/whoop/today', { cache: 'no-store' });
-    if (!response.ok) throw new Error('WHOOP HTTP ' + response.status);
-    applyWhoopToday(await response.json());
-  } catch (e) {
-    var advice = document.getElementById('health-advice');
-    if (advice) advice.textContent = 'No se pudo refrescar WHOOP en el panel. Revisa /api/whoop/today.';
-  } finally {
-    panel.dataset.loading = '0';
+    await fetch('/api/health/behavior', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ behavior:key })
+    });
+    await loadHealthOS();
+  } catch(e) {
+    console.warn('toggleHealthBehavior failed', e);
   }
 }
 
-function applyJournalAuto(d) {
-  if (!d || typeof d !== 'object') return;
-  healthSet('journal-auto-source', d.source || 'WHOOP + Corda');
-  healthSet('journal-auto-mood', d.moodEstimated || d.mood || '—');
-  healthSet('journal-auto-body', d.bodyState || '—');
-  healthSet('journal-auto-trading-mode', d.tradingModeSuggestion || d.operatingMode || '—');
-  var recovery = d.recovery != null ? d.recovery + '%' : '—';
-  var sleep = d.sleep != null ? d.sleep + '%' : '—';
-  var strain = d.strain != null ? d.strain : '—';
-  healthSet('journal-auto-whoop', 'R ' + recovery + ' · S ' + sleep + ' · Strain ' + strain);
-  healthSet('journal-auto-note', d.alfredoNote || d.alfredoAdvice || d.summary || 'Bitácora automática lista.');
-}
-async function loadJournalAuto() {
-  if (!document.getElementById('journal-auto-preview')) return;
+async function loadHealthOS() {
+  if (!document.getElementById('health-os-shell')) return;
+
   try {
-    var response = await fetch('/api/journal/auto', { cache: 'no-store' });
-    if (!response.ok) throw new Error('Journal HTTP ' + response.status);
-    applyJournalAuto(await response.json());
-  } catch (e) {
-    healthSet('journal-auto-note', 'No se pudo cargar /api/journal/auto en la UI.');
+    var insights = {};
+    var whoop = {};
+
+    try {
+      var ir = await fetch('/api/health/insights', { cache:'no-store' });
+      if (ir.ok) insights = await ir.json();
+    } catch(e) {}
+
+    try {
+      var wr = await fetch('/api/whoop/today', { cache:'no-store' });
+      if (wr.ok) whoop = await wr.json();
+    } catch(e) {}
+
+    var m = insights.metrics || {};
+    var recovery = m.recovery ?? whoop.recovery;
+    var sleep = m.sleep ?? whoop.sleep;
+    var strain = m.strain ?? whoop.strain;
+    var hrv = m.hrv_ms ?? whoop.hrv;
+    var rhr = m.resting_hr_bpm ?? whoop.restingHeartRate;
+
+    healthOSSet('health-os-recovery', recovery != null ? recovery + '%' : '—');
+    healthOSSet('health-os-sleep', sleep != null ? sleep + '%' : '—');
+    healthOSSet('health-os-strain', strain != null ? healthOSFmt(strain, 1) : '—');
+    healthOSSet('health-os-hrv', hrv != null ? healthOSFmt(hrv, 1) + ' ms' : '—');
+    healthOSSet('health-os-rhr', rhr != null ? rhr + ' bpm' : '—');
+
+    var rec = Number(recovery || 0);
+    var slp = Number(sleep || 0);
+    var hrvScore = Math.max(0, Math.min(100, Number(hrv || 0) / 160 * 100));
+    var strainPct = Math.max(0, Math.min(100, Number(strain || 0) / 21 * 100));
+    var score = Math.round(rec * .34 + slp * .24 + hrvScore * .18 + (100 - strainPct) * .24);
+    var status = score >= 85 ? 'EXCELENTE' : score >= 70 ? 'BUENO' : score >= 55 ? 'MEDIO' : score >= 40 ? 'BAJO' : 'CRÍTICO';
+    var mode = insights.readiness || whoop.mode || whoop.operatingMode || (rec < 50 ? 'DEFENSIVO' : 'NORMAL');
+
+    healthOSSet('health-os-score', score);
+    healthOSSet('health-os-status', status);
+    healthOSSet('health-os-readiness', status);
+    healthOSSet('health-os-mode', mode);
+
+    healthOSSet('health-os-energy-physical', Math.round((rec + slp) / 2));
+    healthOSSet('health-os-energy-mental', Math.round((slp + hrvScore) / 2));
+    healthOSSet('health-os-energy-focus', Math.round((slp + rec + hrvScore) / 3));
+    healthOSSet('health-os-energy-deepwork', Math.round((slp + hrvScore + (100 - strainPct)) / 3));
+    healthOSSet('health-os-energy-trading', Math.round((rec + hrvScore + (100 - strainPct)) / 3));
+
+    var ai = document.getElementById('health-os-ai');
+    if (ai && (insights.aiBrief || whoop.alfredoAdvice)) {
+      ai.textContent = insights.aiBrief || whoop.alfredoAdvice;
+    }
+
+    var badge = document.getElementById('health-os-whoop-badge');
+    if (badge) badge.textContent = whoop.connected ? '● WHOOP LIVE' : 'WHOOP DETECTADO';
+
+  } catch(e) {
+    healthOSSet('health-os-ai', 'No se pudo cargar Health OS. Revisa /api/health/insights y /api/whoop/today.');
+    console.error('loadHealthOS failed', e);
   }
 }
-function applyAlfredoContext(d) {
-  if (!d || typeof d !== 'object') return;
-  healthSet('alfredo-context-line', d.alfredoOneLiner || d.oneLiner || 'Alfredo listo.');
-  healthSet('alfredo-context-question', d.alfredoQuestion || d.question || '¿Qué módulo quieres revisar primero?');
-}
-async function loadAlfredoContext() {
-  if (!document.getElementById('alfredo-context-line')) return;
-  try {
-    var response = await fetch('/api/alfredo/context', { cache: 'no-store' });
-    if (!response.ok) throw new Error('Alfredo HTTP ' + response.status);
-    applyAlfredoContext(await response.json());
-  } catch (e) {}
-}
-function clientEsc(value) {
-  return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
-    return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch];
-  });
-}
-function applyIntelligenceFeed(d) {
-  var list = document.getElementById('intelligence-feed-list');
-  if (!list || !d || !Array.isArray(d.items)) return;
-  if (!d.items.length) {
-    list.innerHTML = '<div class="muted" style="padding:14px 0">Pendiente de proveedor de noticias. No se inventan noticias reales.</div>';
-    return;
-  }
-  list.innerHTML = d.items.slice(0, 5).map(function(x) {
-    var date = x.publishedDate || x.eventDate || 'sin fecha';
-    var badge = x.delayBadge || (x.delayDays == null ? 'unknown' : x.delayDays <= 0 ? 'LIVE' : x.delayDays <= 7 ? '1-7d' : x.delayDays <= 30 ? '8-30d' : 'stale');
-    return '<div style="display:grid;grid-template-columns:86px 92px 1fr 70px;gap:8px;align-items:center;border-top:1px solid rgba(120,160,210,.08);padding:9px 0">'
-      + '<div style="font-weight:900;color:#eaf6ff;font-size:12px">' + clientEsc(x.ticker || 'MARKET') + '</div>'
-      + '<div class="muted" style="font-size:11px">' + clientEsc(date) + '</div>'
-      + '<div style="min-width:0"><div style="font-size:12px;color:#dbeafe;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + clientEsc(x.summary || 'Contexto pendiente') + '</div><div class="muted" style="font-size:10px">' + clientEsc(x.source || 'source') + ' · ' + clientEsc(x.type || 'news') + ' · ' + clientEsc(x.sentiment || 'uncertain') + '</div></div>'
-      + '<div style="text-align:right"><span style="border:1px solid rgba(0,255,153,.2);border-radius:999px;padding:3px 7px;color:#00ff99;font-size:10px">' + clientEsc(badge) + '</span></div>'
-      + '</div>';
-  }).join('');
-}
-async function loadIntelligenceFeed() {
-  if (!document.getElementById('intelligence-feed-list')) return;
-  try {
-    var response = await fetch('/api/intelligence/feed', { cache: 'no-store' });
-    if (!response.ok) throw new Error('Intel HTTP ' + response.status);
-    applyIntelligenceFeed(await response.json());
-  } catch (e) {}
-}
+
 function toggleAlfredo() {
   var p = document.getElementById('alfredo-panel');
   if (p) p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'block' : 'none';
@@ -3200,17 +3659,39 @@ function setAlfredoQ(q) {
 }
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
-  var hashMod = (window.location.hash || '').replace('#', '');
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
-  showMod(hashMod || saved || 'home');
-  loadWhoopToday();
-  loadJournalAuto();
-  loadAlfredoContext();
-  loadIntelligenceFeed();
-});
-window.addEventListener('hashchange', function() {
   var hashMod = (window.location.hash || '').replace('#', '');
-  if (hashMod) showMod(hashMod);
+  showMod(hashMod || saved || 'home');
+  // Live-update Health Readiness panel from /api/whoop/today
+  (function whoopHealthLive() {
+    function set(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; }
+    function fmt1(n) { return n != null ? (typeof n === 'number' ? n.toFixed(1) : n) : null; }
+    function poll() {
+      fetch('/api/whoop/today').then(function(r){return r.json();}).then(function(d){
+        set('hr-recovery',  d.recovery     != null ? d.recovery + '%'              : '—');
+        set('hr-sleep',     d.sleep        != null ? d.sleep + '%'                 : '—');
+        set('hr-strain',    d.strain       != null ? fmt1(d.strain)                : '—');
+        set('hr-avghr',     d.averageHeartRate != null ? d.averageHeartRate + ' bpm' : '—');
+        set('hr-maxhr',     d.maxHeartRate != null ? d.maxHeartRate + ' bpm'       : '—');
+        set('hr-hrv',       d.hrv          != null ? fmt1(d.hrv) + ' ms'           : '—');
+        set('hr-rhr',       d.restingHeartRate != null ? d.restingHeartRate + ' bpm' : '—');
+        set('hr-kj',        d.kilojoule    != null ? Math.round(d.kilojoule) + ' kJ' : '—');
+        set('hr-state',     d.scoreState   || '—');
+        set('hr-mode',      d.mode         || d.operatingMode || 'NORMAL');
+        set('hr-mode-footer', d.mode       || d.operatingMode || 'NORMAL');
+        set('hr-suggestion',  d.suggestion || '');
+        if (d.alfredoAdvice) set('hr-advice', d.alfredoAdvice);
+        var badge = document.getElementById('hr-badge');
+        if (badge) {
+          badge.textContent = d.connected ? '● WHOOP LIVE' : (d.configured !== false ? 'WHOOP DETECTADO' : 'SIN DATOS');
+          badge.style.color = d.connected ? '#00ff99' : '#ffd35c';
+          badge.style.background = d.connected ? 'rgba(0,255,153,.15)' : 'rgba(255,211,92,.12)';
+        }
+      }).catch(function(){});
+    }
+    poll();
+    setInterval(poll, 60000);
+  })();
 });
 </script>
 </html>`;
@@ -3239,7 +3720,7 @@ async function handleIntel(req, res) {
         intelItems.unshift(item);
         intelItems = intelItems.slice(0, 30);
         saveJSON(INTEL_FILE, intelItems);
-        addThought("Nuevo analisis manual agregado a Corda Intelligence.", "scan");
+        addThought("Nuevo analisis manual agregado a Cordelius Intelligence.", "scan");
       }
     }
     res.writeHead(302, { Location: "/#intel" });
@@ -3464,6 +3945,156 @@ const server = http.createServer(async (req, res) => {
       }
     }));
   }
+
+  if (path === "/whoop/auth") {
+    const clientId = process.env.WHOOP_CLIENT_ID || "";
+    const redirectUri = process.env.WHOOP_REDIRECT_URI || "";
+    if (!clientId || !redirectUri) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Faltan WHOOP_CLIENT_ID o WHOOP_REDIRECT_URI en .env");
+    }
+
+    const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const scope = "offline read:profile read:cycles read:recovery read:sleep read:workout";
+
+    const authUrl = "https://api.prod.whoop.com/oauth/oauth2/auth"
+      + "?response_type=code"
+      + "&client_id=" + encodeURIComponent(clientId)
+      + "&redirect_uri=" + encodeURIComponent(redirectUri)
+      + "&scope=" + encodeURIComponent(scope)
+      + "&state=" + encodeURIComponent(state);
+
+    res.writeHead(302, { Location: authUrl });
+    return res.end();
+  }
+
+  if (path === "/api/whoop/callback") {
+    const qs = new URL(req.url, "http://localhost").search || "";
+    res.writeHead(302, { Location: "/whoop/callback" + qs });
+    return res.end();
+  }
+
+  if (path === "/whoop/callback") {
+    const code = new URL(req.url, "http://localhost").searchParams.get("code");
+    const err = new URL(req.url, "http://localhost").searchParams.get("error");
+
+    if (err) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("WHOOP OAuth error: " + err);
+    }
+
+    if (!code) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Falta code en callback WHOOP.");
+    }
+
+    try {
+      const body = [
+        "grant_type=authorization_code",
+        "code=" + encodeURIComponent(code),
+        "client_id=" + encodeURIComponent(process.env.WHOOP_CLIENT_ID || ""),
+        "client_secret=" + encodeURIComponent(process.env.WHOOP_CLIENT_SECRET || ""),
+        "redirect_uri=" + encodeURIComponent(process.env.WHOOP_REDIRECT_URI || "")
+      ].join("&");
+
+      const tokenResult = await apiPost(WHOOP_TOKEN_URL, body);
+
+      if (!tokenResult || !tokenResult.access_token) {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        return res.end("WHOOP no regresó access_token.");
+      }
+
+      whoopTokens = {
+        ...tokenResult,
+        expires_at: Date.now() + (tokenResult.expires_in || 3600) * 1000
+      };
+
+      saveJSON(WHOOP_TOKEN_FILE, whoopTokens);
+
+      whoopCache.lastFetch = 0;
+      await refreshWhoopCache();
+
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(`<!doctype html>
+<html><head><meta charset="utf-8"><title>WHOOP conectado</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial;background:#02040a;color:#eaf6ff;padding:28px">
+<h1>WHOOP conectado ✅</h1>
+<p>Tokens guardados en el servidor. Ya puedes volver a Cordelius Health.</p>
+<p><a href="/#health" style="color:#00ff99">Abrir Health OS</a></p>
+</body></html>`);
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Error intercambiando code por token WHOOP: " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  if (path === "/api/whoop/status") {
+    const h = computeHealthReadiness();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      configured: WHOOP_CONFIGURED,
+      connected: h.connected,
+      tokensPresent: !!(whoopTokens && whoopTokens.access_token),
+      source: h.source,
+      reason: h.connected
+        ? "WHOOP connected and data available"
+        : WHOOP_CONFIGURED
+          ? (whoopTokens && whoopTokens.access_token ? "Token present — awaiting cache refresh" : "Env vars set but tokens missing — complete OAuth flow")
+          : "WHOOP env vars missing (WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)",
+      vars: {
+        clientId: !!process.env.WHOOP_CLIENT_ID,
+        clientSecret: !!process.env.WHOOP_CLIENT_SECRET,
+        redirectUri: !!process.env.WHOOP_REDIRECT_URI
+      },
+      cacheAge: whoopCache.lastFetch ? Math.floor((Date.now() - whoopCache.lastFetch) / 1000) + "s" : null
+    }));
+  }
+  if (path === "/api/whoop/profile") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (!whoopCache.connected) return res.end(JSON.stringify({ ok: false, connected: false, reason: "WHOOP not connected" }));
+    return res.end(JSON.stringify({ ok: true, connected: true, profile: whoopCache.profile }));
+  }
+  if (path === "/api/whoop/cycle") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (!whoopCache.connected) return res.end(JSON.stringify({ ok: false, connected: false, reason: "WHOOP not connected" }));
+    return res.end(JSON.stringify({ ok: true, connected: true, cycle: whoopCache.cycle }));
+  }
+  if (path === "/api/whoop/today") {
+    const h = computeHealthReadiness();
+    const _cyc = whoopCache.cycle;
+    const _kj = _cyc && _cyc.score && _cyc.score.kilojoule != null ? _cyc.score.kilojoule : null;
+    const _ss = _cyc && _cyc.score && _cyc.score.state ? _cyc.score.state : null;
+    const _pv = portfolioValue();
+    const _idea = computeTradeIdea();
+    const _alfredo = `Portafolio ${money(_pv.totalValueMXN)} (${pct(_pv.totalGainPct)}). ` +
+      (_idea.hasIdea ? `Idea paper: ${_idea.type} en ${_idea.symbol}. ` : "") +
+      `Modo: ${h.operatingMode}. ${h.suggestion}. NO es consejo médico.`;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      connected: h.connected,
+      date: new Date().toLocaleDateString("es-MX"),
+      strain: h.strain,
+      averageHeartRate: h.averageHeartRate,
+      maxHeartRate: h.maxHeartRate,
+      kilojoule: _kj,
+      scoreState: _ss,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      operatingMode: h.operatingMode,
+      mode: h.operatingMode,
+      suggestion: h.suggestion,
+      alfredoAdvice: _alfredo,
+      message: h.message
+    }));
+  }
+  if (path === "/api/journal/auto") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeAutoJournal()));
+  }
   if (path === "/api/health-readiness") {
     const h = computeHealthReadiness();
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -3495,759 +4126,6 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(computeJournalData()));
   }
-  if (path === "/api/whoop/today") {
-    try {
-      const https = require("https");
-      const fs = require("fs");
-
-      const tokenFile = "whoop_tokens.json";
-
-      const emptyWhoop = (message, extra) => ({
-        ok: true,
-        connected: false,
-        date: new Date().toLocaleDateString("es-MX"),
-        strain: null,
-        averageHeartRate: null,
-        maxHeartRate: null,
-        kilojoule: null,
-        scoreState: null,
-        recovery: null,
-        sleep: null,
-        hrv: null,
-        restingHeartRate: null,
-        operatingMode: "NORMAL",
-        mode: "NORMAL",
-        suggestion: "usa modo neutral",
-        alfredoAdvice: message,
-        message,
-        ...(extra || {})
-      });
-
-      if (!fs.existsSync(tokenFile)) {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        return res.end(JSON.stringify(emptyWhoop(
-          "WHOOP configurado — tokens pendientes de autorización OAuth. NO es consejo médico."
-        )));
-      }
-
-      const readTokens = () => JSON.parse(fs.readFileSync(tokenFile, "utf8"));
-
-      const refreshTokens = (oldTokens) => new Promise((resolve) => {
-        if (!oldTokens.refresh_token) {
-          return resolve({ ok:false, error:"no_refresh_token" });
-        }
-
-        const body = new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: oldTokens.refresh_token,
-          client_id: process.env.WHOOP_CLIENT_ID || "",
-          client_secret: process.env.WHOOP_CLIENT_SECRET || ""
-        }).toString();
-
-        const options = {
-          hostname: "api.prod.whoop.com",
-          path: "/oauth/oauth2/token",
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Content-Length": Buffer.byteLength(body),
-            "Accept": "application/json"
-          }
-        };
-
-        const req2 = https.request(options, (rr) => {
-          let raw = "";
-          rr.on("data", c => raw += c);
-          rr.on("end", () => {
-            let parsed;
-            try { parsed = JSON.parse(raw); } catch(e) { parsed = null; }
-
-            const success = rr.statusCode >= 200 && rr.statusCode < 300 && parsed && parsed.access_token;
-
-            if (success) {
-              const newTokens = {
-                savedAt: new Date().toISOString(),
-                token_type: parsed.token_type || oldTokens.token_type || null,
-                expires_in: parsed.expires_in || null,
-                scope: parsed.scope || oldTokens.scope || null,
-                access_token: parsed.access_token,
-                refresh_token: parsed.refresh_token || oldTokens.refresh_token || null
-              };
-
-              fs.writeFileSync(tokenFile, JSON.stringify(newTokens, null, 2));
-              return resolve({ ok:true, tokens:newTokens, statusCode:rr.statusCode });
-            }
-
-            return resolve({ ok:false, statusCode:rr.statusCode, error:"refresh_failed" });
-          });
-        });
-
-        req2.on("error", e => resolve({ ok:false, error:e.message }));
-        req2.write(body);
-        req2.end();
-      });
-
-      const fetchWhoopPath = (tokens, whoopPath) => new Promise((resolve) => {
-        const options = {
-          hostname: "api.prod.whoop.com",
-          path: whoopPath,
-          method: "GET",
-          headers: {
-            "Authorization": "Bearer " + tokens.access_token,
-            "Accept": "application/json"
-          }
-        };
-
-        const r = https.request(options, (rr) => {
-          let raw = "";
-          rr.on("data", c => raw += c);
-          rr.on("end", () => {
-            let data;
-            try { data = JSON.parse(raw); } catch(e) { data = null; }
-            resolve({ statusCode: rr.statusCode, data });
-          });
-        });
-
-        r.on("error", e => resolve({ statusCode:500, data:null, error:e.message }));
-        r.end();
-      });
-
-      const latestRecord = (payload) => payload && Array.isArray(payload.records) && payload.records.length ? payload.records[0] : null;
-      const numeric = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
-
-      let tokens = readTokens();
-      let result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
-
-      let refreshed = false;
-
-      if (result.statusCode === 401) {
-        const refresh = await refreshTokens(tokens);
-
-        if (refresh.ok) {
-          refreshed = true;
-          tokens = refresh.tokens;
-          result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
-        } else {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          return res.end(JSON.stringify(emptyWhoop(
-            "WHOOP token expirado y refresh falló. Reautoriza con /api/whoop/connect.",
-            {
-              whoopRawStatusCode: 401,
-              refreshAttempted: true,
-              refreshOk: false,
-              refreshStatusCode: refresh.statusCode || null,
-              refreshError: refresh.error ? "refresh_failed" : null
-            }
-          )));
-        }
-      }
-
-      const apiOk = result.statusCode >= 200 && result.statusCode < 300;
-      const data = result.data || {};
-      const cycle = latestRecord(data);
-      const score = cycle && cycle.score ? cycle.score : {};
-
-      let recoveryResult = { statusCode: null, data: null };
-      let sleepResult = { statusCode: null, data: null };
-      if (apiOk) {
-        [recoveryResult, sleepResult] = await Promise.all([
-          fetchWhoopPath(tokens, "/developer/v2/recovery?limit=1"),
-          fetchWhoopPath(tokens, "/developer/v2/activity/sleep?limit=1")
-        ]);
-      }
-
-      const recoveryRecord = latestRecord(recoveryResult.data);
-      const recoveryScore = recoveryRecord && recoveryRecord.score ? recoveryRecord.score : {};
-      const sleepRecord = latestRecord(sleepResult.data);
-      const sleepScore = sleepRecord && sleepRecord.score ? sleepRecord.score : {};
-
-      const strain = numeric(score.strain);
-      const averageHeartRate = numeric(score.average_heart_rate);
-      const maxHeartRate = numeric(score.max_heart_rate);
-      const kilojoule = numeric(score.kilojoule);
-      const scoreState = cycle ? cycle.score_state || null : null;
-      const recovery = numeric(recoveryScore.recovery_score);
-      const hrv = numeric(recoveryScore.hrv_rmssd_milli);
-      const restingHeartRate = numeric(recoveryScore.resting_heart_rate);
-      const sleep = numeric(sleepScore.sleep_performance_percentage);
-
-      let operatingMode = "NORMAL";
-      let suggestion = "usa modo neutral";
-
-      if (strain !== null && strain >= 10) {
-        operatingMode = "DEFENSIVO";
-        suggestion = "baja riesgo y evita sobreoperar";
-      } else if (strain !== null && strain < 3) {
-        operatingMode = "LOW_STRAIN";
-        suggestion = "buen momento para análisis tranquilo, sin forzar trades";
-      }
-
-      const advice = apiOk
-        ? `WHOOP conectado. Recovery ${recovery ?? "—"}%, Sleep ${sleep ?? "—"}%, HRV ${hrv ?? "—"} ms, RHR ${restingHeartRate ?? "—"} bpm, Strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo: ${operatingMode}. ${suggestion}. NO es consejo médico.`
-        : "WHOOP token presente, pero la API no respondió correctamente. Reautoriza si persiste.";
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: true,
-        connected: apiOk,
-        date: new Date().toLocaleDateString("es-MX"),
-        strain,
-        averageHeartRate,
-        maxHeartRate,
-        kilojoule,
-        scoreState,
-        recovery,
-        sleep,
-        hrv,
-        restingHeartRate,
-        operatingMode,
-        mode: operatingMode,
-        suggestion,
-        alfredoAdvice: advice,
-        message: apiOk ? "WHOOP conectado desde whoop_tokens.json." : "WHOOP token presente, pero API falló.",
-        whoopRawStatusCode: result.statusCode,
-        recoveryStatusCode: recoveryResult.statusCode,
-        sleepStatusCode: sleepResult.statusCode,
-        refreshed
-      }));
-    } catch (e) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: true,
-        connected: false,
-        error: "whoop_today_crash",
-        message: e.message,
-        strain: null,
-        averageHeartRate: null,
-        maxHeartRate: null,
-        kilojoule: null,
-        scoreState: null,
-        recovery: null,
-        sleep: null,
-        hrv: null,
-        restingHeartRate: null,
-        operatingMode: "NORMAL",
-        mode: "NORMAL",
-        suggestion: "usa modo neutral",
-        alfredoAdvice: "Crash leyendo WHOOP. NO es consejo médico."
-      }));
-    }
-  }
-
-
-  if (path === "/api/health/day-summary") {
-    try {
-      const http = require("http");
-
-      const getLocalJson = (localPath) => new Promise((resolve) => {
-        const req2 = http.get({
-          hostname: "127.0.0.1",
-          port: PORT,
-          path: localPath,
-          timeout: 8000
-        }, (rr) => {
-          let raw = "";
-          rr.on("data", c => raw += c);
-          rr.on("end", () => {
-            try {
-              resolve(JSON.parse(raw));
-            } catch (e) {
-              resolve(null);
-            }
-          });
-        });
-
-        req2.on("error", () => resolve(null));
-        req2.on("timeout", () => {
-          req2.destroy();
-          resolve(null);
-        });
-      });
-
-      const whoop = await getLocalJson("/api/whoop/today");
-
-      const summary = {
-        ok: true,
-        source: "WHOOP + Cordelius Health",
-        owner: "Pedro Cordero",
-        date: new Date().toLocaleDateString("es-MX"),
-
-        recovery: {
-          score: whoop?.recovery ?? null,
-          hrv_ms: whoop?.hrv ?? null,
-          rhr_bpm: whoop?.restingHeartRate ?? null
-        },
-
-        sleep: {
-          sleep_performance: whoop?.sleep ?? null,
-          time_in_bed_minutes: null,
-          time_asleep_minutes: null,
-          sleep_efficiency: null
-        },
-
-        strain: {
-          day_strain: whoop?.strain ?? null,
-          calories: null,
-          kilojoule: whoop?.kilojoule ?? null,
-          steps: null,
-          average_hr: whoop?.averageHeartRate ?? null,
-          max_hr: whoop?.maxHeartRate ?? null
-        },
-
-        activities: [],
-
-        behaviors: {
-          cannabis: null,
-          alcohol: null,
-          sauna: null,
-          cold_plunge: null,
-          supplements: [],
-          late_meal: null,
-          stress: null
-        },
-
-        ai_health_summary: (() => {
-          if (!whoop || whoop.connected !== true) {
-            return "WHOOP no está conectado todavía. Revisa la conexión antes de interpretar salud.";
-          }
-
-          const parts = [];
-
-          if (whoop.recovery != null) parts.push(`Recovery ${whoop.recovery}%`);
-          if (whoop.sleep != null) parts.push(`Sleep ${whoop.sleep}%`);
-          if (whoop.hrv != null) parts.push(`HRV ${Number(whoop.hrv).toFixed(1)} ms`);
-          if (whoop.restingHeartRate != null) parts.push(`RHR ${whoop.restingHeartRate} bpm`);
-          if (whoop.strain != null) parts.push(`Strain ${Number(whoop.strain).toFixed(1)}`);
-
-          let advice = "Resumen de salud de Pedro: " + parts.join(", ") + ".";
-
-          if (whoop.strain != null && whoop.strain >= 12) {
-            advice += " Carga física alta; conviene priorizar hidratación, comida completa, recuperación y no saturarte con estimulantes.";
-          } else if (whoop.recovery != null && whoop.recovery >= 75) {
-            advice += " Buen estado de recuperación; día favorable para actividad o enfoque mental, cuidando no sobrecargar.";
-          } else {
-            advice += " Día neutral; observa sueño, energía, cannabis, sauna, suplementos y estrés para encontrar patrones.";
-          }
-
-          advice += " No es consejo médico.";
-          return advice;
-        })(),
-
-        educationalNote: "Dashboard personal de salud. No es consejo médico."
-      };
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify(summary));
-    } catch (e) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: false,
-        error: "health_day_summary_crash",
-        message: e.message
-      }));
-    }
-  }
-
-
-  if (path === "/api/health/profile") {
-    try {
-      const fs = require("fs");
-      const profileFile = "health_profile.json";
-
-      let profile = {
-        owner: "Pedro Cordero",
-        goals: [],
-        supplements: [],
-        behaviorsToTrack: [],
-        notes: "Sin perfil local todavía."
-      };
-
-      if (fs.existsSync(profileFile)) {
-        try {
-          profile = JSON.parse(fs.readFileSync(profileFile, "utf8"));
-        } catch (e) {
-          profile.parseError = true;
-        }
-      }
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: true,
-        source: "Cordelius Health Profile",
-        profile,
-        educationalNote: "Perfil personal local. No es consejo médico."
-      }));
-    } catch (e) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: false,
-        error: "health_profile_crash",
-        message: e.message
-      }));
-    }
-  }
-
-  if (path === "/api/health/insights") {
-    try {
-      const http = require("http");
-      const fs = require("fs");
-
-      const getLocalJson = (localPath) => new Promise((resolve) => {
-        const req2 = http.get({
-          hostname: "127.0.0.1",
-          port: PORT,
-          path: localPath,
-          timeout: 8000
-        }, (rr) => {
-          let raw = "";
-          rr.on("data", c => raw += c);
-          rr.on("end", () => {
-            try {
-              resolve(JSON.parse(raw));
-            } catch (e) {
-              resolve(null);
-            }
-          });
-        });
-
-        req2.on("error", () => resolve(null));
-        req2.on("timeout", () => {
-          req2.destroy();
-          resolve(null);
-        });
-      });
-
-      const day = await getLocalJson("/api/health/day-summary");
-
-      let profile = null;
-      try {
-        if (fs.existsSync("health_profile.json")) {
-          profile = JSON.parse(fs.readFileSync("health_profile.json", "utf8"));
-        }
-      } catch (e) {
-        profile = null;
-      }
-
-      const recovery = day?.recovery?.score ?? null;
-      const sleep = day?.sleep?.sleep_performance ?? null;
-      const hrv = day?.recovery?.hrv_ms ?? null;
-      const rhr = day?.recovery?.rhr_bpm ?? null;
-      const strain = day?.strain?.day_strain ?? null;
-      const avgHr = day?.strain?.average_hr ?? null;
-      const maxHr = day?.strain?.max_hr ?? null;
-
-      let readiness = "SIN_DATOS";
-      let recoveryPriority = "media";
-      let bodySignal = "Todavía faltan más datos para interpretar.";
-      let recommendedFocus = [];
-
-      if (recovery !== null && sleep !== null && strain !== null) {
-        if (recovery >= 75 && sleep >= 75 && strain < 12) {
-          readiness = "ALTO";
-          recoveryPriority = "baja";
-          bodySignal = "Buen estado general: buena recuperación y sueño, con carga física manejable.";
-          recommendedFocus = [
-            "día bueno para entrenamiento o trabajo profundo",
-            "mantener hidratación",
-            "no sobrecargar estimulantes"
-          ];
-        } else if (strain >= 12 && recovery >= 70) {
-          readiness = "CARGA_ALTA_PERO_RECUPERADO";
-          recoveryPriority = "media-alta";
-          bodySignal = "Hay buena recuperación, pero la carga física del día está alta.";
-          recommendedFocus = [
-            "priorizar comida completa",
-            "electrolitos o hidratación",
-            "bajar intensidad tarde/noche",
-            "evitar mezclar muchos estimulantes"
-          ];
-        } else if (recovery < 50 || sleep < 60) {
-          readiness = "BAJO";
-          recoveryPriority = "alta";
-          bodySignal = "Señal de baja recuperación o sueño flojo.";
-          recommendedFocus = [
-            "descanso",
-            "sauna suave si te cae bien",
-            "evitar alcohol",
-            "cuidar cannabis si afecta sueño o motivación",
-            "no meter entrenamiento pesado"
-          ];
-        } else {
-          readiness = "MEDIO";
-          recoveryPriority = "media";
-          bodySignal = "Estado mixto: conviene observar energía, sueño, carga y hábitos.";
-          recommendedFocus = [
-            "actividad moderada",
-            "comida completa",
-            "registrar cannabis/suplementos/sauna para detectar patrones"
-          ];
-        }
-      }
-
-      const missingData = [];
-
-      if (day?.sleep?.time_asleep_minutes === null) missingData.push("minutos dormido");
-      if (day?.sleep?.sleep_efficiency === null) missingData.push("eficiencia de sueño");
-      if (day?.strain?.steps === null) missingData.push("pasos");
-      if (day?.behaviors?.cannabis === null) missingData.push("cannabis");
-      if (day?.behaviors?.sauna === null) missingData.push("sauna");
-      if (day?.behaviors?.cold_plunge === null) missingData.push("cold plunge");
-      if (!day?.behaviors?.supplements?.length) missingData.push("suplementos");
-      if (day?.behaviors?.stress === null) missingData.push("estrés percibido");
-
-      const aiBrief = [
-        "Health Dashboard de Pedro.",
-        recovery !== null ? `Recovery ${recovery}%.` : "Recovery sin dato.",
-        sleep !== null ? `Sleep ${sleep}%.` : "Sleep sin dato.",
-        hrv !== null ? `HRV ${Number(hrv).toFixed(1)} ms.` : "HRV sin dato.",
-        rhr !== null ? `RHR ${rhr} bpm.` : "RHR sin dato.",
-        strain !== null ? `Strain ${Number(strain).toFixed(1)}.` : "Strain sin dato.",
-        bodySignal,
-        `Prioridad de recuperación: ${recoveryPriority}.`,
-        "No es consejo médico."
-      ].join(" ");
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: true,
-        source: "Cordelius Health AI",
-        owner: profile?.owner || "Pedro Cordero",
-        date: new Date().toLocaleDateString("es-MX"),
-        readiness,
-        recoveryPriority,
-        bodySignal,
-        metrics: {
-          recovery,
-          sleep,
-          hrv_ms: hrv,
-          resting_hr_bpm: rhr,
-          strain,
-          average_hr: avgHr,
-          max_hr: maxHr
-        },
-        recommendedFocus,
-        missingData,
-        nextBestIntegrations: [
-          "leer notas del diario de WHOOP si la API lo permite",
-          "registrar cannabis/sauna/suplementos en health_behavior_log.json",
-          "agregar tendencias 7/30 días cuando tengamos historial",
-          "separar UI de salud de UI de trading"
-        ],
-        aiBrief,
-        educationalNote: "Interpretación educativa de datos personales. No es consejo médico."
-      }));
-    } catch (e) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: false,
-        error: "health_insights_crash",
-        message: e.message
-      }));
-    }
-  }
-
-  if (path === "/api/journal/auto") {
-    try {
-      const http = require("http");
-
-      const getJson = (url) => new Promise((resolve, reject) => {
-        http.get(url, (rr) => {
-          let raw = "";
-          rr.on("data", c => raw += c);
-          rr.on("end", () => {
-            try {
-              resolve(JSON.parse(raw));
-            } catch (e) {
-              resolve({ ok:false, raw });
-            }
-          });
-        }).on("error", reject);
-      });
-
-      const whoop = await getJson("http://127.0.0.1:3000/api/whoop/today");
-
-      const strain = whoop && typeof whoop.strain === "number" ? whoop.strain : null;
-      const averageHeartRate = whoop && typeof whoop.averageHeartRate === "number" ? whoop.averageHeartRate : null;
-      const maxHeartRate = whoop && typeof whoop.maxHeartRate === "number" ? whoop.maxHeartRate : null;
-      const kilojoule = whoop && typeof whoop.kilojoule === "number" ? whoop.kilojoule : null;
-      const scoreState = whoop ? whoop.scoreState || null : null;
-      const recovery = whoop && typeof whoop.recovery === "number" ? whoop.recovery : null;
-      const sleep = whoop && typeof whoop.sleep === "number" ? whoop.sleep : null;
-      const hrv = whoop && typeof whoop.hrv === "number" ? whoop.hrv : null;
-      const restingHeartRate = whoop && typeof whoop.restingHeartRate === "number" ? whoop.restingHeartRate : null;
-      const pvAuto = portfolioValue();
-      const regAuto = marketRegime();
-      const ctxAuto = alfredoDailyContext({ recovery, sleep, hrv, restingHeartRate, strain, operatingMode: whoop ? whoop.operatingMode || whoop.mode || "NORMAL" : "NORMAL" }, pvAuto, regAuto);
-
-      let bodyState = "sin datos biométricos";
-      let moodEstimated = "neutral";
-      let tradingModeSuggestion = "NEUTRAL — sin datos biométricos, proceder con cautela";
-      let operatingMode = "NORMAL";
-
-      if (whoop && whoop.connected) {
-        operatingMode = whoop.operatingMode || whoop.mode || "NORMAL";
-
-        if (strain !== null && strain >= 10) {
-          bodyState = "carga física alta";
-          moodEstimated = "posible cansancio";
-          tradingModeSuggestion = "DEFENSIVO — baja riesgo, evita sobreoperar y prioriza decisiones simples";
-        } else if (strain !== null && strain < 3) {
-          bodyState = "carga física baja";
-          moodEstimated = "tranquilo";
-          tradingModeSuggestion = "ANÁLISIS — buen momento para revisar mercado sin forzar trades";
-        } else {
-          bodyState = "estado físico estable";
-          moodEstimated = "neutral";
-          tradingModeSuggestion = "NORMAL — puedes analizar con calma y confirmar señales";
-        }
-      }
-
-      const alfredoNote = whoop && whoop.connected
-        ? `WHOOP conectado: recovery ${recovery ?? "—"}%, sleep ${sleep ?? "—"}%, HRV ${hrv ?? "—"} ms, RHR ${restingHeartRate ?? "—"} bpm, strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo operativo: ${operatingMode}. ${tradingModeSuggestion}. NO es consejo médico ni financiero.`
-        : "Sin datos biométricos activos. Proceder con cautela. NO es consejo médico ni financiero.";
-
-      const journal = {
-        ok: true,
-        source: whoop && whoop.connected ? "WHOOP + Corda" : "local_only",
-        date: new Date().toLocaleDateString("es-MX", {
-          weekday: "long",
-          year: "numeric",
-          month: "long",
-          day: "numeric"
-        }),
-        moodEstimated,
-        bodyState,
-        operatingMode,
-        mode: operatingMode,
-        tradingModeSuggestion,
-        alfredoNote,
-        alfredoAdvice: alfredoNote,
-        strain,
-        averageHeartRate,
-        maxHeartRate,
-        recovery,
-        sleep,
-        hrv,
-        restingHeartRate,
-        alfredoQuestion: ctxAuto.question,
-        trading: {
-          equityMXN: pvAuto.totalValueMXN,
-          pnlMXN: pvAuto.totalGainMXN,
-          pnlPct: pvAuto.totalGainPct,
-          riskMode: operatingMode,
-          marketRegime: regAuto.label
-        },
-        whoop: {
-          connected: !!(whoop && whoop.connected),
-          strain,
-          averageHeartRate,
-          maxHeartRate,
-          kilojoule,
-          scoreState,
-          recovery,
-          sleep,
-          hrv,
-          restingHeartRate,
-          operatingMode,
-          mode: operatingMode,
-          alfredoAdvice: whoop ? whoop.alfredoAdvice || null : null
-        },
-        educationalNote: "Generado automáticamente. No es consejo médico ni financiero."
-      };
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify(journal));
-    } catch (e) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: false,
-        error: "auto_journal_crash",
-        message: e.message
-      }));
-    }
-  }
-
-
-  if (path === "/api/trading/summary") {
-    const pv2 = portfolioValue();
-    const ranked2 = pv2.assets.slice().sort((a, b) => b.gainPct - a.gainPct);
-    const mxn = pv2.assets.filter(a => a.currency === "MXN").reduce((sum, a) => sum + a.valueMXN, 0);
-    const usd = pv2.assets.filter(a => a.currency === "USD").reduce((sum, a) => sum + a.valueMXN, 0);
-    const crypto = pv2.assets.filter(a => a.currency === "CRYPTO" || a.type === "crypto").reduce((sum, a) => sum + a.valueMXN, 0);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({
-      ok: true,
-      ts: Date.now(),
-      app: "Corda Trading",
-      equityTotalMXN: pv2.totalValueMXN,
-      pnlTotalMXN: pv2.totalGainMXN,
-      pnlTotalPct: pv2.totalGainPct,
-      exposureByCurrency: { MXN: mxn, USD: usd, CRYPTO: crypto },
-      topWinner: ranked2[0] || null,
-      topLoser: ranked2[ranked2.length - 1] || null,
-      riskMode: marketRegime().label,
-      educationalNote: "Contexto educativo; paper trading only. No es recomendación financiera."
-    }));
-  }
-  if (path === "/api/intelligence/feed") {
-    const now = Date.now();
-    const items = [];
-    news.slice(0, 25).forEach(n => {
-      const publishedMs = n.datetime ? Number(n.datetime) * 1000 : now;
-      items.push({
-        ticker: (n.related || n.symbol || "MARKET").toString().toUpperCase(),
-        source: n.source || "news",
-        publishedDate: new Date(publishedMs).toISOString().slice(0, 10),
-        eventDate: null,
-        delayDays: Math.max(0, Math.round((now - publishedMs) / 86400000)),
-        type: "news",
-        sentiment: "uncertain",
-        confidence: 50,
-        link: n.url || "#",
-        summary: (n.summary || n.headline || "Noticia sin resumen").toString().slice(0, 180),
-        educationalImpact: "Contexto educativo, no señal de trading."
-      });
-    });
-    (computeQuiverIntelligence().latestTrades || []).slice(0, 25).forEach(t => {
-      const eventDate = t.date || null;
-      const eventMs = eventDate ? Date.parse(eventDate) : NaN;
-      const delayDays = Number.isFinite(eventMs) ? Math.max(0, Math.round((now - eventMs) / 86400000)) : null;
-      items.push({
-        ticker: t.symbol || "—",
-        source: t.dataset || "Quiver/public disclosure",
-        publishedDate: null,
-        eventDate,
-        delayDays,
-        delayBadge: delayDays === null ? "unknown" : delayDays <= 0 ? "LIVE" : delayDays <= 7 ? "1-7d" : delayDays <= 30 ? "8-30d" : "stale",
-        type: t.dataset === "Insider" ? "insider" : t.dataset === "Congreso" ? "congressional" : "political",
-        sentiment: /buy|purchase/i.test(t.transaction || "") ? "bullish" : /sale|sell/i.test(t.transaction || "") ? "bearish" : "neutral",
-        confidence: delayDays === null ? 45 : delayDays <= 7 ? 68 : delayDays <= 30 ? 55 : 40,
-        link: null,
-        summary: `${t.transaction || "Actividad"} ${t.symbol || ""} reportado por ${t.who || "fuente pública"}`.trim(),
-        educationalImpact: "Revisar retraso y contexto; no perseguir trades."
-      });
-    });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ ok: true, ts: Date.now(), items, disclaimer: "Contexto educativo, no señal de trading." }));
-  }
-  if (path === "/api/alfredo/context") {
-    const h = computeHealthReadiness();
-    const pv2 = portfolioValue();
-    const reg2 = marketRegime();
-    const ctx = alfredoDailyContext(h, pv2, reg2);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({
-      ok: true,
-      ts: Date.now(),
-      alfredoMode: ctx.mode,
-      alfredoOneLiner: ctx.oneLiner,
-      alfredoQuestion: ctx.question,
-      alfredoNextActions: ctx.nextActions,
-      alfredoRiskWarning: "No es consejo financiero ni médico. Si no tengo un dato, no lo invento.",
-      alfredoMemorySuggestion: journalEntries.length ? "Revisar patrones de journal antes de decidir." : "Guardar una nota rápida para crear memoria local."
-    }));
-  }
-
   if (path === "/api/os-status") {
     const h = computeHealthReadiness();
     const jd = computeJournalData();
@@ -4279,7 +4157,7 @@ const server = http.createServer(async (req, res) => {
 async function boot() {
   // CORDELIUS_BOOT_LISTEN_FIRST_FIX
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`${CORDA_APP_NAME} listo en http://localhost:${PORT}`);
+    console.log(`${settings.appName} listo en http://localhost:${PORT}`);
   });
 
   setTimeout(async () => {
@@ -4310,6 +4188,17 @@ async function boot() {
         new Promise(resolve => setTimeout(resolve, 10000))
       ]);
     } catch (e) { console.log("fetchQuiverData boot omitido:", e.message); }
+
+    try {
+      await Promise.race([
+        refreshWhoopCache(),
+        new Promise(resolve => setTimeout(resolve, 10000))
+      ]);
+    } catch (e) { console.log("refreshWhoopCache boot omitido:", e.message); }
+
+    setInterval(async () => {
+      try { await Promise.race([refreshWhoopCache(), new Promise(r => setTimeout(r, 10000))]); } catch (e) {}
+    }, WHOOP_CACHE_MS);
 
     setInterval(async () => {
       try {
