@@ -38,3 +38,5 @@ runtime/
 # Local health/journal runtime files
 whoop_tokens.json
 cordelius_journal.json
+health_profile.json
+health_behavior_log.json
