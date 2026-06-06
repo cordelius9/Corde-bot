@@ -3203,6 +3203,328 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(computeJournalData()));
   }
+  if (path === "/api/whoop/today") {
+    try {
+      const https = require("https");
+      const fs = require("fs");
+
+      const tokenFile = "whoop_tokens.json";
+
+      const emptyWhoop = (message, extra) => ({
+        ok: true,
+        connected: false,
+        date: new Date().toLocaleDateString("es-MX"),
+        strain: null,
+        averageHeartRate: null,
+        maxHeartRate: null,
+        kilojoule: null,
+        scoreState: null,
+        recovery: null,
+        sleep: null,
+        hrv: null,
+        restingHeartRate: null,
+        operatingMode: "NORMAL",
+        mode: "NORMAL",
+        suggestion: "usa modo neutral",
+        alfredoAdvice: message,
+        message,
+        ...(extra || {})
+      });
+
+      if (!fs.existsSync(tokenFile)) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify(emptyWhoop(
+          "WHOOP configurado — tokens pendientes de autorización OAuth. NO es consejo médico."
+        )));
+      }
+
+      const readTokens = () => JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+
+      const refreshTokens = (oldTokens) => new Promise((resolve) => {
+        if (!oldTokens.refresh_token) {
+          return resolve({ ok:false, error:"no_refresh_token" });
+        }
+
+        const body = new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: oldTokens.refresh_token,
+          client_id: process.env.WHOOP_CLIENT_ID || "",
+          client_secret: process.env.WHOOP_CLIENT_SECRET || ""
+        }).toString();
+
+        const options = {
+          hostname: "api.prod.whoop.com",
+          path: "/oauth/oauth2/token",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": Buffer.byteLength(body),
+            "Accept": "application/json"
+          }
+        };
+
+        const req2 = https.request(options, (rr) => {
+          let raw = "";
+          rr.on("data", c => raw += c);
+          rr.on("end", () => {
+            let parsed;
+            try { parsed = JSON.parse(raw); } catch(e) { parsed = { raw }; }
+
+            const success = rr.statusCode >= 200 && rr.statusCode < 300 && parsed.access_token;
+
+            if (success) {
+              const newTokens = {
+                savedAt: new Date().toISOString(),
+                token_type: parsed.token_type || oldTokens.token_type || null,
+                expires_in: parsed.expires_in || null,
+                scope: parsed.scope || oldTokens.scope || null,
+                access_token: parsed.access_token,
+                refresh_token: parsed.refresh_token || oldTokens.refresh_token || null
+              };
+
+              fs.writeFileSync(tokenFile, JSON.stringify(newTokens, null, 2));
+              return resolve({ ok:true, tokens:newTokens, statusCode:rr.statusCode });
+            }
+
+            return resolve({ ok:false, statusCode:rr.statusCode, error:parsed });
+          });
+        });
+
+        req2.on("error", e => resolve({ ok:false, error:e.message }));
+        req2.write(body);
+        req2.end();
+      });
+
+      const fetchCycle = (tokens) => new Promise((resolve) => {
+        const options = {
+          hostname: "api.prod.whoop.com",
+          path: "/developer/v1/cycle?limit=1",
+          method: "GET",
+          headers: {
+            "Authorization": "Bearer " + tokens.access_token,
+            "Accept": "application/json"
+          }
+        };
+
+        const r = https.request(options, (rr) => {
+          let raw = "";
+          rr.on("data", c => raw += c);
+          rr.on("end", () => {
+            let data;
+            try { data = JSON.parse(raw); } catch(e) { data = { raw }; }
+            resolve({ statusCode: rr.statusCode, data });
+          });
+        });
+
+        r.on("error", e => resolve({ statusCode:500, data:{ error:e.message } }));
+        r.end();
+      });
+
+      let tokens = readTokens();
+      let result = await fetchCycle(tokens);
+
+      let refreshed = false;
+
+      if (result.statusCode === 401) {
+        const refresh = await refreshTokens(tokens);
+
+        if (refresh.ok) {
+          refreshed = true;
+          tokens = refresh.tokens;
+          result = await fetchCycle(tokens);
+        } else {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify(emptyWhoop(
+            "WHOOP token expirado y refresh falló. Reautoriza con /api/whoop/connect.",
+            {
+              whoopRawStatusCode: 401,
+              refreshAttempted: true,
+              refreshOk: false,
+              refreshError: refresh.error || null
+            }
+          )));
+        }
+      }
+
+      const apiOk = result.statusCode >= 200 && result.statusCode < 300;
+      const data = result.data || {};
+      const cycle = data.records && data.records.length ? data.records[0] : null;
+      const score = cycle && cycle.score ? cycle.score : {};
+
+      const strain = typeof score.strain === "number" ? score.strain : null;
+      const averageHeartRate = typeof score.average_heart_rate === "number" ? score.average_heart_rate : null;
+      const maxHeartRate = typeof score.max_heart_rate === "number" ? score.max_heart_rate : null;
+      const kilojoule = typeof score.kilojoule === "number" ? score.kilojoule : null;
+      const scoreState = cycle ? cycle.score_state || null : null;
+
+      let operatingMode = "NORMAL";
+      let suggestion = "usa modo neutral";
+
+      if (strain !== null && strain >= 10) {
+        operatingMode = "DEFENSIVO";
+        suggestion = "baja riesgo y evita sobreoperar";
+      } else if (strain !== null && strain < 3) {
+        operatingMode = "LOW_STRAIN";
+        suggestion = "buen momento para análisis tranquilo, sin forzar trades";
+      }
+
+      const advice = apiOk
+        ? `WHOOP conectado. Strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo: ${operatingMode}. ${suggestion}. NO es consejo médico.`
+        : "WHOOP token presente, pero la API no respondió correctamente. Reautoriza si persiste.";
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: true,
+        connected: apiOk,
+        date: new Date().toLocaleDateString("es-MX"),
+        strain,
+        averageHeartRate,
+        maxHeartRate,
+        kilojoule,
+        scoreState,
+        recovery: null,
+        sleep: null,
+        hrv: null,
+        restingHeartRate: null,
+        operatingMode,
+        mode: operatingMode,
+        suggestion,
+        alfredoAdvice: advice,
+        message: apiOk ? "WHOOP conectado desde whoop_tokens.json." : "WHOOP token presente, pero API falló.",
+        whoopRawStatusCode: result.statusCode,
+        refreshed
+      }));
+    } catch (e) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: true,
+        connected: false,
+        error: "whoop_today_crash",
+        message: e.message,
+        strain: null,
+        averageHeartRate: null,
+        maxHeartRate: null,
+        kilojoule: null,
+        scoreState: null,
+        recovery: null,
+        sleep: null,
+        hrv: null,
+        restingHeartRate: null,
+        operatingMode: "NORMAL",
+        mode: "NORMAL",
+        suggestion: "usa modo neutral",
+        alfredoAdvice: "Crash leyendo WHOOP. NO es consejo médico."
+      }));
+    }
+  }
+
+
+  if (path === "/api/journal/auto") {
+    try {
+      const http = require("http");
+
+      const getJson = (url) => new Promise((resolve, reject) => {
+        http.get(url, (rr) => {
+          let raw = "";
+          rr.on("data", c => raw += c);
+          rr.on("end", () => {
+            try {
+              resolve(JSON.parse(raw));
+            } catch (e) {
+              resolve({ ok:false, raw });
+            }
+          });
+        }).on("error", reject);
+      });
+
+      const whoop = await getJson("http://127.0.0.1:3000/api/whoop/today");
+
+      const strain = whoop && typeof whoop.strain === "number" ? whoop.strain : null;
+      const averageHeartRate = whoop && typeof whoop.averageHeartRate === "number" ? whoop.averageHeartRate : null;
+      const maxHeartRate = whoop && typeof whoop.maxHeartRate === "number" ? whoop.maxHeartRate : null;
+      const kilojoule = whoop && typeof whoop.kilojoule === "number" ? whoop.kilojoule : null;
+      const scoreState = whoop ? whoop.scoreState || null : null;
+
+      let bodyState = "sin datos biométricos";
+      let moodEstimated = "neutral";
+      let tradingModeSuggestion = "NEUTRAL — sin datos biométricos, proceder con cautela";
+      let operatingMode = "NORMAL";
+
+      if (whoop && whoop.connected) {
+        operatingMode = whoop.operatingMode || whoop.mode || "NORMAL";
+
+        if (strain !== null && strain >= 10) {
+          bodyState = "carga física alta";
+          moodEstimated = "posible cansancio";
+          tradingModeSuggestion = "DEFENSIVO — baja riesgo, evita sobreoperar y prioriza decisiones simples";
+        } else if (strain !== null && strain < 3) {
+          bodyState = "carga física baja";
+          moodEstimated = "tranquilo";
+          tradingModeSuggestion = "ANÁLISIS — buen momento para revisar mercado sin forzar trades";
+        } else {
+          bodyState = "estado físico estable";
+          moodEstimated = "neutral";
+          tradingModeSuggestion = "NORMAL — puedes analizar con calma y confirmar señales";
+        }
+      }
+
+      const alfredoNote = whoop && whoop.connected
+        ? `WHOOP conectado: strain ${strain}, HR promedio ${averageHeartRate}, HR máxima ${maxHeartRate}. Modo operativo: ${operatingMode}. ${tradingModeSuggestion}. NO es consejo médico ni financiero.`
+        : "Sin datos biométricos activos. Proceder con cautela. NO es consejo médico ni financiero.";
+
+      const journal = {
+        ok: true,
+        source: whoop && whoop.connected ? "WHOOP + Cordelius" : "local_only",
+        date: new Date().toLocaleDateString("es-MX", {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric"
+        }),
+        moodEstimated,
+        bodyState,
+        operatingMode,
+        mode: operatingMode,
+        tradingModeSuggestion,
+        alfredoNote,
+        alfredoAdvice: alfredoNote,
+        strain,
+        averageHeartRate,
+        maxHeartRate,
+        recovery: null,
+        sleep: null,
+        hrv: null,
+        restingHeartRate: null,
+        whoop: {
+          connected: !!(whoop && whoop.connected),
+          strain,
+          averageHeartRate,
+          maxHeartRate,
+          kilojoule,
+          scoreState,
+          recovery: null,
+          sleep: null,
+          hrv: null,
+          restingHeartRate: null,
+          mode: operatingMode,
+          alfredoAdvice: whoop ? whoop.alfredoAdvice || null : null
+        },
+        educationalNote: "Generado automáticamente. No es consejo médico ni financiero."
+      };
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(journal));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: false,
+        error: "auto_journal_crash",
+        message: e.message
+      }));
+    }
+  }
+
+
   if (path === "/api/os-status") {
     const h = computeHealthReadiness();
     const jd = computeJournalData();
