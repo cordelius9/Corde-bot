@@ -6,7 +6,7 @@ const token = process.env.TELEGRAM_BOT_TOKEN || "";
 const bot = new TelegramBot(token, { polling: true });
 
 const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY || ""
+  apiKey: process.env.CLAUDE_API_KEY
 });
 
 console.log("Bot iniciado...");
@@ -20,7 +20,7 @@ bot.on('message', async (msg) => {
     const userText = msg.text;
 
     const response = await anthropic.messages.create({
-      model: process.env.CLAUDE_MODEL_BOT || "claude-haiku-4-5-20251001",
+      model: "claude-haiku-4-5",
       max_tokens: 500,
       messages: [
         {
