@@ -2200,30 +2200,147 @@ function computeTradeIdea() {
   return { hasIdea: false, type: "NO_TRADE", symbol: null, action: "SIN SEÑAL", reason: "Sin señales destacadas ahora", score: null, risk: null, confidence: "N/A", source: null, missingData: "N/A", timestamp: nowMX() };
 }
 
-function computeOperatingMode(recovery) {
-  if (recovery === null || recovery === undefined) return "NORMAL";
-  if (recovery < 33) return "CONSERVADOR";
-  if (recovery >= 67) return "NORMAL";
-  return "NEUTRAL";
+function computeOperatingMode(recovery, strain, hrv) {
+  if (recovery === null && strain === null) return "NORMAL";
+  if (strain !== null && strain >= 18) return "CARGA_EXTREMA";
+  if (strain !== null && strain >= 14 && (recovery === null || recovery < 60)) return "ALTO";
+  if (strain !== null && strain >= 10 && (recovery === null || recovery < 70)) return "DEFENSIVO";
+  if (recovery !== null && recovery < 34) return "BAJO";
+  if (recovery !== null && recovery < 50) return "CONSERVADOR";
+  if (recovery !== null && recovery >= 75 && (strain === null || strain < 10)) return "LOW_STRAIN";
+  if (strain !== null && strain >= 14 && recovery !== null && recovery >= 70) return "CARGA_ALTA_PERO_RECUPERADO";
+  return "NORMAL";
 }
 
 function computeHealthReadiness() {
+  const w = whoopDayCache;
   return {
     ok: true,
     configured: WHOOP_CONFIGURED,
-    source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "whoop_pending",
-    recovery: null,
-    sleep: null,
-    strain: null,
-    hrv: null,
-    restingHeartRate: null,
-    operatingMode: computeOperatingMode(null),
-    message: WHOOP_CONFIGURED
-      ? "WHOOP API key detectada — implementación de datos en progreso."
-      : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
-    suggestion: "usa modo neutral",
-    educationalNote: "No es consejo médico. Sirve para contexto personal."
+    connected: w.connected,
+    source: w.source,
+    recovery: w.recovery,
+    sleep: w.sleep,
+    hrv: w.hrv,
+    restingHeartRate: w.restingHeartRate,
+    strain: w.strain,
+    averageHeartRate: w.averageHeartRate,
+    maxHeartRate: w.maxHeartRate,
+    kilojoule: w.kilojoule,
+    scoreState: w.scoreState,
+    sleepEfficiency: w.sleepEfficiency,
+    timeAsleepMinutes: w.timeAsleepMinutes,
+    operatingMode: computeOperatingMode(w.recovery, w.strain, w.hrv),
+    suggestion: w.suggestion || "usa modo neutral",
+    alfredoAdvice: w.alfredoAdvice,
+    educationalNote: "No es consejo médico. Sirve para contexto personal.",
+    message: w.alfredoAdvice || (w.connected ? "WHOOP conectado." : WHOOP_CONFIGURED ? "WHOOP configurado — tokens pendientes." : "Conecta WHOOP para readiness real.")
   };
+}
+
+function computeHealthScores(h) {
+  const rec = h.recovery; const slp = h.sleep; const hrv = h.hrv;
+  const rhr = h.restingHeartRate; const str = h.strain;
+
+  let mentalClarityScore = 50;
+  if (rec !== null) mentalClarityScore = Math.round(rec * 0.5 + (slp || 50) * 0.3 + (hrv !== null ? Math.min(hrv / 2, 20) : 10));
+  mentalClarityScore = Math.min(100, Math.max(0, mentalClarityScore));
+  const mentalClarityLabel = mentalClarityScore >= 70 ? "ALTA" : mentalClarityScore >= 45 ? "MEDIA" : "BAJA";
+
+  let energyScore = 50;
+  if (slp !== null) energyScore = Math.round(slp * 0.6 + (str !== null ? Math.max(0, 50 - str * 2) : 20) + 10);
+  energyScore = Math.min(100, Math.max(0, energyScore));
+  const energyLabel = energyScore >= 65 ? "ALTA" : energyScore >= 40 ? "MEDIA" : "BAJA";
+
+  let nervousSystem = "NORMAL";
+  if (hrv !== null) {
+    if (hrv >= 100) nervousSystem = "RECUPERADO";
+    else if (hrv >= 60) nervousSystem = "NORMAL";
+    else if (hrv >= 30) nervousSystem = "ACTIVO";
+    else nervousSystem = "ESTRESADO";
+  } else if (rec !== null) {
+    nervousSystem = rec >= 70 ? "RECUPERADO" : rec >= 45 ? "NORMAL" : "BAJO";
+  }
+
+  let overtradingRisk = "MEDIO";
+  if (rec !== null && rec < 34) overtradingRisk = "ALTO";
+  else if (rec !== null && str !== null && rec < 50 && str >= 12) overtradingRisk = "ALTO";
+  else if (rec !== null && rec >= 75 && (str === null || str < 10)) overtradingRisk = "BAJO";
+  else if (str !== null && str >= 16) overtradingRisk = "ALTO";
+
+  let stressLoad = 50;
+  if (str !== null) stressLoad = Math.round((str / 21) * 100);
+  if (hrv !== null && hrv < 40) stressLoad = Math.max(stressLoad, 70);
+  stressLoad = Math.min(100, Math.max(0, stressLoad));
+  const stressLabel = stressLoad >= 70 ? "ALTO" : stressLoad >= 40 ? "MEDIO" : "BAJO";
+
+  let recoveryPriority = "media";
+  if (rec !== null && rec < 34) recoveryPriority = "urgente";
+  else if (rec !== null && rec < 50) recoveryPriority = "alta";
+  else if (rec !== null && rec >= 75) recoveryPriority = "baja";
+
+  return {
+    mentalClarityScore, mentalClarityLabel,
+    energyScore, energyLabel,
+    nervousSystem,
+    overtradingRisk,
+    stressLoad, stressLabel,
+    recoveryPriority,
+    tradingMode: h.operatingMode || "NORMAL"
+  };
+}
+
+function computeCorrelations() {
+  if (dailySnapshots.length < 3) return { available: false, pairs: [], message: "Necesitas al menos 3 días de datos para calcular correlaciones." };
+  const behaviors = ["cannabis","sauna","cold_plunge","alcohol","supplements","late_meal","stress"];
+  const metrics = ["recovery","sleep","hrv","strain","rhr"];
+  const pairs = [];
+  for (const beh of behaviors) {
+    const withBeh = dailySnapshots.filter(s => s.behaviors && s.behaviors[beh] === true);
+    const without  = dailySnapshots.filter(s => s.behaviors && s.behaviors[beh] === false);
+    if (withBeh.length < 1 || without.length < 1) continue;
+    for (const met of metrics) {
+      const avg = arr => { const v = arr.map(s => s[met]).filter(x => x !== null && x !== undefined); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
+      const aWith = avg(withBeh); const aWithout = avg(without);
+      if (aWith === null || aWithout === null) continue;
+      const delta = aWith - aWithout;
+      const absDelta = Math.abs(delta);
+      if (absDelta < 3) continue;
+      pairs.push({
+        behavior: beh, metric: met, avgWith: Math.round(aWith * 10)/10,
+        avgWithout: Math.round(aWithout * 10)/10, delta: Math.round(delta * 10)/10,
+        direction: delta > 0 ? "sube" : "baja", strength: absDelta >= 15 ? "fuerte" : absDelta >= 8 ? "media" : "débil",
+        daysWithBeh: withBeh.length, daysWithout: without.length
+      });
+    }
+  }
+  pairs.sort((a,b) => Math.abs(b.delta) - Math.abs(a.delta));
+  return { available: pairs.length > 0, pairs: pairs.slice(0, 12), totalDays: dailySnapshots.length };
+}
+
+function svgTrendLine(values, color, width, height, label) {
+  const nonNull = values.filter(v => v != null);
+  if (nonNull.length < 2) {
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><text x="${width/2}" y="${height/2+4}" text-anchor="middle" fill="rgba(255,255,255,.25)" font-size="10" font-family="system-ui">Sin datos</text></svg>`;
+  }
+  const pad = 8;
+  const min = Math.min(...nonNull); const max = Math.max(...nonNull);
+  const range = (max - min) || 1;
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (values.length - 1)) * (width - pad * 2);
+    const y = v != null ? (height - pad) - ((v - min) / range) * (height - pad * 2) : null;
+    return v != null ? [x, y] : null;
+  }).filter(Boolean);
+  const path = "M " + pts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" L ");
+  const fillPts = [...pts, [pts[pts.length-1][0], height-pad], [pts[0][0], height-pad]];
+  const fillPath = "M " + fillPts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" L ") + " Z";
+  const last = nonNull[nonNull.length-1];
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <path d="${fillPath}" fill="${color}18"/>
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${pts[pts.length-1][0].toFixed(1)}" cy="${pts[pts.length-1][1].toFixed(1)}" r="3" fill="${color}"/>
+    <text x="${width-pad}" y="${pad+2}" text-anchor="end" fill="${color}" font-size="9" font-weight="700">${last}</text>
+  </svg>`;
 }
 
 function saveJournalEntry(entry) {
@@ -2358,33 +2475,220 @@ function renderAutopilotPanel() {
   </div>`;
 }
 
+async function fetchWhoopMetrics() {
+  const https = require("https");
+  const tokenFile = "whoop_tokens.json";
+
+  const emptyWhoop = (message, extra) => ({
+    ok: true, connected: false, date: new Date().toLocaleDateString("es-MX"),
+    strain: null, averageHeartRate: null, maxHeartRate: null, kilojoule: null, scoreState: null,
+    recovery: null, sleep: null, hrv: null, restingHeartRate: null, sleepEfficiency: null, timeAsleepMinutes: null,
+    operatingMode: "NORMAL", mode: "NORMAL", suggestion: "usa modo neutral",
+    alfredoAdvice: message, message, ...(extra || {})
+  });
+
+  if (!fs.existsSync(tokenFile)) return emptyWhoop("WHOOP configurado — tokens pendientes de autorización OAuth. NO es consejo médico.");
+
+  const readTokens = () => JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+
+  const refreshTokensFn = (oldTokens) => new Promise((resolve) => {
+    if (!oldTokens.refresh_token) return resolve({ ok:false, error:"no_refresh_token" });
+    const body = new URLSearchParams({
+      grant_type: "refresh_token", refresh_token: oldTokens.refresh_token,
+      client_id: process.env.WHOOP_CLIENT_ID || "", client_secret: process.env.WHOOP_CLIENT_SECRET || ""
+    }).toString();
+    const options = {
+      hostname: "api.prod.whoop.com", path: "/oauth/oauth2/token", method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(body), "Accept": "application/json" }
+    };
+    const req2 = https.request(options, (rr) => {
+      let raw = "";
+      rr.on("data", c => raw += c);
+      rr.on("end", () => {
+        let parsed; try { parsed = JSON.parse(raw); } catch(e) { parsed = null; }
+        const success = rr.statusCode >= 200 && rr.statusCode < 300 && parsed && parsed.access_token;
+        if (success) {
+          const newTokens = { savedAt: new Date().toISOString(), token_type: parsed.token_type || oldTokens.token_type || null,
+            expires_in: parsed.expires_in || null, scope: parsed.scope || oldTokens.scope || null,
+            access_token: parsed.access_token, refresh_token: parsed.refresh_token || oldTokens.refresh_token || null };
+          fs.writeFileSync(tokenFile, JSON.stringify(newTokens, null, 2));
+          return resolve({ ok:true, tokens:newTokens, statusCode:rr.statusCode });
+        }
+        return resolve({ ok:false, statusCode:rr.statusCode, error:"refresh_failed" });
+      });
+    });
+    req2.on("error", e => resolve({ ok:false, error:e.message }));
+    req2.write(body); req2.end();
+  });
+
+  const fetchWhoopPath = (tokens, whoopPath) => new Promise((resolve) => {
+    const options = {
+      hostname: "api.prod.whoop.com", path: whoopPath, method: "GET",
+      headers: { "Authorization": "Bearer " + tokens.access_token, "Accept": "application/json" }
+    };
+    const r = https.request(options, (rr) => {
+      let raw = "";
+      rr.on("data", c => raw += c);
+      rr.on("end", () => { let data; try { data = JSON.parse(raw); } catch(e) { data = null; } resolve({ statusCode: rr.statusCode, data }); });
+    });
+    r.on("error", e => resolve({ statusCode:500, data:null, error:e.message }));
+    r.end();
+  });
+
+  const latestRecord = (payload) => payload && Array.isArray(payload.records) && payload.records.length ? payload.records[0] : null;
+  const numeric = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+
+  try {
+    let tokens = readTokens();
+    let result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
+    let refreshed = false;
+
+    if (result.statusCode === 401) {
+      const refresh = await refreshTokensFn(tokens);
+      if (refresh.ok) { refreshed = true; tokens = refresh.tokens; result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1"); }
+      else return emptyWhoop("WHOOP token expirado y refresh falló. Reautoriza con /api/whoop/connect.", { whoopRawStatusCode:401, refreshAttempted:true, refreshOk:false });
+    }
+
+    const apiOk = result.statusCode >= 200 && result.statusCode < 300;
+    const data = result.data || {};
+    const cycle = latestRecord(data);
+    const score = cycle && cycle.score ? cycle.score : {};
+
+    let recoveryResult = { statusCode: null, data: null };
+    let sleepResult = { statusCode: null, data: null };
+    if (apiOk) {
+      [recoveryResult, sleepResult] = await Promise.all([
+        fetchWhoopPath(tokens, "/developer/v2/recovery?limit=1"),
+        fetchWhoopPath(tokens, "/developer/v2/activity/sleep?limit=1")
+      ]);
+    }
+
+    const recoveryRecord = latestRecord(recoveryResult.data);
+    const recoveryScore = recoveryRecord && recoveryRecord.score ? recoveryRecord.score : {};
+    const sleepRecord = latestRecord(sleepResult.data);
+    const sleepScore = sleepRecord && sleepRecord.score ? sleepRecord.score : {};
+
+    const strain = numeric(score.strain);
+    const averageHeartRate = numeric(score.average_heart_rate);
+    const maxHeartRate = numeric(score.max_heart_rate);
+    const kilojoule = numeric(score.kilojoule);
+    const scoreState = cycle ? cycle.score_state || null : null;
+    const recovery = numeric(recoveryScore.recovery_score);
+    const hrv = numeric(recoveryScore.hrv_rmssd_milli);
+    const restingHeartRate = numeric(recoveryScore.resting_heart_rate);
+    const sleep = numeric(sleepScore.sleep_performance_percentage);
+    const sleepEfficiency = numeric(sleepScore.sleep_efficiency) || null;
+    const timeAsleepMinutes = numeric(sleepScore.total_in_bed_time_milli) ? Math.round(sleepScore.total_in_bed_time_milli / 60000) : null;
+
+    const operatingMode = computeOperatingMode(recovery, strain, hrv);
+    let suggestion = "usa modo neutral";
+    if (strain !== null && strain >= 18) suggestion = "modo defensivo extremo, prioriza recuperación";
+    else if (strain !== null && strain >= 14) suggestion = "baja riesgo y evita sobreoperar";
+    else if (strain !== null && strain >= 10) suggestion = "mantén calma y decisiones simples";
+    else if (recovery !== null && recovery < 34) suggestion = "prioriza descanso sobre cualquier acción";
+    else if (recovery !== null && recovery >= 75) suggestion = "buen momento para análisis tranquilo";
+    else if (strain !== null && strain < 3) suggestion = "buen momento para análisis, sin forzar trades";
+
+    const advice = apiOk
+      ? `WHOOP conectado. Recovery ${recovery ?? "—"}%, Sleep ${sleep ?? "—"}%, HRV ${hrv ?? "—"} ms, RHR ${restingHeartRate ?? "—"} bpm, Strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo: ${operatingMode}. ${suggestion}. NO es consejo médico.`
+      : "WHOOP token presente, pero la API no respondió correctamente. Reautoriza si persiste.";
+
+    return {
+      ok: true, connected: apiOk, date: new Date().toLocaleDateString("es-MX"),
+      strain, averageHeartRate, maxHeartRate, kilojoule, scoreState,
+      recovery, sleep, hrv, restingHeartRate, sleepEfficiency, timeAsleepMinutes,
+      operatingMode, mode: operatingMode, suggestion, alfredoAdvice: advice,
+      message: apiOk ? "WHOOP conectado desde whoop_tokens.json." : "WHOOP token presente, pero API falló.",
+      whoopRawStatusCode: result.statusCode, recoveryStatusCode: recoveryResult.statusCode,
+      sleepStatusCode: sleepResult.statusCode, refreshed
+    };
+  } catch(e) {
+    return emptyWhoop("Crash leyendo WHOOP. NO es consejo médico.", { error: "fetchWhoopMetrics_crash", errorMsg: e.message });
+  }
+}
+
+async function refreshWhoopDayCache() {
+  if (Date.now() - whoopDayCache.lastFetch < whoopDayCache.fetchInterval) return;
+  try {
+    const data = await fetchWhoopMetrics();
+    if (data && data.ok) {
+      Object.assign(whoopDayCache, {
+        connected: !!data.connected, lastFetch: Date.now(),
+        strain: data.strain, averageHeartRate: data.averageHeartRate,
+        maxHeartRate: data.maxHeartRate, kilojoule: data.kilojoule, scoreState: data.scoreState,
+        recovery: data.recovery, hrv: data.hrv, restingHeartRate: data.restingHeartRate,
+        sleep: data.sleep, sleepEfficiency: data.sleepEfficiency || null, timeAsleepMinutes: data.timeAsleepMinutes || null,
+        operatingMode: data.operatingMode || "NORMAL", suggestion: data.suggestion || "usa modo neutral",
+        alfredoAdvice: data.alfredoAdvice || null, source: data.connected ? "whoop" : "local_only"
+      });
+    }
+  } catch(e) { console.log("refreshWhoopDayCache error:", e.message); }
+}
+
 function computeHealthTrends() {
+  const snap7 = dailySnapshots.slice(0, 7).reverse();
   return {
-    available: false,
-    days: 0,
-    recovery7d: [], sleep7d: [], hrv7d: [], strain7d: [], mood7d: [],
-    message: "Necesitamos guardar snapshots diarios para activar tendencias. Usa /api/health/snapshot."
+    available: snap7.length >= 2,
+    days: snap7.length,
+    recovery7d: snap7.map(s => s.recovery),
+    sleep7d: snap7.map(s => s.sleep),
+    hrv7d: snap7.map(s => s.hrv),
+    strain7d: snap7.map(s => s.strain),
+    rhr7d: snap7.map(s => s.rhr),
+    mood7d: snap7.map(s => s.journalMood),
+    message: snap7.length < 2 ? "Necesitamos guardar snapshots diarios para activar tendencias. Usa /api/health/snapshot." : `Tendencias de los últimos ${snap7.length} días.`
   };
 }
 
 function renderCordaHealthModule() {
   const h = computeHealthReadiness();
+  const scores = computeHealthScores(h);
+  const correlations = computeCorrelations();
   const jd = computeJournalData();
   const trends = computeHealthTrends();
   const today = nowMX();
   const mode = h.operatingMode || "NORMAL";
-  const MC = { LOW_STRAIN:"#00ff99", NORMAL:"#9fb3c8", DEFENSIVO:"#ffd35c", CONSERVADOR:"#ffd35c", MEDIO:"#3b9dff", ALTO:"#ff4d6d", BAJO:"#818cf8", CARGA_ALTA_PERO_RECUPERADO:"#f472b6" };
+  const MC = { LOW_STRAIN:"#00ff99", NORMAL:"#9fb3c8", DEFENSIVO:"#ffd35c", CONSERVADOR:"#ffd35c", MEDIO:"#3b9dff", ALTO:"#ff4d6d", BAJO:"#818cf8", CARGA_ALTA_PERO_RECUPERADO:"#f472b6", CARGA_EXTREMA:"#ff4d6d", CONSERVADOR:"#818cf8" };
   const mc = MC[mode] || "#9fb3c8";
   const jCount = jd.count || 0;
   const jTop = jd.topMood || null;
   const jLast = jd.recent && jd.recent[0];
   const jLastMood = jLast ? (jLast.mood || "—") : "—";
   const jLastText = jLast ? String(jLast.text || jLast.content || "").slice(0, 120) : null;
-  const behaviors = ["Cannabis","Alcohol","Sauna","Cold Plunge","Suplementos","Comida tardía","Entrenamiento","Estrés","Hidratación","Cafeína"];
-  const trendItems = [
-    { label:"Recovery 7d", color:"#f472b6" }, { label:"Sleep 7d", color:"#818cf8" },
-    { label:"HRV 7d", color:"#00ff99" }, { label:"Strain 7d", color:"#ffd35c" },
-    { label:"Mood 7d", color:"#3b9dff" }, { label:"Energía 7d", color:"#f97316" },
+  const behaviorChips = [
+    { key:"cannabis",    label:"Cannabis" },
+    { key:"sauna",       label:"Sauna" },
+    { key:"cold_plunge", label:"Cold Plunge" },
+    { key:"alcohol",     label:"Alcohol" },
+    { key:"supplements", label:"Suplementos" },
+    { key:"late_meal",   label:"Comida tardía" },
+    { key:"training",    label:"Entrenamiento" },
+    { key:"stress",      label:"Estrés alto" },
+    { key:"hydration",   label:"Hidratación OK" },
+    { key:"caffeine",    label:"Cafeína" },
+  ];
+  const scoreCardDefs = [
+    { id:"ch-score-clarity",     labelId:"ch-label-clarity",     label:"Mental Clarity",   score:scores.mentalClarityScore, lbl:scores.mentalClarityLabel, color: scores.mentalClarityScore>=70?"#00ff99":scores.mentalClarityScore>=45?"#ffd35c":"#ff4d6d" },
+    { id:"ch-score-energy",      labelId:"ch-label-energy",       label:"Energy",           score:scores.energyScore,        lbl:scores.energyLabel,        color: scores.energyScore>=65?"#818cf8":scores.energyScore>=40?"#ffd35c":"#ff4d6d" },
+    { id:"ch-score-ns",          labelId:"ch-label-ns",           label:"Nervous System",   score:null,                      lbl:scores.nervousSystem,       color: scores.nervousSystem==="RECUPERADO"?"#00ff99":scores.nervousSystem==="NORMAL"?"#9fb3c8":scores.nervousSystem==="ACTIVO"?"#ffd35c":"#ff4d6d" },
+    { id:"ch-score-overtrading", labelId:"ch-label-overtrading",  label:"Overtrading Risk", score:null,                      lbl:scores.overtradingRisk,     color: scores.overtradingRisk==="ALTO"?"#ff4d6d":scores.overtradingRisk==="BAJO"?"#00ff99":"#ffd35c" },
+    { id:"ch-score-stress",      labelId:"ch-label-stress",       label:"Stress Load",      score:scores.stressLoad,         lbl:scores.stressLabel,        color: scores.stressLoad>=70?"#ff4d6d":scores.stressLoad>=40?"#ffd35c":"#00ff99" },
+    { id:"ch-score-recprio",     labelId:"ch-label-recprio",      label:"Rec. Priority",    score:null,                      lbl:scores.recoveryPriority,    color: scores.recoveryPriority==="urgente"?"#ff4d6d":scores.recoveryPriority==="alta"?"#ffd35c":scores.recoveryPriority==="baja"?"#00ff99":"#9fb3c8" },
+  ];
+  // Build trend SVGs from snapshots
+  const trendData7 = dailySnapshots.slice(0, 7).reverse();
+  const trendCharts = [
+    { label:"Recovery 7d", values:trendData7.map(s=>s.recovery), color:"#00ff99" },
+    { label:"Sleep 7d",    values:trendData7.map(s=>s.sleep),    color:"#818cf8" },
+    { label:"HRV 7d",      values:trendData7.map(s=>s.hrv),      color:"#f472b6" },
+    { label:"Strain 7d",   values:trendData7.map(s=>s.strain),   color:"#ffd35c" },
+    { label:"RHR 7d",      values:trendData7.map(s=>s.rhr),      color:"#3b9dff" },
+  ];
+  const tradingRules = [
+    { recovery:"< 34%",  mode:"BAJO / CONSERVADOR",  action:"Reducir tamaño de posición. Evitar decisiones impulsivas." },
+    { recovery:"34–66%", mode:"NORMAL",               action:"Opera con tamaño normal. Mantén stops activos." },
+    { recovery:"≥ 67%",  mode:"NORMAL / LOW_STRAIN",  action:"Análisis tranquilo. No forzar trades." },
+    { recovery:"Strain ≥14", mode:"DEFENSIVO / ALTO", action:"Modo observación. Reduce o pausa." },
   ];
   const metricCards = [
     { id:"ch-recovery", label:"Recovery",   sub:"objetivo >67%",  color:"#00ff99" },
@@ -2453,6 +2757,17 @@ function renderCordaHealthModule() {
     </div>
     <div style="font-size:11px;color:#9fb3c8;text-align:center">${esc(d.desc)}</div>
   </div>`).join("")}
+</div>
+
+<div style="border:1px solid rgba(0,255,153,.14);border-radius:20px;padding:20px;background:rgba(0,0,0,.2);margin-bottom:18px">
+  <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99;margin-bottom:14px">Health Intelligence Scores</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+    ${scoreCardDefs.map(s => `<div style="background:rgba(0,0,0,.3);border:1px solid ${s.color}28;border-radius:16px;padding:14px;text-align:center">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${s.color};margin-bottom:8px">${esc(s.label)}</div>
+      <div id="${s.id}" style="font-size:${s.score!==null?"28":"22"}px;font-weight:900;color:${s.color};line-height:1">${s.score!==null ? s.score+"/100" : esc(s.lbl)}</div>
+      <div id="${s.labelId}" style="font-size:11px;color:${s.color};margin-top:5px;font-weight:700">${s.score!==null ? esc(s.lbl) : ""}</div>
+    </div>`).join("")}
+  </div>
 </div>
 
 <div style="border:1px solid rgba(120,160,210,.14);border-radius:20px;padding:20px;background:rgba(0,0,0,.2);margin-bottom:18px">
@@ -2570,50 +2885,135 @@ function renderCordaHealthModule() {
   </div>
 </div>
 
-<div style="border:1px solid rgba(167,139,250,.18);border-radius:20px;padding:20px;background:rgba(167,139,250,.04);margin-bottom:18px">
-  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+<div style="border:1px solid rgba(167,139,250,.18);border-radius:20px;padding:22px;background:linear-gradient(135deg,rgba(167,139,250,.04),rgba(0,0,0,.1));margin-bottom:18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px">
     <div>
       <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#a78bfa">Behavior Tracker</div>
-      <div class="muted" style="font-size:11px;margin-top:2px">Hábitos del día · pendiente health_behavior_log.json</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">Hábitos del día — click para activar / desactivar</div>
     </div>
-    <span style="border:1px solid rgba(167,139,250,.22);border-radius:99px;padding:4px 11px;font-size:11px;color:#a78bfa">F3c · Próximamente</span>
+    <span style="border:1px solid rgba(167,139,250,.22);border-radius:99px;padding:4px 11px;font-size:11px;color:#a78bfa">Hoy: ${new Date().toISOString().slice(0,10)}</span>
   </div>
-  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-    ${behaviors.map(b => `<div style="display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(167,139,250,.18);border-radius:99px;padding:6px 14px;background:rgba(0,0,0,.2)">
-      <span style="font-size:12px;color:#c8d8f0">${esc(b)}</span>
-      <span style="font-size:10px;color:rgba(167,139,250,.4);font-style:italic">—</span>
-    </div>`).join("")}
+  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+    ${behaviorChips.map(b => `<button id="beh-${b.key}" data-active="0" onclick="toggleBehavior('${b.key}')" style="display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(167,139,250,.3);border-radius:99px;padding:8px 16px;background:rgba(0,0,0,.25);cursor:pointer;transition:all .2s;font-size:12px;color:#c8d8f0">
+      ${esc(b.label)}
+    </button>`).join("")}
   </div>
-  <button class="btn" style="opacity:.55;cursor:not-allowed" disabled>Registrar hábitos de hoy (próximamente)</button>
-  <div class="muted" style="font-size:11px;margin-top:8px">UI lista · integración POST pendiente en F3c</div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <button id="beh-save-btn" class="btn" onclick="saveBehaviorsToday()" style="font-size:13px;padding:9px 20px;background:rgba(167,139,250,.15);border-color:rgba(167,139,250,.4);color:#a78bfa">Guardar hábitos de hoy</button>
+    <span id="beh-status" class="muted" style="font-size:11px">Cargando hábitos guardados...</span>
+  </div>
+</div>
+
+<div style="border:1px solid rgba(0,255,153,.14);border-radius:20px;padding:22px;background:rgba(0,0,0,.15);margin-bottom:18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99">Correlation Engine</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">Comportamiento → métricas WHOOP · ${dailySnapshots.length} días en total</div>
+    </div>
+    <span style="border:1px solid rgba(0,255,153,.2);border-radius:99px;padding:4px 11px;font-size:11px;color:#00ff99">${correlations.totalDays || 0} snapshots</span>
+  </div>
+  ${!correlations.available
+    ? `<div style="padding:16px;background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.1);border-radius:12px;color:#9fb3c8;font-size:13px;text-align:center">${esc(correlations.message)}<div style="margin-top:8px;font-size:11px;color:rgba(120,160,210,.5)">Guarda snapshots diarios con /api/health/snapshot para activar correlaciones.</div></div>`
+    : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
+      ${correlations.pairs.map(p => {
+        const isGoodMetric = ["recovery","sleep","hrv"].includes(p.metric);
+        const isGoodDir = (isGoodMetric && p.direction==="sube") || (!isGoodMetric && p.direction==="baja");
+        const cardColor = isGoodDir ? "#00ff99" : "#ff4d6d";
+        return `<div style="border:1px solid ${cardColor}20;border-radius:12px;padding:12px;background:${cardColor}06">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#a78bfa">${esc(p.behavior)}</span>
+            <span style="font-size:10px;font-weight:900;color:${cardColor}">${esc(p.strength)}</span>
+          </div>
+          <div style="font-size:13px;color:#eaf6ff"><b style="color:${cardColor}">${esc(p.metric)}</b> ${esc(p.direction)} ${p.delta > 0 ? "+" : ""}${p.delta}</div>
+          <div class="muted" style="font-size:10px;margin-top:4px">Con: ${p.avgWith} · Sin: ${p.avgWithout} · N=${p.daysWithBeh}/${p.daysWithout}</div>
+        </div>`;
+      }).join("")}
+    </div>`
+  }
 </div>
 
 <div style="border:1px solid rgba(120,160,210,.14);border-radius:20px;padding:20px;background:rgba(0,0,0,.15);margin-bottom:18px">
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
     <div>
-      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8">Trends · 7 / 30 días</div>
-      <div class="muted" style="font-size:11px;margin-top:2px">Snapshots diarios para activar tendencias reales</div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8">Trend Charts · últimos 7 días</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">${esc(trends.message)}</div>
     </div>
     <a href="/api/health/snapshot" target="_blank" style="font-size:11px;color:#9fb3c8;text-decoration:none;border:1px solid rgba(120,160,210,.2);border-radius:99px;padding:4px 11px">Snapshot hoy</a>
   </div>
-  <div style="padding:14px;background:rgba(120,160,210,.04);border:1px solid rgba(120,160,210,.1);border-radius:12px;color:#9fb3c8;font-size:12px;text-align:center;margin-bottom:14px">${esc(trends.message)}</div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-    ${trendItems.map(t => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;background:rgba(0,0,0,.18);padding:12px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+    ${trendCharts.map(t => `<div style="border:1px solid ${t.color}18;border-radius:14px;background:rgba(0,0,0,.18);padding:14px">
       <div style="font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${t.color};margin-bottom:8px">${esc(t.label)}</div>
-      <div style="height:32px;border-radius:8px;background:linear-gradient(90deg,${t.color}18,rgba(255,255,255,.04));position:relative;overflow:hidden;margin-bottom:6px">
-        <span style="position:absolute;left:8%;right:10%;top:14px;height:2px;background:${t.color};box-shadow:0 0 10px ${t.color};opacity:.45"></span>
-      </div>
-      <div class="muted" style="font-size:10px">/api/health/snapshot</div>
+      ${svgTrendLine(t.values, t.color, 160, 50, t.label)}
     </div>`).join("")}
   </div>
 </div>
 
-<div style="border:1px solid rgba(255,211,92,.12);border-radius:20px;padding:18px 20px;background:rgba(255,211,92,.03);margin-bottom:14px">
-  <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#ffd35c;margin-bottom:10px">Datos faltantes · Próximas integraciones</div>
-  <div style="display:flex;flex-wrap:wrap;gap:6px">
-    ${["Minutos dormido","Eficiencia de sueño","Pasos del día","Cannabis hoy","Sauna hoy","Cold plunge","Suplementos","Estrés percibido","Tendencias 7d","Historial snapshots"].map(m =>
-      `<span style="border:1px solid rgba(255,211,92,.2);border-radius:99px;padding:3px 10px;font-size:11px;color:#ffd35c">${esc(m)}</span>`
-    ).join("")}
+<div style="border:1px solid rgba(255,211,92,.18);border-radius:20px;padding:22px;background:rgba(255,211,92,.03);margin-bottom:18px">
+  <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#ffd35c;margin-bottom:12px">Trading Integration · Modo Operativo</div>
+  <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+    <span style="border:1px solid ${mc}50;border-radius:99px;padding:8px 20px;font-size:16px;font-weight:900;color:${mc};background:${mc}10">${esc(mode)}</span>
+    <span style="color:#9fb3c8;font-size:13px">${esc(h.suggestion || "usa modo neutral")}</span>
+  </div>
+  <div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;overflow:hidden;margin-bottom:12px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:rgba(0,0,0,.3)">
+        <th style="padding:8px 12px;text-align:left;color:#9fb3c8;font-size:9px;letter-spacing:.1em;text-transform:uppercase">Recovery / Strain</th>
+        <th style="padding:8px 12px;text-align:left;color:#9fb3c8;font-size:9px;letter-spacing:.1em;text-transform:uppercase">Modo</th>
+        <th style="padding:8px 12px;text-align:left;color:#9fb3c8;font-size:9px;letter-spacing:.1em;text-transform:uppercase">Acción sugerida</th>
+      </tr></thead>
+      <tbody>
+        ${tradingRules.map((r,i) => `<tr style="border-top:1px solid rgba(120,160,210,.07);background:${i%2===0?"rgba(0,0,0,.1)":"transparent"}">
+          <td style="padding:8px 12px;color:#c8d8f0">${esc(r.recovery)}</td>
+          <td style="padding:8px 12px;color:#ffd35c;font-weight:700">${esc(r.mode)}</td>
+          <td style="padding:8px 12px;color:#9fb3c8">${esc(r.action)}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+  </div>
+  <div style="padding:10px 14px;background:rgba(255,77,109,.06);border:1px solid rgba(255,77,109,.15);border-radius:10px;font-size:11px;color:#ff4d6d">
+    ⚠ Esto es simulación educativa. No usar para tomar decisiones con dinero real. Paper trading only.
+  </div>
+</div>
+
+<div style="border:1px solid rgba(59,157,255,.18);border-radius:20px;padding:20px;background:rgba(59,157,255,.04);margin-bottom:18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff">Journal Signals</div>
+        <span style="border:1px solid rgba(59,157,255,.25);border-radius:99px;padding:2px 8px;font-size:9px;font-weight:900;color:#9fb3c8;background:rgba(0,0,0,.3)">OPCIONAL</span>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:2px">Conexión mood · sueño · carga · entradas del diario</div>
+    </div>
+    <span style="border:1px solid rgba(59,157,255,.25);border-radius:99px;padding:4px 11px;font-size:11px;color:#3b9dff">${jCount} entradas</span>
+  </div>
+  ${jCount === 0
+    ? `<div style="padding:14px;background:rgba(59,157,255,.04);border:1px solid rgba(59,157,255,.1);border-radius:12px;color:#9fb3c8;font-size:12px">Sin datos de journal todavía. Escribe entradas para activar correlaciones mood-salud.</div>`
+    : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px">
+        <div style="border:1px solid rgba(59,157,255,.12);border-radius:12px;padding:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Total entradas</div>
+          <div style="font-size:22px;font-weight:900;color:#3b9dff">${jCount}</div>
+        </div>
+        <div style="border:1px solid rgba(59,157,255,.12);border-radius:12px;padding:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Mood frecuente</div>
+          <div style="font-size:18px;font-weight:900;color:#3b9dff">${esc(jTop || "—")}</div>
+        </div>
+        <div style="border:1px solid rgba(59,157,255,.12);border-radius:12px;padding:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Último mood</div>
+          <div style="font-size:18px;font-weight:900;color:#3b9dff">${esc(jLastMood)}</div>
+        </div>
+      </div>
+      ${jLastText ? `<div style="padding:12px;background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.1);border-radius:12px;color:#c8d8f0;font-size:12px;line-height:1.5;margin-bottom:10px">
+        <span style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff">Última entrada: </span>${esc(jLastText)}${jLastText.length >= 120 ? "…" : ""}
+      </div>` : ""}
+      <div id="ch-journal-whoop-signal" style="padding:10px 14px;background:rgba(0,0,0,.2);border-radius:10px;font-size:12px;color:#9fb3c8">
+        Correlación WHOOP · Journal cargando...
+      </div>`
+  }
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(59,157,255,.08)">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Prompts sugeridos</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${["¿Cómo dormiste?","¿Cómo es tu energía?","¿Qué consumiste hoy?","¿Cómo está tu mente?","¿Algo inusual hoy?"].map(p => `<button onclick="setAlfredoQ(${JSON.stringify(p)});showMod('journal')" style="border:1px solid rgba(59,157,255,.22);border-radius:99px;padding:4px 12px;font-size:11px;background:transparent;color:#3b9dff;cursor:pointer">${esc(p)}</button>`).join("")}
+    </div>
   </div>
 </div>
 
@@ -3380,14 +3780,21 @@ async function cordaHealthLive() {
       var brief = ins.aiBrief || (ins.bodySignal ? ins.bodySignal + ' ' + (ins.readiness || '') : 'Análisis no disponible todavía.');
       hSet('ch-analysis-text', brief);
       hSet('ch-overtrading-risk', ins.overtradingRisk || '—');
-      hSet('ch-mental-clarity',   ins.mentalClarity || '—');
+      hSet('ch-mental-clarity',   ins.mentalClarity || ins.mentalClarityLabel || '—');
       hSet('ch-rec-priority',     ins.recoveryPriority || '—');
       hSet('ch-ns',        ins.nervousSystemStatus || '—');
       hSet('ch-sleepdebt', ins.sleepScore != null ? ins.sleepScore + '%' : '—');
       hSet('ch-load',      ins.strainScore != null ? ins.strainScore + '%' : '—');
-      hSet('ch-clarity',   ins.mentalClarity || '—');
+      hSet('ch-clarity',   ins.mentalClarityLabel || ins.mentalClarity || '—');
       hSet('ch-recprio',   ins.recoveryPriority || '—');
-      hSet('ch-energy',    ins.readiness || '—');
+      hSet('ch-energy',    ins.energyLabel || ins.readiness || '—');
+      // Update Health Intelligence Score cards
+      if (ins.mentalClarityScore != null) { hSet('ch-score-clarity', ins.mentalClarityScore + '/100'); hSet('ch-label-clarity', ins.mentalClarityLabel || '—'); }
+      if (ins.energyScore != null) { hSet('ch-score-energy', ins.energyScore + '/100'); hSet('ch-label-energy', ins.energyLabel || '—'); }
+      hSet('ch-score-ns', ins.nervousSystemStatus || '—'); hSet('ch-label-ns', '');
+      hSet('ch-score-overtrading', ins.overtradingRisk || '—'); hSet('ch-label-overtrading', '');
+      if (ins.stressLoad != null) { hSet('ch-score-stress', ins.stressLoad + '/100'); hSet('ch-label-stress', ins.stressLabel || '—'); }
+      hSet('ch-score-recprio', ins.recoveryPriority || '—'); hSet('ch-label-recprio', '');
       setList('ch-do-today',    ins.recommendedFocus, 'sin datos todavía');
       setList('ch-avoid-today', ins.avoidToday,       'sin datos todavía');
       setList('ch-observe-today', ins.observeToday,   'sin datos todavía');
@@ -3403,11 +3810,71 @@ async function cordaHealthLive() {
         hSet('ch-journal-whoop-signal', sig);
       }
     }
+    await loadBehaviorsToday();
   } catch(e) {
     hSet('ch-analysis-text', 'No se pudo cargar datos de salud. Revisa /api/health/insights.');
   } finally {
     if (panel) panel.dataset.chLoading = '0';
   }
+}
+
+async function loadBehaviorsToday() {
+  try {
+    var r = await fetch('/api/health/behaviors/today', { cache:'no-store' });
+    var d = r.ok ? await r.json() : null;
+    var statusEl = document.getElementById('beh-status');
+    if (d && d.behaviors) {
+      var beh = d.behaviors;
+      var keys = ['cannabis','sauna','cold_plunge','alcohol','supplements','late_meal','training','stress','hydration','caffeine'];
+      keys.forEach(function(k) {
+        var el = document.getElementById('beh-' + k);
+        if (el) {
+          var active = beh[k] === true;
+          el.dataset.active = active ? '1' : '0';
+          el.style.background = active ? 'rgba(0,255,153,.15)' : '';
+          el.style.borderColor = active ? '#00ff99' : '';
+          el.style.color = active ? '#00ff99' : '';
+        }
+      });
+      if (statusEl) statusEl.textContent = 'Hábitos del ' + (d.date || 'hoy') + ' cargados.';
+    } else {
+      if (statusEl) statusEl.textContent = 'Sin hábitos guardados hoy. Activa y guarda.';
+    }
+  } catch(e) {
+    var statusEl = document.getElementById('beh-status');
+    if (statusEl) statusEl.textContent = 'Error cargando hábitos.';
+  }
+}
+
+function toggleBehavior(key) {
+  var el = document.getElementById('beh-' + key);
+  if (!el) return;
+  var active = el.dataset.active === '1';
+  el.dataset.active = active ? '0' : '1';
+  el.style.background = active ? '' : 'rgba(0,255,153,.15)';
+  el.style.borderColor = active ? '' : '#00ff99';
+  el.style.color = active ? '' : '#00ff99';
+}
+
+async function saveBehaviorsToday() {
+  var keys = ['cannabis','sauna','cold_plunge','alcohol','supplements','late_meal','training','stress','hydration','caffeine'];
+  var params = new URLSearchParams();
+  params.set('date', new Date().toISOString().slice(0,10));
+  keys.forEach(function(k) {
+    var el = document.getElementById('beh-' + k);
+    params.set(k, el && el.dataset.active === '1' ? 'true' : 'false');
+  });
+  var r = await fetch('/api/health/behavior', { method: 'POST', body: params.toString(), headers: {'Content-Type':'application/x-www-form-urlencoded'} });
+  var d = r.ok ? await r.json() : null;
+  var btn = document.getElementById('beh-save-btn');
+  var statusEl = document.getElementById('beh-status');
+  if (d && d.ok) {
+    if (btn) btn.textContent = 'Guardado ✓';
+    if (statusEl) statusEl.textContent = 'Hábitos guardados: ' + new Date().toLocaleTimeString('es-MX');
+  } else {
+    if (btn) btn.textContent = 'Error al guardar';
+  }
+  setTimeout(function() { if (btn) btn.textContent = 'Guardar hábitos de hoy'; }, 2500);
 }
 
 function applyJournalAuto(d) {
@@ -3492,6 +3959,7 @@ document.addEventListener('DOMContentLoaded', function() {
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
   showMod(hashMod || saved || 'home');
   cordaHealthLive();
+  loadBehaviorsToday();
   loadJournalAuto();
   loadAlfredoContext();
   loadIntelligenceFeed();
@@ -3785,238 +4253,16 @@ const server = http.createServer(async (req, res) => {
   }
   if (path === "/api/whoop/today") {
     try {
-      const https = require("https");
-      const fs = require("fs");
-
-      const tokenFile = "whoop_tokens.json";
-
-      const emptyWhoop = (message, extra) => ({
-        ok: true,
-        connected: false,
-        date: new Date().toLocaleDateString("es-MX"),
-        strain: null,
-        averageHeartRate: null,
-        maxHeartRate: null,
-        kilojoule: null,
-        scoreState: null,
-        recovery: null,
-        sleep: null,
-        hrv: null,
-        restingHeartRate: null,
-        operatingMode: "NORMAL",
-        mode: "NORMAL",
-        suggestion: "usa modo neutral",
-        alfredoAdvice: message,
-        message,
-        ...(extra || {})
-      });
-
-      if (!fs.existsSync(tokenFile)) {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        return res.end(JSON.stringify(emptyWhoop(
-          "WHOOP configurado — tokens pendientes de autorización OAuth. NO es consejo médico."
-        )));
-      }
-
-      const readTokens = () => JSON.parse(fs.readFileSync(tokenFile, "utf8"));
-
-      const refreshTokens = (oldTokens) => new Promise((resolve) => {
-        if (!oldTokens.refresh_token) {
-          return resolve({ ok:false, error:"no_refresh_token" });
-        }
-
-        const body = new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: oldTokens.refresh_token,
-          client_id: process.env.WHOOP_CLIENT_ID || "",
-          client_secret: process.env.WHOOP_CLIENT_SECRET || ""
-        }).toString();
-
-        const options = {
-          hostname: "api.prod.whoop.com",
-          path: "/oauth/oauth2/token",
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Content-Length": Buffer.byteLength(body),
-            "Accept": "application/json"
-          }
-        };
-
-        const req2 = https.request(options, (rr) => {
-          let raw = "";
-          rr.on("data", c => raw += c);
-          rr.on("end", () => {
-            let parsed;
-            try { parsed = JSON.parse(raw); } catch(e) { parsed = null; }
-
-            const success = rr.statusCode >= 200 && rr.statusCode < 300 && parsed && parsed.access_token;
-
-            if (success) {
-              const newTokens = {
-                savedAt: new Date().toISOString(),
-                token_type: parsed.token_type || oldTokens.token_type || null,
-                expires_in: parsed.expires_in || null,
-                scope: parsed.scope || oldTokens.scope || null,
-                access_token: parsed.access_token,
-                refresh_token: parsed.refresh_token || oldTokens.refresh_token || null
-              };
-
-              fs.writeFileSync(tokenFile, JSON.stringify(newTokens, null, 2));
-              return resolve({ ok:true, tokens:newTokens, statusCode:rr.statusCode });
-            }
-
-            return resolve({ ok:false, statusCode:rr.statusCode, error:"refresh_failed" });
-          });
-        });
-
-        req2.on("error", e => resolve({ ok:false, error:e.message }));
-        req2.write(body);
-        req2.end();
-      });
-
-      const fetchWhoopPath = (tokens, whoopPath) => new Promise((resolve) => {
-        const options = {
-          hostname: "api.prod.whoop.com",
-          path: whoopPath,
-          method: "GET",
-          headers: {
-            "Authorization": "Bearer " + tokens.access_token,
-            "Accept": "application/json"
-          }
-        };
-
-        const r = https.request(options, (rr) => {
-          let raw = "";
-          rr.on("data", c => raw += c);
-          rr.on("end", () => {
-            let data;
-            try { data = JSON.parse(raw); } catch(e) { data = null; }
-            resolve({ statusCode: rr.statusCode, data });
-          });
-        });
-
-        r.on("error", e => resolve({ statusCode:500, data:null, error:e.message }));
-        r.end();
-      });
-
-      const latestRecord = (payload) => payload && Array.isArray(payload.records) && payload.records.length ? payload.records[0] : null;
-      const numeric = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
-
-      let tokens = readTokens();
-      let result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
-
-      let refreshed = false;
-
-      if (result.statusCode === 401) {
-        const refresh = await refreshTokens(tokens);
-
-        if (refresh.ok) {
-          refreshed = true;
-          tokens = refresh.tokens;
-          result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
-        } else {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          return res.end(JSON.stringify(emptyWhoop(
-            "WHOOP token expirado y refresh falló. Reautoriza con /api/whoop/connect.",
-            {
-              whoopRawStatusCode: 401,
-              refreshAttempted: true,
-              refreshOk: false,
-              refreshStatusCode: refresh.statusCode || null,
-              refreshError: refresh.error ? "refresh_failed" : null
-            }
-          )));
-        }
-      }
-
-      const apiOk = result.statusCode >= 200 && result.statusCode < 300;
-      const data = result.data || {};
-      const cycle = latestRecord(data);
-      const score = cycle && cycle.score ? cycle.score : {};
-
-      let recoveryResult = { statusCode: null, data: null };
-      let sleepResult = { statusCode: null, data: null };
-      if (apiOk) {
-        [recoveryResult, sleepResult] = await Promise.all([
-          fetchWhoopPath(tokens, "/developer/v2/recovery?limit=1"),
-          fetchWhoopPath(tokens, "/developer/v2/activity/sleep?limit=1")
-        ]);
-      }
-
-      const recoveryRecord = latestRecord(recoveryResult.data);
-      const recoveryScore = recoveryRecord && recoveryRecord.score ? recoveryRecord.score : {};
-      const sleepRecord = latestRecord(sleepResult.data);
-      const sleepScore = sleepRecord && sleepRecord.score ? sleepRecord.score : {};
-
-      const strain = numeric(score.strain);
-      const averageHeartRate = numeric(score.average_heart_rate);
-      const maxHeartRate = numeric(score.max_heart_rate);
-      const kilojoule = numeric(score.kilojoule);
-      const scoreState = cycle ? cycle.score_state || null : null;
-      const recovery = numeric(recoveryScore.recovery_score);
-      const hrv = numeric(recoveryScore.hrv_rmssd_milli);
-      const restingHeartRate = numeric(recoveryScore.resting_heart_rate);
-      const sleep = numeric(sleepScore.sleep_performance_percentage);
-
-      let operatingMode = "NORMAL";
-      let suggestion = "usa modo neutral";
-
-      if (strain !== null && strain >= 10) {
-        operatingMode = "DEFENSIVO";
-        suggestion = "baja riesgo y evita sobreoperar";
-      } else if (strain !== null && strain < 3) {
-        operatingMode = "LOW_STRAIN";
-        suggestion = "buen momento para análisis tranquilo, sin forzar trades";
-      }
-
-      const advice = apiOk
-        ? `WHOOP conectado. Recovery ${recovery ?? "—"}%, Sleep ${sleep ?? "—"}%, HRV ${hrv ?? "—"} ms, RHR ${restingHeartRate ?? "—"} bpm, Strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo: ${operatingMode}. ${suggestion}. NO es consejo médico.`
-        : "WHOOP token presente, pero la API no respondió correctamente. Reautoriza si persiste.";
-
+      const data = await fetchWhoopMetrics();
       res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({
-        ok: true,
-        connected: apiOk,
-        date: new Date().toLocaleDateString("es-MX"),
-        strain,
-        averageHeartRate,
-        maxHeartRate,
-        kilojoule,
-        scoreState,
-        recovery,
-        sleep,
-        hrv,
-        restingHeartRate,
-        operatingMode,
-        mode: operatingMode,
-        suggestion,
-        alfredoAdvice: advice,
-        message: apiOk ? "WHOOP conectado desde whoop_tokens.json." : "WHOOP token presente, pero API falló.",
-        whoopRawStatusCode: result.statusCode,
-        recoveryStatusCode: recoveryResult.statusCode,
-        sleepStatusCode: sleepResult.statusCode,
-        refreshed
-      }));
+      return res.end(JSON.stringify(data));
     } catch (e) {
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(JSON.stringify({
-        ok: true,
-        connected: false,
-        error: "whoop_today_crash",
-        message: e.message,
-        strain: null,
-        averageHeartRate: null,
-        maxHeartRate: null,
-        kilojoule: null,
-        scoreState: null,
-        recovery: null,
-        sleep: null,
-        hrv: null,
-        restingHeartRate: null,
-        operatingMode: "NORMAL",
-        mode: "NORMAL",
-        suggestion: "usa modo neutral",
+        ok: true, connected: false, error: "whoop_today_crash", message: e.message,
+        strain: null, averageHeartRate: null, maxHeartRate: null, kilojoule: null, scoreState: null,
+        recovery: null, sleep: null, hrv: null, restingHeartRate: null,
+        operatingMode: "NORMAL", mode: "NORMAL", suggestion: "usa modo neutral",
         alfredoAdvice: "Crash leyendo WHOOP. NO es consejo médico."
       }));
     }
@@ -4175,6 +4421,49 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && path === "/api/health/behavior") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const params = new URLSearchParams(body);
+        const dateStr = params.get("date") || new Date().toISOString().slice(0,10);
+        const behaviors = {
+          cannabis: params.get("cannabis") === "true",
+          sauna: params.get("sauna") === "true",
+          cold_plunge: params.get("cold_plunge") === "true",
+          alcohol: params.get("alcohol") === "true",
+          supplements: params.get("supplements") === "true",
+          late_meal: params.get("late_meal") === "true",
+          training: params.get("training") === "true",
+          stress: params.get("stress") === "true",
+          hydration: params.get("hydration") === "true",
+          caffeine: params.get("caffeine") === "true"
+        };
+        const entry = { date: dateStr, timestamp: new Date().toISOString(), ...behaviors };
+        const idx = behaviorLog.findIndex(e => e.date === dateStr);
+        if (idx >= 0) behaviorLog[idx] = entry; else behaviorLog.unshift(entry);
+        behaviorLog = behaviorLog.slice(0, 365);
+        saveJSON(BEHAVIOR_LOG_FILE, behaviorLog);
+        const sIdx = dailySnapshots.findIndex(s => s.date === dateStr);
+        if (sIdx >= 0) { dailySnapshots[sIdx].behaviors = behaviors; saveJSON(SNAPSHOTS_FILE, dailySnapshots); }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, saved: true, date: dateStr, behaviors }));
+      } catch(e) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (path === "/api/health/behaviors/today") {
+    const dateStr = new Date().toISOString().slice(0,10);
+    const entry = behaviorLog.find(e => e.date === dateStr) || null;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, date: dateStr, behaviors: entry, hasData: !!entry }));
+  }
+
   if (path === "/api/health/insights") {
     try {
       const http = require("http");
@@ -4326,6 +4615,14 @@ const server = http.createServer(async (req, res) => {
         strain !== null ? `Strain ${Number(strain).toFixed(1)}/21` : null,
       ].filter(Boolean).join(", ") + ". " + bodySignal + " Prioridad de recuperación: " + recoveryPriority + ". Riesgo de sobreoperar: " + overtradingRisk + ". No es consejo médico.";
 
+      // Compute health scores from whoopDayCache
+      const hReadiness = computeHealthReadiness();
+      const scores = computeHealthScores(hReadiness);
+
+      // Get today's behavior log entry
+      const todayDateStr = new Date().toISOString().slice(0,10);
+      const todayBehaviors = behaviorLog.find(e => e.date === todayDateStr) || null;
+
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(JSON.stringify({
         ok: true,
@@ -4343,6 +4640,15 @@ const server = http.createServer(async (req, res) => {
         recoveryScore,
         sleepScore,
         strainScore,
+        mentalClarityScore: scores.mentalClarityScore,
+        mentalClarityLabel: scores.mentalClarityLabel,
+        energyScore: scores.energyScore,
+        energyLabel: scores.energyLabel,
+        nervousSystemStatus: scores.nervousSystem,
+        stressLoad: scores.stressLoad,
+        stressLabel: scores.stressLabel,
+        overtradingRisk: scores.overtradingRisk,
+        recoveryPriority: scores.recoveryPriority,
         metrics: {
           recovery,
           sleep,
@@ -4360,7 +4666,7 @@ const server = http.createServer(async (req, res) => {
           lastEntrySummary: lastJEntry ? String(lastJEntry.text || lastJEntry.content || "").slice(0, 200) : null,
           suggestedPrompts: ["¿Cómo dormiste?","¿Cómo es tu energía?","¿Qué consumiste hoy?","¿Cómo está tu mente?"]
         },
-        behaviors: {
+        behaviors: todayBehaviors || {
           cannabis: day?.behaviors?.cannabis ?? null,
           alcohol: day?.behaviors?.alcohol ?? null,
           sauna: day?.behaviors?.sauna ?? null,
@@ -4390,11 +4696,12 @@ const server = http.createServer(async (req, res) => {
 
   if (path === "/api/health/snapshot") {
     try {
-      const fs = require("fs");
       const h = computeHealthReadiness();
+      const scores = computeHealthScores(h);
       const jd = computeJournalData();
       const lastEntry = jd.recent && jd.recent[0];
       const dateStr = new Date().toISOString().slice(0, 10);
+      const todayBeh = behaviorLog.find(e => e.date === dateStr) || null;
       const snapshot = {
         date: dateStr,
         timestamp: new Date().toISOString(),
@@ -4403,22 +4710,21 @@ const server = http.createServer(async (req, res) => {
         hrv: h.hrv,
         rhr: h.restingHeartRate,
         strain: h.strain,
-        avgHR: null,
-        maxHR: null,
-        kilojoule: null,
+        avgHR: h.averageHeartRate,
+        maxHR: h.maxHeartRate,
+        kilojoule: h.kilojoule,
         mode: h.operatingMode || "NORMAL",
         journalMood: lastEntry ? (lastEntry.mood || null) : null,
-        source: h.configured ? "whoop" : "local_only"
+        source: h.connected ? "whoop" : "local_only",
+        behaviors: todayBeh ? { ...todayBeh } : null,
+        scores: { mentalClarity: scores.mentalClarityScore, energy: scores.energyScore, stress: scores.stressLoad, overtradingRisk: scores.overtradingRisk }
       };
-      const snapFile = "health_daily_snapshots.json";
-      let snapshots = [];
-      try { if (fs.existsSync(snapFile)) snapshots = JSON.parse(fs.readFileSync(snapFile, "utf8")); } catch(e) {}
-      const idx = snapshots.findIndex(s => s.date === dateStr);
-      if (idx >= 0) snapshots[idx] = snapshot; else snapshots.unshift(snapshot);
-      snapshots = snapshots.slice(0, 90);
-      fs.writeFileSync(snapFile, JSON.stringify(snapshots, null, 2));
+      const idx = dailySnapshots.findIndex(s => s.date === dateStr);
+      if (idx >= 0) dailySnapshots[idx] = snapshot; else dailySnapshots.unshift(snapshot);
+      dailySnapshots = dailySnapshots.slice(0, 90);
+      saveJSON(SNAPSHOTS_FILE, dailySnapshots);
       res.writeHead(200, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({ ok: true, saved: true, snapshot, totalSnapshots: snapshots.length, educationalNote: "Snapshot local. No es consejo médico." }));
+      return res.end(JSON.stringify({ ok: true, saved: true, snapshot, totalSnapshots: dailySnapshots.length, educationalNote: "Snapshot local. No es consejo médico." }));
     } catch (e) {
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(JSON.stringify({ ok: false, error: "snapshot_crash", message: e.message }));
@@ -4690,6 +4996,13 @@ async function boot() {
       ]);
     } catch (e) { console.log("fetchQuiverData boot omitido:", e.message); }
 
+    try {
+      await Promise.race([
+        refreshWhoopDayCache(),
+        new Promise(resolve => setTimeout(resolve, 12000))
+      ]);
+    } catch(e) { console.log("refreshWhoopDayCache boot omitido:", e.message); }
+
     setInterval(async () => {
       try {
         await Promise.race([
@@ -4723,6 +5036,10 @@ async function boot() {
         ]);
       } catch (e) {}
     }, QUIVER_CACHE_MS);
+
+    setInterval(async () => {
+      try { await refreshWhoopDayCache(); } catch(e) {}
+    }, 5 * 60 * 1000);
   }, 500);
 }
 boot();
