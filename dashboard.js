@@ -2895,6 +2895,77 @@ ${renderAutopilotPanel()}
 </div>
 
 <div class="disclaimer">Cordelius Trading es educativo. No es asesoria financiera. El bot es 100% ficticio (paper trading) y no se conecta a ningun exchange real.</div>
+
+<script id="health-live-ui-v1">
+(function(){
+  function $(id){ return document.getElementById(id); }
+  function setText(id, value){
+    const el = $(id);
+    if (el) el.textContent = value;
+  }
+  function fmt(n, d){
+    if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+    return Number(n).toFixed(d);
+  }
+
+  async function loadHealthLive(){
+    try {
+      const [whoopRes, insightsRes] = await Promise.all([
+        fetch("/api/whoop/today"),
+        fetch("/api/health/insights")
+      ]);
+
+      const whoop = await whoopRes.json();
+      const insights = await insightsRes.json();
+      const m = insights.metrics || {};
+
+      setText("health-recovery", m.recovery != null ? m.recovery + "%" : "—");
+      setText("health-sleep", m.sleep != null ? m.sleep + "%" : "—");
+      setText("health-strain", m.strain != null ? fmt(m.strain, 1) : "—");
+      setText("health-avg-hr", m.average_hr != null ? m.average_hr + " bpm" : "—");
+      setText("health-max-hr", m.max_hr != null ? m.max_hr + " bpm" : "—");
+      setText("health-hrv", m.hrv_ms != null ? fmt(m.hrv_ms, 1) + " ms" : "—");
+      setText("health-resting-hr", m.resting_hr_bpm != null ? m.resting_hr_bpm + " bpm" : "—");
+      setText("health-operating-mode", insights.readiness || whoop.mode || "NORMAL");
+
+      const badge = $("health-whoop-badge");
+      if (badge) {
+        badge.textContent = whoop && whoop.connected ? "WHOOP LIVE" : "WHOOP PENDIENTE";
+        badge.style.background = whoop && whoop.connected ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)";
+        badge.style.color = whoop && whoop.connected ? "#00ff99" : "#ffd35c";
+      }
+
+      const advice = $("health-advice");
+      if (advice) {
+        const focus = Array.isArray(insights.recommendedFocus) ? insights.recommendedFocus : [];
+        const chips = focus.map(x =>
+          '<span style="display:inline-block;margin:6px 6px 0 0;padding:4px 9px;border-radius:999px;background:rgba(244,114,182,.10);border:1px solid rgba(244,114,182,.22);color:#f9a8d4;font-size:11px;font-weight:800">' +
+          String(x).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) +
+          '</span>'
+        ).join("");
+
+        advice.innerHTML =
+          '<b style="color:#f472b6">Health AI:</b> ' +
+          String(insights.aiBrief || whoop.alfredoAdvice || "Sin lectura todavía.").replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) +
+          '<div style="margin-top:6px">' + chips + '</div>';
+      }
+    } catch (e) {
+      const advice = $("health-advice");
+      if (advice) advice.textContent = "Health UI: no pude cargar /api/health/insights. Revisa servidor.";
+      console.error("health-live-ui error", e);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", loadHealthLive);
+  } else {
+    loadHealthLive();
+  }
+
+  setInterval(loadHealthLive, 60000);
+})();
+</script>
+
 </body>
 <script>
 function showMod(name) {
