@@ -3325,9 +3325,9 @@ const server = http.createServer(async (req, res) => {
           rr.on("data", c => raw += c);
           rr.on("end", () => {
             let parsed;
-            try { parsed = JSON.parse(raw); } catch(e) { parsed = { raw }; }
+            try { parsed = JSON.parse(raw); } catch(e) { parsed = null; }
 
-            const success = rr.statusCode >= 200 && rr.statusCode < 300 && parsed.access_token;
+            const success = rr.statusCode >= 200 && rr.statusCode < 300 && parsed && parsed.access_token;
 
             if (success) {
               const newTokens = {
@@ -3343,7 +3343,7 @@ const server = http.createServer(async (req, res) => {
               return resolve({ ok:true, tokens:newTokens, statusCode:rr.statusCode });
             }
 
-            return resolve({ ok:false, statusCode:rr.statusCode, error:parsed });
+            return resolve({ ok:false, statusCode:rr.statusCode, error:"refresh_failed" });
           });
         });
 
@@ -3352,10 +3352,10 @@ const server = http.createServer(async (req, res) => {
         req2.end();
       });
 
-      const fetchCycle = (tokens) => new Promise((resolve) => {
+      const fetchWhoopPath = (tokens, whoopPath) => new Promise((resolve) => {
         const options = {
           hostname: "api.prod.whoop.com",
-          path: "/developer/v1/cycle?limit=1",
+          path: whoopPath,
           method: "GET",
           headers: {
             "Authorization": "Bearer " + tokens.access_token,
@@ -3368,17 +3368,23 @@ const server = http.createServer(async (req, res) => {
           rr.on("data", c => raw += c);
           rr.on("end", () => {
             let data;
-            try { data = JSON.parse(raw); } catch(e) { data = { raw }; }
+            try { data = JSON.parse(raw); } catch(e) { data = null; }
             resolve({ statusCode: rr.statusCode, data });
           });
         });
 
-        r.on("error", e => resolve({ statusCode:500, data:{ error:e.message } }));
+        r.on("error", e => resolve({ statusCode:500, data:null, error:e.message }));
         r.end();
       });
 
+      const latestRecord = (payload) =>
+        payload && Array.isArray(payload.records) && payload.records.length ? payload.records[0] : null;
+
+      const numeric = (value) =>
+        typeof value === "number" && Number.isFinite(value) ? value : null;
+
       let tokens = readTokens();
-      let result = await fetchCycle(tokens);
+      let result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
 
       let refreshed = false;
 
@@ -3388,7 +3394,7 @@ const server = http.createServer(async (req, res) => {
         if (refresh.ok) {
           refreshed = true;
           tokens = refresh.tokens;
-          result = await fetchCycle(tokens);
+          result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
         } else {
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(emptyWhoop(
@@ -3397,7 +3403,8 @@ const server = http.createServer(async (req, res) => {
               whoopRawStatusCode: 401,
               refreshAttempted: true,
               refreshOk: false,
-              refreshError: refresh.error || null
+              refreshStatusCode: refresh.statusCode || null,
+              refreshError: refresh.error ? "refresh_failed" : null
             }
           )));
         }
@@ -3405,14 +3412,35 @@ const server = http.createServer(async (req, res) => {
 
       const apiOk = result.statusCode >= 200 && result.statusCode < 300;
       const data = result.data || {};
-      const cycle = data.records && data.records.length ? data.records[0] : null;
+      const cycle = latestRecord(data);
       const score = cycle && cycle.score ? cycle.score : {};
 
-      const strain = typeof score.strain === "number" ? score.strain : null;
-      const averageHeartRate = typeof score.average_heart_rate === "number" ? score.average_heart_rate : null;
-      const maxHeartRate = typeof score.max_heart_rate === "number" ? score.max_heart_rate : null;
-      const kilojoule = typeof score.kilojoule === "number" ? score.kilojoule : null;
+      let recoveryResult = { statusCode: null, data: null };
+      let sleepResult = { statusCode: null, data: null };
+
+      if (apiOk) {
+        [recoveryResult, sleepResult] = await Promise.all([
+          fetchWhoopPath(tokens, "/developer/v2/recovery?limit=1"),
+          fetchWhoopPath(tokens, "/developer/v2/activity/sleep?limit=1")
+        ]);
+      }
+
+      const recoveryRecord = latestRecord(recoveryResult.data);
+      const recoveryScore = recoveryRecord && recoveryRecord.score ? recoveryRecord.score : {};
+
+      const sleepRecord = latestRecord(sleepResult.data);
+      const sleepScore = sleepRecord && sleepRecord.score ? sleepRecord.score : {};
+
+      const strain = numeric(score.strain);
+      const averageHeartRate = numeric(score.average_heart_rate);
+      const maxHeartRate = numeric(score.max_heart_rate);
+      const kilojoule = numeric(score.kilojoule);
       const scoreState = cycle ? cycle.score_state || null : null;
+
+      const recovery = numeric(recoveryScore.recovery_score);
+      const hrv = numeric(recoveryScore.hrv_rmssd_milli);
+      const restingHeartRate = numeric(recoveryScore.resting_heart_rate);
+      const sleep = numeric(sleepScore.sleep_performance_percentage);
 
       let operatingMode = "NORMAL";
       let suggestion = "usa modo neutral";
@@ -3426,7 +3454,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const advice = apiOk
-        ? `WHOOP conectado. Strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo: ${operatingMode}. ${suggestion}. NO es consejo médico.`
+        ? `WHOOP conectado. Recovery ${recovery ?? "—"}%, Sleep ${sleep ?? "—"}%, HRV ${hrv ?? "—"} ms, RHR ${restingHeartRate ?? "—"} bpm, Strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo: ${operatingMode}. ${suggestion}. NO es consejo médico.`
         : "WHOOP token presente, pero la API no respondió correctamente. Reautoriza si persiste.";
 
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -3439,16 +3467,18 @@ const server = http.createServer(async (req, res) => {
         maxHeartRate,
         kilojoule,
         scoreState,
-        recovery: null,
-        sleep: null,
-        hrv: null,
-        restingHeartRate: null,
+        recovery,
+        sleep,
+        hrv,
+        restingHeartRate,
         operatingMode,
         mode: operatingMode,
         suggestion,
         alfredoAdvice: advice,
         message: apiOk ? "WHOOP conectado desde whoop_tokens.json." : "WHOOP token presente, pero API falló.",
         whoopRawStatusCode: result.statusCode,
+        recoveryStatusCode: recoveryResult.statusCode,
+        sleepStatusCode: sleepResult.statusCode,
         refreshed
       }));
     } catch (e) {
@@ -3474,7 +3504,6 @@ const server = http.createServer(async (req, res) => {
       }));
     }
   }
-
 
   if (path === "/api/journal/auto") {
     try {
