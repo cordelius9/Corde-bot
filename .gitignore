@@ -49,3 +49,5 @@ data/*tokens*.json
 *.token
 data/*secret*.json
 data/*.secrets.json
+health_profile.json
+health_behavior_log.json
