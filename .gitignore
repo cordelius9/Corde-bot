@@ -34,3 +34,7 @@ node_modules/
 
 # Directorios de runtime
 runtime/
+
+# Local health/journal runtime files
+whoop_tokens.json
+cordelius_journal.json

@@ -2345,33 +2345,34 @@ function renderAutopilotPanel() {
 function renderHealthReadinessPanel() {
   const h = computeHealthReadiness();
   const metrics = [
-    { label: "Recovery",      value: h.recovery       !== null ? h.recovery + "%" : "—",  color: "#9fb3c8" },
-    { label: "Sleep",         value: h.sleep          !== null ? h.sleep + "%" : "—",     color: "#9fb3c8" },
-    { label: "Strain",        value: h.strain         !== null ? String(h.strain) : "—",  color: "#9fb3c8" },
-    { label: "HRV",           value: h.hrv            !== null ? h.hrv + " ms" : "—",     color: "#9fb3c8" },
-    { label: "Resting HR",    value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
-    { label: "Modo Operativo",value: h.operatingMode, color: "#ffd35c" },
+    { id: "health-recovery",       label: "Recovery",       value: h.recovery !== null ? h.recovery + "%" : "—", color: "#9fb3c8" },
+    { id: "health-sleep",          label: "Sleep",          value: h.sleep !== null ? h.sleep + "%" : "—", color: "#9fb3c8" },
+    { id: "health-strain",         label: "Strain",         value: h.strain !== null ? String(h.strain) : "—", color: "#9fb3c8" },
+    { id: "health-avg-hr",         label: "Avg HR",         value: "—", color: "#9fb3c8" },
+    { id: "health-max-hr",         label: "Max HR",         value: "—", color: "#9fb3c8" },
+    { id: "health-hrv",            label: "HRV",            value: h.hrv !== null ? h.hrv + " ms" : "—", color: "#9fb3c8" },
+    { id: "health-resting-hr",     label: "Resting HR",     value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
+    { id: "health-operating-mode", label: "Modo Operativo", value: h.operatingMode || "NORMAL", color: "#ffd35c" },
   ];
-  return `<div style="max-width:1280px;margin:0 auto 12px">
+  return `<div id="health-readiness-panel" style="max-width:1280px;margin:0 auto 12px">
     <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div>
           <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health Readiness</div>
           <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · educativo</div>
         </div>
-        <span style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
+        <span id="health-whoop-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         ${metrics.map(m =>
           `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:90px">
             <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
-            <div style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
+            <div id="${esc(m.id)}" style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
           </div>`
         ).join("")}
       </div>
-      <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
-        ${esc(h.message)}
-        <span class="muted" style="margin-left:8px;font-size:12px">Sugerencia: <b style="color:#ffd35c">${esc(h.suggestion)}</b></span>
+      <div id="health-advice" style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
+        ${esc(h.message || h.suggestion || "Esperando datos de salud.")}
       </div>
       <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
     </div>
@@ -2904,6 +2905,56 @@ function showMod(name) {
   var btn = document.querySelector('[data-mod="' + name + '"]');
   if (btn) btn.classList.add('nav-active');
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
+  if (name === 'health') loadWhoopToday();
+}
+function healthSet(id, value) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = value == null || value === '' ? '—' : String(value);
+}
+function healthMetric(value, suffix) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number' && !Number.isFinite(value)) return '—';
+  var text = typeof value === 'number' && Math.round(value * 10) !== value * 10 ? value.toFixed(1) : String(value);
+  return suffix ? text + suffix : text;
+}
+function applyWhoopToday(d) {
+  if (!d || typeof d !== 'object') return;
+  healthSet('health-recovery', healthMetric(d.recovery, '%'));
+  healthSet('health-sleep', healthMetric(d.sleep, '%'));
+  healthSet('health-strain', healthMetric(d.strain, ''));
+  healthSet('health-avg-hr', healthMetric(d.averageHeartRate, ' bpm'));
+  healthSet('health-max-hr', healthMetric(d.maxHeartRate, ' bpm'));
+  healthSet('health-hrv', healthMetric(d.hrv, ' ms'));
+  healthSet('health-resting-hr', healthMetric(d.restingHeartRate, ' bpm'));
+  healthSet('health-operating-mode', d.operatingMode || d.mode || 'NORMAL');
+
+  var badge = document.getElementById('health-whoop-badge');
+  if (badge) {
+    var connected = d.connected === true;
+    badge.textContent = connected ? 'WHOOP DETECTADO' : 'WHOOP PENDIENTE';
+    badge.style.background = connected ? 'rgba(0,255,153,.15)' : 'rgba(255,211,92,.12)';
+    badge.style.color = connected ? '#00ff99' : '#ffd35c';
+  }
+
+  var advice = document.getElementById('health-advice');
+  if (advice) {
+    advice.textContent = d.alfredoAdvice || d.suggestion || d.message || 'Esperando datos de WHOOP.';
+  }
+}
+async function loadWhoopToday() {
+  var panel = document.getElementById('health-readiness-panel');
+  if (!panel || panel.dataset.loading === '1') return;
+  panel.dataset.loading = '1';
+  try {
+    var response = await fetch('/api/whoop/today', { cache: 'no-store' });
+    if (!response.ok) throw new Error('WHOOP HTTP ' + response.status);
+    applyWhoopToday(await response.json());
+  } catch (e) {
+    var advice = document.getElementById('health-advice');
+    if (advice) advice.textContent = 'No se pudo refrescar WHOOP en el panel. Revisa /api/whoop/today.';
+  } finally {
+    panel.dataset.loading = '0';
+  }
 }
 function toggleAlfredo() {
   var p = document.getElementById('alfredo-panel');
@@ -2917,8 +2968,14 @@ function setAlfredoQ(q) {
 }
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
+  var hashMod = (window.location.hash || '').replace('#', '');
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
-  showMod(saved || 'home');
+  showMod(hashMod || saved || 'home');
+  loadWhoopToday();
+});
+window.addEventListener('hashchange', function() {
+  var hashMod = (window.location.hash || '').replace('#', '');
+  if (hashMod) showMod(hashMod);
 });
 </script>
 </html>`;
