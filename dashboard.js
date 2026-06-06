@@ -2344,73 +2344,269 @@ function renderAutopilotPanel() {
   </div>`;
 }
 
-function renderHealthReadinessPanel() {
-  const h = computeHealthReadiness();
-  const metrics = [
-    { id: "health-recovery",       label: "Recovery",       value: h.recovery !== null ? h.recovery + "%" : "—", color: "#9fb3c8" },
-    { id: "health-sleep",          label: "Sleep",          value: h.sleep !== null ? h.sleep + "%" : "—", color: "#9fb3c8" },
-    { id: "health-strain",         label: "Strain",         value: h.strain !== null ? String(h.strain) : "—", color: "#9fb3c8" },
-    { id: "health-avg-hr",         label: "Avg HR",         value: "—", color: "#9fb3c8" },
-    { id: "health-max-hr",         label: "Max HR",         value: "—", color: "#9fb3c8" },
-    { id: "health-hrv",            label: "HRV",            value: h.hrv !== null ? h.hrv + " ms" : "—", color: "#9fb3c8" },
-    { id: "health-resting-hr",     label: "Resting HR",     value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
-    { id: "health-operating-mode", label: "Modo Operativo", value: h.operatingMode || "NORMAL", color: "#ffd35c" },
-  ];
-  return `<div id="health-readiness-panel" style="max-width:1280px;margin:0 auto 12px">
-    <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
-        <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Corda Health Spotlight</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Readiness personal · no es consejo médico</div>
-        </div>
-        <span id="health-whoop-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-        ${metrics.map(m =>
-          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:90px">
-            <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
-            <div id="${esc(m.id)}" style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
-          </div>`
-        ).join("")}
-      </div>
-      <div id="health-advice" style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
-        ${esc(h.message || h.suggestion || "Esperando datos de salud.")}
-      </div>
-      <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
-    </div>
-  </div>`;
+function computeHealthTrends() {
+  return {
+    available: false,
+    days: 0,
+    recovery7d: [], sleep7d: [], hrv7d: [], strain7d: [], mood7d: [],
+    message: "Necesitamos guardar snapshots diarios para activar tendencias. Usa /api/health/snapshot."
+  };
 }
 
-
-function renderHealthTrendPlaceholders() {
-  const trends = [
-    { label: "Recovery trend", color: "#f472b6", note: "histórico local pendiente" },
-    { label: "Sleep trend", color: "#818cf8", note: "histórico local pendiente" },
-    { label: "Strain trend", color: "#ffd35c", note: "histórico local pendiente" },
-    { label: "HRV trend", color: "#00ff99", note: "histórico local pendiente" },
-    { label: "Resting HR trend", color: "#3b9dff", note: "histórico local pendiente" },
+function renderCordaHealthModule() {
+  const h = computeHealthReadiness();
+  const jd = computeJournalData();
+  const trends = computeHealthTrends();
+  const today = nowMX();
+  const mode = h.operatingMode || "NORMAL";
+  const MC = { LOW_STRAIN:"#00ff99", NORMAL:"#9fb3c8", DEFENSIVO:"#ffd35c", CONSERVADOR:"#ffd35c", MEDIO:"#3b9dff", ALTO:"#ff4d6d", BAJO:"#818cf8", CARGA_ALTA_PERO_RECUPERADO:"#f472b6" };
+  const mc = MC[mode] || "#9fb3c8";
+  const jCount = jd.count || 0;
+  const jTop = jd.topMood || null;
+  const jLast = jd.recent && jd.recent[0];
+  const jLastMood = jLast ? (jLast.mood || "—") : "—";
+  const jLastText = jLast ? String(jLast.text || jLast.content || "").slice(0, 120) : null;
+  const behaviors = ["Cannabis","Alcohol","Sauna","Cold Plunge","Suplementos","Comida tardía","Entrenamiento","Estrés","Hidratación","Cafeína"];
+  const trendItems = [
+    { label:"Recovery 7d", color:"#f472b6" }, { label:"Sleep 7d", color:"#818cf8" },
+    { label:"HRV 7d", color:"#00ff99" }, { label:"Strain 7d", color:"#ffd35c" },
+    { label:"Mood 7d", color:"#3b9dff" }, { label:"Energía 7d", color:"#f97316" },
   ];
-  return `<div style="max-width:1280px;margin:0 auto 12px">
-    <div class="panel" style="border:1px solid rgba(244,114,182,.12);background:rgba(255,255,255,.025);padding:15px 18px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health graphs</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Micrográficas listas para snapshots locales; no bloquean WHOOP live.</div>
-        </div>
-        <span style="font-size:11px;color:#9fb3c8;border:1px solid rgba(120,160,210,.14);border-radius:999px;padding:4px 10px">histórico: próximo</span>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-        ${trends.map(t => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;background:rgba(0,0,0,.18);padding:11px 12px">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${t.color}">${esc(t.label)}</div>
-          <div style="height:34px;margin:10px 0 6px;border-radius:10px;background:linear-gradient(90deg,${t.color}14,rgba(255,255,255,.04));position:relative;overflow:hidden">
-            <span style="position:absolute;left:8%;right:10%;top:16px;height:2px;background:${t.color};box-shadow:0 0 12px ${t.color};opacity:.7"></span>
-          </div>
-          <div class="muted" style="font-size:11px">${esc(t.note)}</div>
-        </div>`).join("")}
-      </div>
-      <div class="muted" style="font-size:11px;margin-top:10px">No es consejo médico. Usa esto solo como referencia personal.</div>
+  const metricCards = [
+    { id:"ch-recovery", label:"Recovery",   sub:"objetivo >67%",  color:"#00ff99" },
+    { id:"ch-sleep",    label:"Sleep",       sub:"objetivo >70%",  color:"#818cf8" },
+    { id:"ch-hrv",      label:"HRV",         sub:"variabilidad",   color:"#f472b6" },
+    { id:"ch-rhr",      label:"Resting HR",  sub:"cardíaco basal", color:"#3b9dff" },
+    { id:"ch-strain",   label:"Strain",      sub:"carga 0–21",     color:"#ffd35c" },
+    { id:"ch-avghr",    label:"Avg HR",      sub:"promedio diario",color:"#f97316" },
+    { id:"ch-maxhr",    label:"Max HR",      sub:"pico del día",   color:"#ff4d6d" },
+    { id:"ch-kj",       label:"Energía",     sub:"kilojulios",     color:"#a78bfa" },
+    { id:"ch-state",    label:"Estado",      sub:"scoreState",     color:"#9fb3c8" },
+    { id:"ch-mood",     label:"Mood est.",   sub:"estimado local", color:"#f472b6" },
+    { id:"ch-mode",     label:"Modo",        sub:"trading mode",   color:mc        },
+  ];
+  const barItems = [
+    { label:"Recovery",   id:"ch-bar-rec", color:"#00ff99" },
+    { label:"Sleep",      id:"ch-bar-slp", color:"#818cf8" },
+    { label:"HRV",        id:"ch-bar-hrv", color:"#f472b6" },
+    { label:"Strain",     id:"ch-bar-str", color:"#ffd35c" },
+    { label:"Resting HR", id:"ch-bar-rhr", color:"#3b9dff" },
+  ];
+  const ringItems = [
+    { label:"Nervous System", id:"ch-ns",        color:"#00ff99", desc:"HRV relativo al baseline" },
+    { label:"Sleep Debt",     id:"ch-sleepdebt", color:"#818cf8", desc:"Deuda acumulada" },
+    { label:"Load Balance",   id:"ch-load",      color:"#ffd35c", desc:"Strain vs recovery" },
+    { label:"Mental Clarity", id:"ch-clarity",   color:"#3b9dff", desc:"Estimado cognitivo" },
+    { label:"Rec Priority",   id:"ch-recprio",   color:"#f472b6", desc:"Urgencia de descanso" },
+    { label:"Energy Est.",    id:"ch-energy",    color:"#f97316", desc:"Reserva estimada" },
+  ];
+  const riskItems = [
+    { label:"Riesgo sobreoperar", id:"ch-overtrading-risk", color:"#ff4d6d" },
+    { label:"Claridad mental",    id:"ch-mental-clarity",   color:"#3b9dff" },
+    { label:"Prior. recuper.",    id:"ch-rec-priority",     color:"#f472b6" },
+  ];
+  const prompts = ["¿Cómo dormiste?","¿Cómo es tu energía?","¿Qué consumiste hoy?","¿Cómo está tu mente?","¿Algo inusual hoy?"];
+
+  return `<div id="health-readiness-panel" style="max-width:1280px;margin:0 auto;padding:0 4px">
+
+<div style="border:1px solid rgba(244,114,182,.25);border-radius:24px;padding:24px 28px;background:linear-gradient(135deg,rgba(244,114,182,.06),rgba(129,140,248,.06));margin-bottom:18px">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.2em;text-transform:uppercase;color:#f472b6;margin-bottom:6px">Corda Health · Personal OS</div>
+      <div style="font-size:28px;font-weight:900;color:#fff;line-height:1.1">Cordelius Health</div>
+      <div style="font-size:13px;color:#9fb3c8;margin-top:4px">WHOOP · Diario · Recuperación · Energía · Hábitos</div>
     </div>
-  </div>`;
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+      <span id="ch-badge" style="border-radius:99px;padding:6px 16px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">${h.configured ? "● WHOOP DETECTADO" : "WHOOP PENDIENTE"}</span>
+      <span style="font-size:11px;color:#9fb3c8">${esc(today)}</span>
+      <span id="ch-mode-badge" style="border-radius:99px;padding:4px 13px;font-size:11px;font-weight:900;background:rgba(0,0,0,.3);color:${mc};border:1px solid ${mc}40">${esc(mode)}</span>
+    </div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:18px">
+  ${[
+    { label:"Recuperación", wid:"ch-rec-wrap", vid:"ch-rec-val", sub:"Readiness", color:"#00ff99", desc:"HRV + sueño + carga del día anterior",      bc:"rgba(0,255,153,.18)",   bg:"rgba(0,255,153,.04)" },
+    { label:"Sueño",        wid:"ch-slp-wrap", vid:"ch-slp-val", sub:"Sleep Quality", color:"#818cf8", desc:"Rendimiento del sueño vs deuda",          bc:"rgba(129,140,248,.18)", bg:"rgba(129,140,248,.04)" },
+    { label:"Carga física", wid:"ch-str-wrap", vid:"ch-str-val", sub:"Daily Strain",  color:"#ffd35c", desc:"Escala 0–21 (WHOOP). Mayor = más carga.", bc:"rgba(255,211,92,.18)",  bg:"rgba(255,211,92,.04)" },
+  ].map(d => `<div style="border:1px solid ${d.bc};border-radius:20px;padding:20px;background:${d.bg};display:flex;flex-direction:column;align-items:center;gap:10px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:${d.color}">${esc(d.label)}</div>
+    <div id="${d.wid}" style="width:130px;height:130px;border-radius:50%;background:conic-gradient(rgba(255,255,255,.08) 0%,rgba(255,255,255,.08) 100%);display:flex;align-items:center;justify-content:center;transition:background .6s">
+      <div style="width:98px;height:98px;border-radius:50%;background:#0a0f1e;display:flex;flex-direction:column;align-items:center;justify-content:center">
+        <span id="${d.vid}" style="font-size:26px;font-weight:900;color:${d.color}">—</span>
+        <span style="font-size:9px;color:rgba(255,255,255,.4);margin-top:2px">${esc(d.sub)}</span>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#9fb3c8;text-align:center">${esc(d.desc)}</div>
+  </div>`).join("")}
+</div>
+
+<div style="border:1px solid rgba(120,160,210,.14);border-radius:20px;padding:20px;background:rgba(0,0,0,.2);margin-bottom:18px">
+  <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:14px">Métricas del día</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px">
+    ${metricCards.map(m => `<div style="background:rgba(0,0,0,.3);border:1px solid rgba(120,160,210,.1);border-radius:14px;padding:12px 14px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:rgba(120,160,210,.6);margin-bottom:5px">${esc(m.label)}</div>
+      <div id="${m.id}" style="font-size:20px;font-weight:900;color:${m.color};line-height:1">—</div>
+      <div style="font-size:10px;color:rgba(120,160,210,.5);margin-top:4px">${esc(m.sub)}</div>
+    </div>`).join("")}
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:18px">
+  <div style="border:1px solid rgba(120,160,210,.14);border-radius:20px;padding:20px;background:rgba(0,0,0,.2)">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:14px">Barras de estado</div>
+    ${barItems.map(b => `<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:11px;font-weight:700;color:#9fb3c8">${esc(b.label)}</span>
+        <span id="${b.id}-val" style="font-size:11px;color:${b.color};font-weight:900">—</span>
+      </div>
+      <div style="height:8px;background:rgba(255,255,255,.07);border-radius:99px;overflow:hidden">
+        <div id="${b.id}" style="height:100%;width:0%;background:${b.color};border-radius:99px;transition:width .6s"></div>
+      </div>
+    </div>`).join("")}
+  </div>
+  <div style="border:1px solid rgba(120,160,210,.14);border-radius:20px;padding:20px;background:rgba(0,0,0,.2)">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:14px">Sistema nervioso · Estado</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      ${ringItems.map(r => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:12px;padding:10px;display:flex;gap:8px;align-items:center">
+        <div style="width:36px;height:36px;border-radius:50%;border:3px solid ${r.color}40;background:${r.color}10;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <span id="${r.id}" style="font-size:9px;font-weight:900;color:${r.color};text-align:center">—</span>
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:#c8d8f0">${esc(r.label)}</div>
+          <div style="font-size:9px;color:rgba(120,160,210,.5)">${esc(r.desc)}</div>
+        </div>
+      </div>`).join("")}
+    </div>
+  </div>
+</div>
+
+<div style="border:1px solid rgba(244,114,182,.2);border-radius:20px;padding:22px;background:linear-gradient(135deg,rgba(244,114,182,.04),rgba(129,140,248,.03));margin-bottom:18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Alfredo Health Analysis</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">Interpretación automática de tus datos del día</div>
+    </div>
+    <a href="/api/health/insights" target="_blank" style="font-size:11px;color:#f472b6;text-decoration:none;border:1px solid rgba(244,114,182,.25);border-radius:99px;padding:4px 11px">JSON</a>
+  </div>
+  <div id="ch-analysis-text" style="padding:14px 18px;background:rgba(244,114,182,.05);border:1px solid rgba(244,114,182,.12);border-radius:14px;font-size:13px;color:#f9a8d4;line-height:1.6;margin-bottom:14px">Cargando análisis...</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:12px">
+    <div style="border:1px solid rgba(0,255,153,.15);border-radius:12px;padding:12px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#00ff99;margin-bottom:6px">Qué hacer hoy</div>
+      <ul id="ch-do-today" style="margin:0;padding-left:14px;color:#c8d8f0;font-size:12px;line-height:1.7"><li style="color:rgba(120,160,210,.4)">cargando...</li></ul>
+    </div>
+    <div style="border:1px solid rgba(255,77,109,.15);border-radius:12px;padding:12px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#ff4d6d;margin-bottom:6px">Qué evitar</div>
+      <ul id="ch-avoid-today" style="margin:0;padding-left:14px;color:#c8d8f0;font-size:12px;line-height:1.7"><li style="color:rgba(120,160,210,.4)">cargando...</li></ul>
+    </div>
+    <div style="border:1px solid rgba(255,211,92,.15);border-radius:12px;padding:12px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Qué observar</div>
+      <ul id="ch-observe-today" style="margin:0;padding-left:14px;color:#c8d8f0;font-size:12px;line-height:1.7"><li style="color:rgba(120,160,210,.4)">cargando...</li></ul>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:10px">
+    ${riskItems.map(r => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:12px;padding:10px 12px;text-align:center">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:${r.color};margin-bottom:4px">${esc(r.label)}</div>
+      <div id="${r.id}" style="font-size:16px;font-weight:900;color:${r.color}">—</div>
+    </div>`).join("")}
+  </div>
+  <div id="health-advice" style="display:none"></div>
+  <div class="muted" style="font-size:11px;margin-top:4px;padding-top:10px;border-top:1px solid rgba(120,160,210,.08)">Esto es análisis educativo/personal. No es consejo médico ni financiero.</div>
+</div>
+
+<div style="border:1px solid rgba(59,157,255,.18);border-radius:20px;padding:20px;background:rgba(59,157,255,.04);margin-bottom:18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff">Journal Signals</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">Conexión mood · sueño · carga · entradas del diario</div>
+    </div>
+    <span style="border:1px solid rgba(59,157,255,.25);border-radius:99px;padding:4px 11px;font-size:11px;color:#3b9dff">${jCount} entradas</span>
+  </div>
+  ${jCount === 0
+    ? `<div style="padding:18px;background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.12);border-radius:14px;color:#9fb3c8;font-size:13px;line-height:1.6;text-align:center">
+        Todavía no hay diario suficiente. Escribe 2–3 líneas para que Cordelius empiece a correlacionar mood, sueño, cannabis, sauna, suplementos y trading.
+        <div style="margin-top:12px"><button class="btn" onclick="showMod(&apos;journal&apos;)">Ir al Diario</button></div>
+      </div>`
+    : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px">
+        <div style="border:1px solid rgba(59,157,255,.12);border-radius:12px;padding:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Total entradas</div>
+          <div style="font-size:22px;font-weight:900;color:#3b9dff">${jCount}</div>
+        </div>
+        <div style="border:1px solid rgba(59,157,255,.12);border-radius:12px;padding:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Mood frecuente</div>
+          <div style="font-size:18px;font-weight:900;color:#3b9dff">${esc(jTop || "—")}</div>
+        </div>
+        <div style="border:1px solid rgba(59,157,255,.12);border-radius:12px;padding:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Último mood</div>
+          <div style="font-size:18px;font-weight:900;color:#3b9dff">${esc(jLastMood)}</div>
+        </div>
+      </div>
+      ${jLastText ? `<div style="padding:12px;background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.1);border-radius:12px;color:#c8d8f0;font-size:12px;line-height:1.5;margin-bottom:10px">
+        <span style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff">Última entrada: </span>${esc(jLastText)}${jLastText.length >= 120 ? "…" : ""}
+      </div>` : ""}
+      <div id="ch-journal-whoop-signal" style="padding:10px 14px;background:rgba(0,0,0,.2);border-radius:10px;font-size:12px;color:#9fb3c8">
+        Correlación WHOOP · Journal cargando...
+      </div>`
+  }
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(59,157,255,.08)">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Prompts sugeridos para hoy</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${prompts.map(p => `<button onclick="setAlfredoQ(${JSON.stringify(p)});showMod('journal')" style="border:1px solid rgba(59,157,255,.22);border-radius:99px;padding:4px 12px;font-size:11px;background:transparent;color:#3b9dff;cursor:pointer">${esc(p)}</button>`).join("")}
+    </div>
+  </div>
+</div>
+
+<div style="border:1px solid rgba(167,139,250,.18);border-radius:20px;padding:20px;background:rgba(167,139,250,.04);margin-bottom:18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#a78bfa">Behavior Tracker</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">Hábitos del día · pendiente health_behavior_log.json</div>
+    </div>
+    <span style="border:1px solid rgba(167,139,250,.22);border-radius:99px;padding:4px 11px;font-size:11px;color:#a78bfa">F3c · Próximamente</span>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    ${behaviors.map(b => `<div style="display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(167,139,250,.18);border-radius:99px;padding:6px 14px;background:rgba(0,0,0,.2)">
+      <span style="font-size:12px;color:#c8d8f0">${esc(b)}</span>
+      <span style="font-size:10px;color:rgba(167,139,250,.4);font-style:italic">—</span>
+    </div>`).join("")}
+  </div>
+  <button class="btn" style="opacity:.55;cursor:not-allowed" disabled>Registrar hábitos de hoy (próximamente)</button>
+  <div class="muted" style="font-size:11px;margin-top:8px">UI lista · integración POST pendiente en F3c</div>
+</div>
+
+<div style="border:1px solid rgba(120,160,210,.14);border-radius:20px;padding:20px;background:rgba(0,0,0,.15);margin-bottom:18px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8">Trends · 7 / 30 días</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">Snapshots diarios para activar tendencias reales</div>
+    </div>
+    <a href="/api/health/snapshot" target="_blank" style="font-size:11px;color:#9fb3c8;text-decoration:none;border:1px solid rgba(120,160,210,.2);border-radius:99px;padding:4px 11px">Snapshot hoy</a>
+  </div>
+  <div style="padding:14px;background:rgba(120,160,210,.04);border:1px solid rgba(120,160,210,.1);border-radius:12px;color:#9fb3c8;font-size:12px;text-align:center;margin-bottom:14px">${esc(trends.message)}</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+    ${trendItems.map(t => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;background:rgba(0,0,0,.18);padding:12px">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${t.color};margin-bottom:8px">${esc(t.label)}</div>
+      <div style="height:32px;border-radius:8px;background:linear-gradient(90deg,${t.color}18,rgba(255,255,255,.04));position:relative;overflow:hidden;margin-bottom:6px">
+        <span style="position:absolute;left:8%;right:10%;top:14px;height:2px;background:${t.color};box-shadow:0 0 10px ${t.color};opacity:.45"></span>
+      </div>
+      <div class="muted" style="font-size:10px">/api/health/snapshot</div>
+    </div>`).join("")}
+  </div>
+</div>
+
+<div style="border:1px solid rgba(255,211,92,.12);border-radius:20px;padding:18px 20px;background:rgba(255,211,92,.03);margin-bottom:14px">
+  <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#ffd35c;margin-bottom:10px">Datos faltantes · Próximas integraciones</div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px">
+    ${["Minutos dormido","Eficiencia de sueño","Pasos del día","Cannabis hoy","Sauna hoy","Cold plunge","Suplementos","Estrés percibido","Tendencias 7d","Historial snapshots"].map(m =>
+      `<span style="border:1px solid rgba(255,211,92,.2);border-radius:99px;padding:3px 10px;font-size:11px;color:#ffd35c">${esc(m)}</span>`
+    ).join("")}
+  </div>
+</div>
+
+<div style="text-align:center;padding:14px;color:rgba(120,160,210,.45);font-size:11px;margin-bottom:8px">
+  Análisis educativo/personal. No es consejo médico ni financiero. Basado en WHOOP + diario local.
+</div>
+</div>`;
 }
 
 function renderPortfolioSnapshot(pv, reg) {
@@ -2919,15 +3115,7 @@ ${renderExternalRadarBySector()}
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
 <div id="mod-health" class="mod">
-<h2>Corda Health</h2>
-${renderHealthReadinessPanel()}
-${renderHealthTrendPlaceholders()}
-<div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
-  ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
-  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
-  <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
-  <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
-</div>
+${renderCordaHealthModule()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
 <div id="mod-journal" class="mod">
@@ -3049,7 +3237,7 @@ function showMod(name) {
   var btn = document.querySelector('[data-mod="' + name + '"]');
   if (btn) btn.classList.add('nav-active');
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
-  if (name === 'health') loadWhoopToday();
+  if (name === 'health') cordaHealthLive();
   if (name === 'journal') loadJournalAuto();
   if (name === 'intelligence') loadIntelligenceFeed();
   if (name === 'alfredo') loadAlfredoContext();
@@ -3106,19 +3294,105 @@ function applyWhoopToday(d) {
     advice.textContent = d.alfredoAdvice || d.suggestion || d.message || 'Esperando datos de WHOOP.';
   }
 }
-async function loadWhoopToday() {
+async function loadWhoopToday() { await cordaHealthLive(); }
+
+async function cordaHealthLive() {
   var panel = document.getElementById('health-readiness-panel');
-  if (!panel || panel.dataset.loading === '1') return;
-  panel.dataset.loading = '1';
+  if (panel && panel.dataset.chLoading === '1') return;
+  if (panel) panel.dataset.chLoading = '1';
+  function hSet(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = String(val); }
+  function setDonut(wrapId, valId, val, maxVal, color, displayFn) {
+    var wrap = document.getElementById(wrapId);
+    var el = document.getElementById(valId);
+    var pct = val != null ? Math.min(100, Math.round((val / maxVal) * 100)) : 0;
+    var display = val != null ? (displayFn ? displayFn(val) : String(val)) : '—';
+    if (wrap) wrap.style.background = 'conic-gradient(' + color + ' ' + pct + '%, rgba(255,255,255,.08) 0%)';
+    if (el) { el.textContent = display; el.style.color = color; }
+  }
+  function setBar(barId, val, maxVal, displayVal) {
+    var bar = document.getElementById(barId);
+    var lbl = document.getElementById(barId + '-val');
+    var pct = val != null ? Math.min(100, Math.round((val / maxVal) * 100)) : 0;
+    if (bar) bar.style.width = pct + '%';
+    if (lbl) lbl.textContent = displayVal != null ? String(displayVal) : (val != null ? String(val) : '—');
+  }
+  function setList(id, arr, emptyMsg) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (!arr || !arr.length) { el.innerHTML = '<li style="color:rgba(120,160,210,.4)">' + (emptyMsg || 'sin datos') + '</li>'; return; }
+    el.innerHTML = arr.map(function(s){ return '<li>' + String(s).replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }) + '</li>'; }).join('');
+  }
   try {
-    var response = await fetch('/api/whoop/today', { cache: 'no-store' });
-    if (!response.ok) throw new Error('WHOOP HTTP ' + response.status);
-    applyWhoopToday(await response.json());
-  } catch (e) {
-    var advice = document.getElementById('health-advice');
-    if (advice) advice.textContent = 'No se pudo refrescar WHOOP en el panel. Revisa /api/whoop/today.';
+    var wResp = await fetch('/api/whoop/today', { cache:'no-store' });
+    var w = wResp.ok ? await wResp.json() : null;
+    if (w) {
+      var rec = w.recovery; var slp = w.sleep; var str = w.strain;
+      var hrv = w.hrv; var rhr = w.restingHeartRate;
+      var recColor = rec != null ? (rec >= 67 ? '#00ff99' : rec >= 34 ? '#ffd35c' : '#ff4d6d') : '#9fb3c8';
+      var slpColor = slp != null ? (slp >= 70 ? '#818cf8' : slp >= 50 ? '#ffd35c' : '#ff4d6d') : '#818cf8';
+      var strColor = str != null ? (str >= 14 ? '#ff4d6d' : str >= 8 ? '#ffd35c' : '#00ff99') : '#ffd35c';
+      setDonut('ch-rec-wrap', 'ch-rec-val', rec, 100, recColor, function(v){ return v + '%'; });
+      setDonut('ch-slp-wrap', 'ch-slp-val', slp, 100, slpColor, function(v){ return v + '%'; });
+      setDonut('ch-str-wrap', 'ch-str-val', str, 21,  strColor, function(v){ return typeof v==='number' ? v.toFixed(1) : v; });
+      hSet('ch-recovery', rec != null ? rec + '%' : '—');
+      hSet('ch-sleep',    slp != null ? slp + '%' : '—');
+      hSet('ch-hrv',      hrv != null ? (typeof hrv==='number' ? hrv.toFixed(1) : hrv) + ' ms' : '—');
+      hSet('ch-rhr',      rhr != null ? rhr + ' bpm' : '—');
+      hSet('ch-strain',   str != null ? (typeof str==='number' ? str.toFixed(1) : str) : '—');
+      hSet('ch-avghr',    w.averageHeartRate != null ? w.averageHeartRate + ' bpm' : '—');
+      hSet('ch-maxhr',    w.maxHeartRate != null ? w.maxHeartRate + ' bpm' : '—');
+      hSet('ch-kj',       w.kilojoule != null ? Math.round(w.kilojoule) + ' kJ' : '—');
+      hSet('ch-state',    w.scoreState || '—');
+      hSet('ch-mode',     w.operatingMode || w.mode || 'NORMAL');
+      setBar('ch-bar-rec', rec, 100, rec != null ? rec + '%' : null);
+      setBar('ch-bar-slp', slp, 100, slp != null ? slp + '%' : null);
+      setBar('ch-bar-hrv', hrv, 200, hrv != null ? (typeof hrv==='number' ? hrv.toFixed(1) : hrv) + ' ms' : null);
+      setBar('ch-bar-str', str, 21,  str != null ? (typeof str==='number' ? str.toFixed(1) : str) : null);
+      setBar('ch-bar-rhr', rhr != null ? (80 - Math.min(rhr, 80)) : null, 80, rhr != null ? rhr + ' bpm' : null);
+      var badge = document.getElementById('ch-badge');
+      if (badge) {
+        badge.textContent = w.connected ? '● WHOOP LIVE' : (w.message ? '● WHOOP DETECTADO' : 'WHOOP PENDIENTE');
+        badge.style.color = w.connected ? '#00ff99' : '#ffd35c';
+        badge.style.background = w.connected ? 'rgba(0,255,153,.15)' : 'rgba(255,211,92,.12)';
+      }
+      var mb = document.getElementById('ch-mode-badge');
+      if (mb) mb.textContent = w.operatingMode || w.mode || 'NORMAL';
+      applyWhoopToday(w);
+    }
+    var iResp = await fetch('/api/health/insights', { cache:'no-store' });
+    var ins = iResp.ok ? await iResp.json() : null;
+    if (ins) {
+      hSet('ch-mood', ins.moodEstimated || '—');
+      var brief = ins.aiBrief || (ins.bodySignal ? ins.bodySignal + ' ' + (ins.readiness || '') : 'Análisis no disponible todavía.');
+      hSet('ch-analysis-text', brief);
+      hSet('ch-overtrading-risk', ins.overtradingRisk || '—');
+      hSet('ch-mental-clarity',   ins.mentalClarity || '—');
+      hSet('ch-rec-priority',     ins.recoveryPriority || '—');
+      hSet('ch-ns',        ins.nervousSystemStatus || '—');
+      hSet('ch-sleepdebt', ins.sleepScore != null ? ins.sleepScore + '%' : '—');
+      hSet('ch-load',      ins.strainScore != null ? ins.strainScore + '%' : '—');
+      hSet('ch-clarity',   ins.mentalClarity || '—');
+      hSet('ch-recprio',   ins.recoveryPriority || '—');
+      hSet('ch-energy',    ins.readiness || '—');
+      setList('ch-do-today',    ins.recommendedFocus, 'sin datos todavía');
+      setList('ch-avoid-today', ins.avoidToday,       'sin datos todavía');
+      setList('ch-observe-today', ins.observeToday,   'sin datos todavía');
+      if (ins.journal) {
+        var j = ins.journal; var w2 = w || {};
+        var sig = '';
+        var rr = w2.recovery; var ss = w2.sleep; var sstr = w2.strain; var mood = j.lastMood || '—';
+        if (rr != null && rr < 50 && ['triste','ansioso','cansado','mal'].indexOf(mood) >= 0) sig = 'Alerta: Recovery bajo + mood bajo — priorizar descanso hoy.';
+        else if (ss != null && ss < 60 && sstr != null && sstr >= 8) sig = 'Alerta: Sueño flojo + strain alto — evitar decisiones impulsivas.';
+        else if (sstr != null && sstr >= 14 && ['ansioso','estresado'].indexOf(mood) >= 0) sig = 'Alerta: Strain alto + mood ansioso — no es buen día para trading impulsivo.';
+        else if (rr != null && rr >= 65 && sstr != null && sstr < 8) sig = 'Buen día: Recovery medio + carga baja — ideal para planear y analizar.';
+        else sig = 'Recovery ' + (rr != null ? rr + '%' : '—') + ', Sleep ' + (ss != null ? ss + '%' : '—') + ', Mood: ' + mood + '.';
+        hSet('ch-journal-whoop-signal', sig);
+      }
+    }
+  } catch(e) {
+    hSet('ch-analysis-text', 'No se pudo cargar datos de salud. Revisa /api/health/insights.');
   } finally {
-    panel.dataset.loading = '0';
+    if (panel) panel.dataset.chLoading = '0';
   }
 }
 
@@ -3203,7 +3477,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var hashMod = (window.location.hash || '').replace('#', '');
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
   showMod(hashMod || saved || 'home');
-  loadWhoopToday();
+  cordaHealthLive();
   loadJournalAuto();
   loadAlfredoContext();
   loadIntelligenceFeed();
@@ -3995,17 +4269,48 @@ const server = http.createServer(async (req, res) => {
       if (!day?.behaviors?.supplements?.length) missingData.push("suplementos");
       if (day?.behaviors?.stress === null) missingData.push("estrés percibido");
 
+      // Extended computed fields
+      const kilojoule = day?.strain?.kilojoule ?? null;
+      const jd = computeJournalData();
+      const lastJEntry = jd.recent && jd.recent[0];
+
+      let mentalClarity = "MEDIO";
+      let overtradingRisk = "MEDIO";
+      let nervousSystemStatus = "NORMAL";
+      let moodEstimated = lastJEntry ? (lastJEntry.mood || "neutral") : null;
+      let bodyState = bodySignal;
+      let avoidToday = [];
+      let observeToday = [];
+      let recoveryScore = recovery;
+      let sleepScore = sleep;
+      let strainScore = strain != null ? Math.round((strain / 21) * 100) : null;
+
+      if (readiness === "ALTO") {
+        mentalClarity = "ALTA"; overtradingRisk = "BAJO"; nervousSystemStatus = "RECUPERADO";
+        avoidToday = ["sobrecargar el día libre","mezclar muchos estimulantes","dormir tarde si mañana hay sesión fuerte"];
+        observeToday = ["energía a lo largo del día","si la claridad se mantiene toda la mañana","qué hábitos contribuyeron a este estado"];
+      } else if (readiness === "CARGA_ALTA_PERO_RECUPERADO") {
+        mentalClarity = "MEDIO"; overtradingRisk = "MEDIO"; nervousSystemStatus = "ACTIVO";
+        avoidToday = ["alcohol","cafeína excesiva tarde","entrenar pesado de nuevo","sobreoperar con posiciones"];
+        observeToday = ["si la fatiga aparece pasado el mediodía","ritmo cardíaco en reposo después de actividad","calidad del sueño esta noche"];
+      } else if (readiness === "BAJO") {
+        mentalClarity = "BAJA"; overtradingRisk = "ALTO"; nervousSystemStatus = "BAJO";
+        avoidToday = ["entrenamiento intenso","alcohol","cannabis si afecta motivación","tomar decisiones financieras impulsivas","mezclar muchos estimulantes"];
+        observeToday = ["cuántas horas duermes esta noche","si el ánimo mejora con comida completa","qué hábito pudo haber afectado el sueño"];
+      } else if (readiness === "MEDIO") {
+        mentalClarity = "MEDIO"; overtradingRisk = "MEDIO"; nervousSystemStatus = "NORMAL";
+        avoidToday = ["forzar entrenamiento intenso si no tienes energía","decisiones grandes sin contexto claro"];
+        observeToday = ["energía física versus energía mental","cómo reaccionas a café o suplementos","si el sueño de la noche anterior influyó"];
+      }
+
       const aiBrief = [
-        "Health Dashboard de Pedro.",
-        recovery !== null ? `Recovery ${recovery}%.` : "Recovery sin dato.",
-        sleep !== null ? `Sleep ${sleep}%.` : "Sleep sin dato.",
-        hrv !== null ? `HRV ${Number(hrv).toFixed(1)} ms.` : "HRV sin dato.",
-        rhr !== null ? `RHR ${rhr} bpm.` : "RHR sin dato.",
-        strain !== null ? `Strain ${Number(strain).toFixed(1)}.` : "Strain sin dato.",
-        bodySignal,
-        `Prioridad de recuperación: ${recoveryPriority}.`,
-        "No es consejo médico."
-      ].join(" ");
+        "Tu estado de salud de hoy:",
+        recovery !== null ? `Recovery ${recovery}%` : "Recovery sin dato",
+        sleep !== null ? `Sleep ${sleep}%` : null,
+        hrv !== null ? `HRV ${Number(hrv).toFixed(1)} ms` : null,
+        rhr !== null ? `RHR ${rhr} bpm` : null,
+        strain !== null ? `Strain ${Number(strain).toFixed(1)}/21` : null,
+      ].filter(Boolean).join(", ") + ". " + bodySignal + " Prioridad de recuperación: " + recoveryPriority + ". Riesgo de sobreoperar: " + overtradingRisk + ". No es consejo médico.";
 
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(JSON.stringify({
@@ -4016,6 +4321,14 @@ const server = http.createServer(async (req, res) => {
         readiness,
         recoveryPriority,
         bodySignal,
+        bodyState,
+        moodEstimated,
+        mentalClarity,
+        overtradingRisk,
+        nervousSystemStatus,
+        recoveryScore,
+        sleepScore,
+        strainScore,
         metrics: {
           recovery,
           sleep,
@@ -4023,16 +4336,31 @@ const server = http.createServer(async (req, res) => {
           resting_hr_bpm: rhr,
           strain,
           average_hr: avgHr,
-          max_hr: maxHr
+          max_hr: maxHr,
+          kilojoule
+        },
+        journal: {
+          count: jd.count,
+          topMood: jd.topMood,
+          lastMood: lastJEntry ? (lastJEntry.mood || null) : null,
+          lastEntrySummary: lastJEntry ? String(lastJEntry.text || lastJEntry.content || "").slice(0, 200) : null,
+          suggestedPrompts: ["¿Cómo dormiste?","¿Cómo es tu energía?","¿Qué consumiste hoy?","¿Cómo está tu mente?"]
+        },
+        behaviors: {
+          cannabis: day?.behaviors?.cannabis ?? null,
+          alcohol: day?.behaviors?.alcohol ?? null,
+          sauna: day?.behaviors?.sauna ?? null,
+          cold_plunge: day?.behaviors?.cold_plunge ?? null,
+          supplements: day?.behaviors?.supplements ?? [],
+          late_meal: day?.behaviors?.late_meal ?? null,
+          stress: day?.behaviors?.stress ?? null,
+          hydration: null,
+          caffeine: null
         },
         recommendedFocus,
+        avoidToday,
+        observeToday,
         missingData,
-        nextBestIntegrations: [
-          "leer notas del diario de WHOOP si la API lo permite",
-          "registrar cannabis/sauna/suplementos en health_behavior_log.json",
-          "agregar tendencias 7/30 días cuando tengamos historial",
-          "separar UI de salud de UI de trading"
-        ],
         aiBrief,
         educationalNote: "Interpretación educativa de datos personales. No es consejo médico."
       }));
@@ -4043,6 +4371,43 @@ const server = http.createServer(async (req, res) => {
         error: "health_insights_crash",
         message: e.message
       }));
+    }
+  }
+
+  if (path === "/api/health/snapshot") {
+    try {
+      const fs = require("fs");
+      const h = computeHealthReadiness();
+      const jd = computeJournalData();
+      const lastEntry = jd.recent && jd.recent[0];
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const snapshot = {
+        date: dateStr,
+        timestamp: new Date().toISOString(),
+        recovery: h.recovery,
+        sleep: h.sleep,
+        hrv: h.hrv,
+        rhr: h.restingHeartRate,
+        strain: h.strain,
+        avgHR: null,
+        maxHR: null,
+        kilojoule: null,
+        mode: h.operatingMode || "NORMAL",
+        journalMood: lastEntry ? (lastEntry.mood || null) : null,
+        source: h.configured ? "whoop" : "local_only"
+      };
+      const snapFile = "health_daily_snapshots.json";
+      let snapshots = [];
+      try { if (fs.existsSync(snapFile)) snapshots = JSON.parse(fs.readFileSync(snapFile, "utf8")); } catch(e) {}
+      const idx = snapshots.findIndex(s => s.date === dateStr);
+      if (idx >= 0) snapshots[idx] = snapshot; else snapshots.unshift(snapshot);
+      snapshots = snapshots.slice(0, 90);
+      fs.writeFileSync(snapFile, JSON.stringify(snapshots, null, 2));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, saved: true, snapshot, totalSnapshots: snapshots.length, educationalNote: "Snapshot local. No es consejo médico." }));
+    } catch (e) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "snapshot_crash", message: e.message }));
     }
   }
 

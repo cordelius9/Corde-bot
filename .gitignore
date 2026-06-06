@@ -51,3 +51,4 @@ data/*secret*.json
 data/*.secrets.json
 health_profile.json
 health_behavior_log.json
+health_daily_snapshots.json
