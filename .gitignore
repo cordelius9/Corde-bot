@@ -21,6 +21,7 @@ cordelius_alerts.json
 
 # Backups y parches locales
 dashboard_backup_*.js
+dashboard.backup*.js
 dashboard_FINAL_*.js
 dashboard_OK_*.js
 dashboard_broken_*.js
@@ -52,3 +53,12 @@ data/*.secrets.json
 health_profile.json
 health_behavior_log.json
 health_daily_snapshots.json
+
+# Autopilot database runtime files
+data/*.json
+data/*.tmp
+
+# Other runtime/local files
+whoop_today_cache.json
+server.log
+start-with-env.js
