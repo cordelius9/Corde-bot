@@ -34,3 +34,34 @@ node_modules/
 
 # Directorios de runtime
 runtime/
+
+# Local health/journal runtime files
+whoop_tokens.json
+cordelius_journal.json
+
+corda_journal.json
+data/secrets/
+data/*.token
+data/*tokens*.json
+.env.*
+*.local
+*.secret
+*.token
+data/*secret*.json
+data/*.secrets.json
+health_daily_snapshots.json
+health_behaviors.json
+dashboard.backup.health-ui-fix-*.js
+dashboard.backup.health-os-direct-*.js
+health_profile.json
+whoop_today_cache.json
+*backup*.js
+*.patch
+*.tmp
+tmp/
+.railway/
+.render/
+data/*.json
+server.log
+start-with-env.js
+dashboard.backup*.js
