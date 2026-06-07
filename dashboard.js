@@ -4046,7 +4046,7 @@ function updateCordeliusBranding(mod) {
 
 
 function showMod(name) {
-  updateCordeliusBranding(mod);
+  updateCordeliusBranding(name);
 
   document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
   document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
