@@ -4003,7 +4003,51 @@ ${renderAutopilotPanel()}
 
 </body>
 <script>
+
+function getCordeliusModuleTitle(mod) {
+  const titles = {
+    home: "Cordelius",
+    trading: "Cordelius Trading",
+    health: "Cordelius Health",
+    journal: "Cordelius Journal",
+    autopilot: "Cordelius Autopilot",
+    intelligence: "Cordelius Intelligence",
+    alfredo: "Cordelius Alfredo",
+    research: "Cordelius Research",
+    settings: "Cordelius Settings"
+  };
+  return titles[mod] || "Cordelius";
+}
+
+function updateCordeliusBranding(mod) {
+  const title = getCordeliusModuleTitle(mod);
+  document.title = title;
+
+  const targets = [
+    "app-title",
+    "brand-title",
+    "cordelius-title",
+    "main-title",
+    "module-title"
+  ];
+
+  targets.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = title;
+  });
+
+  const subtitle = document.getElementById("module-subtitle");
+  if (subtitle) {
+    subtitle.textContent = mod === "home"
+      ? "Personal OS · Trading · Health · Journal"
+      : "Módulo activo dentro de Cordelius";
+  }
+}
+
+
 function showMod(name) {
+  updateCordeliusBranding(mod);
+
   document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
   document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
   var mod = document.getElementById('mod-' + name);
