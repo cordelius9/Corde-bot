@@ -43,7 +43,7 @@ function nowMX() { return new Date().toLocaleString("es-MX"); }
 
 let settings = loadJSON(SETTINGS_FILE, {
   thinkingEnabled: true, autoRefreshSeconds: 60, themeMode: "neural",
-  appName: "Cordelius OS", assistantName: "Alfredo AI"
+  appName: "Cordelius", assistantName: "Alfredo AI"
 });
 
 let quotes = {};
@@ -4046,6 +4046,7 @@ function updateCordeliusBranding(mod) {
 
 
 function showMod(name) {
+  name = String(name || 'home').split('?')[0].replace('#','') || 'home';
   updateCordeliusBranding(name);
 
   document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
@@ -4227,7 +4228,7 @@ async function researchTicker() {
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
-  var hashMod = (window.location.hash || '').replace('#', '');
+  var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
   showMod(hashMod || saved || 'home');
   // Live-update Health Readiness panel from /api/whoop/today
   (function whoopHealthLive() {
