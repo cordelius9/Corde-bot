@@ -91,3 +91,4 @@ dashboard.backup*.js
 *.backup*
 cloudflared.log
 server.log
+health_behavior_log.json
