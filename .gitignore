@@ -78,3 +78,16 @@ server.log
 cloudflared.log
 start-with-env.js
 dashboard.backup*.js
+
+# Local runtime / secrets
+.env
+whoop_tokens.json
+whoop_today_cache.json
+health_profile.json
+start-with-env.js
+
+# Local backups
+dashboard.backup*.js
+*.backup*
+cloudflared.log
+server.log
