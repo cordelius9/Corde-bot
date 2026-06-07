@@ -6,6 +6,7 @@ const PORT = process.env.PORT || 3000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
+const PAC_API_KEY = process.env.PAC_API_KEY || null;
 const QUIVER_CACHE_MS = 2 * 60 * 60 * 1000;
 // WHOOP vars — read at runtime, never logged
 const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLIENT_SECRET);
@@ -2061,30 +2062,40 @@ function renderDailyScanCard() {
 function renderNews() {
   if (!news.length) return `<div class="muted">Cargando noticias...</div>`;
   const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
-  function newsCard(n) {
+  function newsCard(n, openByDefault) {
     const c = n.classification;
-    const img = n.image ? `<img class="news-img" src="${esc(n.image)}" alt="">` : `<div class="news-img placeholder">NEWS</div>`;
     const impacted = n.impacted && n.impacted.length ? n.impacted : ["Mercado"];
     const dateStr = n.datetime ? new Date(n.datetime * 1000).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
-    return `<div class="news-card">${img}<div class="news-body">
-      <div class="chips"><span>${esc(c.type)}</span><span style="background:${c.impactColor}22;border-color:${c.impactColor}55;color:${c.impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span><span>${esc(n.source || "Fuente")}</span>${dateStr ? `<span style="color:#9fb3c8">${esc(dateStr)}</span>` : ""}</div>
-      <h3>${esc(n.headline || "Sin titulo")}</h3>
-      <p>${esc((n.summary || "").slice(0, 240))}</p>
-      <div class="impact"><b>Activos impactados:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
-      <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
-      <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente ↗</a>
-    </div></div>`;
+    const impactColor = c.impactColor || "#3b9dff";
+    const img = n.image ? `<img style="width:100%;max-height:180px;object-fit:cover;border-radius:12px;margin-bottom:12px" src="${esc(n.image)}" alt="">` : "";
+    return `<details class="news-item"${openByDefault ? " open" : ""}>
+      <summary>
+        <span style="flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:${impactColor};flex-shrink:0"></span>
+        <span style="flex:1;font-size:14px;font-weight:700;color:#dbeafe;line-height:1.35">${esc(n.headline || "Sin título")}</span>
+        ${n.source ? `<span style="flex:0 0 auto;font-size:10px;color:#9fb3c8;white-space:nowrap">${esc(n.source)}</span>` : ""}
+        ${dateStr ? `<span style="flex:0 0 auto;font-size:10px;color:#9fb3c8;white-space:nowrap">${esc(dateStr)}</span>` : ""}
+        <span class="ni-caret">▾</span>
+      </summary>
+      <div style="padding:0 16px 14px">
+        ${img}
+        <div class="chips"><span>${esc(c.type)}</span><span style="background:${impactColor}22;border-color:${impactColor}55;color:${impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span></div>
+        <p style="color:#cbd5e1;font-size:14px;margin:8px 0;line-height:1.6">${esc((n.summary || "").slice(0, 300))}</p>
+        <div class="impact"><b>Activos:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
+        <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
+        <a target="_blank" href="${esc(n.url || "#")}" style="font-size:13px;color:#3b9dff">Leer fuente ↗</a>
+      </div>
+    </details>`;
   }
   const portfolioNews = news.filter(n => n.impacted && n.impacted.some(t => portfolioSymbols.has(t)));
   const externalNews = news.filter(n => !portfolioNews.includes(n));
   let html = "";
   if (portfolioNews.length) {
-    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin:8px 0 12px;max-width:1280px">Impactan tu portafolio (${portfolioNews.length})</div>`;
-    html += portfolioNews.map(newsCard).join("");
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin:8px 0 10px;max-width:1280px">Impactan tu portafolio (${portfolioNews.length})</div>`;
+    html += portfolioNews.map((n, i) => newsCard(n, i < 3)).join("");
   }
   if (externalNews.length) {
-    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#9fb3c8;margin:${portfolioNews.length ? "24px" : "8px"} 0 12px;max-width:1280px">Mercado general (${externalNews.length})</div>`;
-    html += externalNews.map(newsCard).join("");
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#9fb3c8;margin:${portfolioNews.length ? "20px" : "8px"} 0 10px;max-width:1280px">Mercado general (${externalNews.length})</div>`;
+    html += externalNews.map((n, i) => newsCard(n, i < 2 && !portfolioNews.length)).join("");
   }
   return html || `<div class="muted">Sin noticias disponibles.</div>`;
 }
@@ -2824,6 +2835,18 @@ function renderAutopilotPanel() {
     <!-- Progress expanded panel -->
     <div id="autopilot-progress-panel" style="display:none;padding:0 28px 24px"></div>
 
+    <!-- PAC — Personal Autopilot Connection scaffold -->
+    <div style="margin:20px 28px;padding:18px 20px;background:rgba(255,211,92,.03);border:1px solid rgba(255,211,92,.12);border-radius:18px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">PAC · Personal Autopilot Connection</div>
+        <span style="border-radius:99px;padding:2px 10px;font-size:10px;font-weight:900;background:rgba(255,211,92,.1);color:#ffd35c">${PAC_API_KEY ? "CONECTADO" : "PENDIENTE"}</span>
+      </div>
+      <div style="font-size:13px;color:#9fb3c8;margin-bottom:10px">Conexión a sistema de ejecución automatizada de paper trades y señales algorítmicas. Requiere <code style="font-size:12px;background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px;color:#ffd35c">PAC_API_KEY</code> en .env.</div>
+      ${PAC_API_KEY
+        ? `<span style="color:#00ff99;font-size:13px;font-weight:900">● PAC conectado · listo para ejecución paper</span>`
+        : `<div style="font-size:12px;color:#9fb3c8">Agrega <code style="color:#ffd35c">PAC_API_KEY=tu_key</code> en .env para activar. La infraestructura de endpoints está lista.</div>`}
+    </div>
+
     <!-- Footer disclaimer -->
     <div style="padding:12px 28px;border-top:1px solid rgba(120,160,210,.06);font-size:10px;color:rgba(120,160,210,.38);text-align:center">
       Cordelius OS — educativo. Paper trading only. Real Trading permanentemente OFF. No es asesoría financiera ni médica.
@@ -2918,8 +2941,8 @@ function renderHealthReadinessPanel() {
     <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health Readiness</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Estado personal para decidir · no consejo médico</div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health · Patrones personales</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">Sueño · Recovery · Energía · Hábitos · no consejo médico</div>
         </div>
         <span id="hr-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${badgeBg};color:${badgeColor}">${badgeLabel}</span>
       </div>
@@ -3165,11 +3188,45 @@ function renderHomePortal(pv, reg) {
   ];
   const greetHour = new Date().getHours();
   const greet = greetHour < 12 ? "Buenos días" : greetHour < 19 ? "Buenas tardes" : "Buenas noches";
+  const days = ["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];
+  const dayName = days[new Date().getDay()];
+  const modeColor = {"ÓPTIMO":"#818cf8","NORMAL":"#00ff99","CONSERVADOR":"#ffd35c","BAJO":"#ffd35c","DEFENSIVO":"#ff4d6d"}[h.operatingMode] || "#9fb3c8";
   return `<div style="max-width:1280px;margin:0 auto">
-    <div style="padding:28px 0 18px">
-      <div style="font-size:13px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">CORDELIUS PERSONAL OS</div>
-      <div style="font-size:32px;font-weight:900;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${greet}, Pedro</div>
-      <div style="color:#9fb3c8;font-size:14px;margin-top:4px">${esc(nl.date)} · ${esc(nowMX())}</div>
+    <div style="padding:28px 0 14px;display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:10px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8;margin-bottom:4px">CORDELIUS PERSONAL OS · ${esc(dayName.toUpperCase())}</div>
+        <div style="font-size:32px;font-weight:900;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${greet}, Pedro</div>
+        <div style="color:#9fb3c8;font-size:13px;margin-top:4px">${esc(nl.date)} · ${esc(nowMX())}</div>
+      </div>
+      <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+        <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border:1px solid rgba(0,255,153,.2)">Servidor ON</span>
+        <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:rgba(255,77,109,.08);color:#ff4d6d;border:1px solid rgba(255,77,109,.2)">Real Trading OFF</span>
+        <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:${modeColor}12;color:${modeColor};border:1px solid ${modeColor}25">${esc(h.operatingMode)}</span>
+      </div>
+    </div>
+
+    <!-- Quick stats strip -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px">
+      <div style="background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('trading')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Portafolio</div>
+        <div style="font-size:20px;font-weight:900;color:#eaf6ff">${esc(money(pv.totalValueMXN))}</div>
+        <div style="font-size:12px;color:${pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d"};margin-top:2px">${esc(pct(pv.totalGainPct))}</div>
+      </div>
+      <div style="background:rgba(244,114,182,.05);border:1px solid rgba(244,114,182,.14);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('health')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6;margin-bottom:4px">Health</div>
+        <div style="font-size:16px;font-weight:900;color:${modeColor}">${esc(h.operatingMode)}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">${h.configured ? (h.recovery !== null ? "R " + h.recovery + "% · " : "") + "WHOOP" : "Sin WHOOP"}</div>
+      </div>
+      <div style="background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.11);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('intelligence')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99;margin-bottom:4px">Intelligence</div>
+        <div style="font-size:20px;font-weight:900;color:#00ff99">${news.length}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">Intel: ${intelItems.length}</div>
+      </div>
+      <div style="background:rgba(167,139,250,.05);border:1px solid rgba(167,139,250,.13);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('autopilot')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#a78bfa;margin-bottom:4px">Memory</div>
+        <div style="font-size:20px;font-weight:900;color:#a78bfa">Lv.${cordeliusProgress.level || 1}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">${cordeliusProgress.xp || 0} XP · ${cordeliusProgress.streakDays || 0}d streak</div>
+      </div>
     </div>
 
     <!-- 5 Module cards -->
@@ -3396,6 +3453,24 @@ function renderSignalCenter(pv, reg) {
   </div>`;
 }
 
+function renderStockResearch() {
+  const watchChips = ["AAPL","NVDA","MSFT","META","GOOGL","PLTR","XRP","BTC","AMZN","TSLA"];
+  return `<div class="panel" style="max-width:1280px;margin:0 auto 12px;padding:20px 24px;border:1px solid rgba(59,157,255,.14)">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Stock Research · Análisis de tickers</div>
+    <div style="font-size:13px;color:#9fb3c8;margin-bottom:14px">Investiga cualquier ticker — perfil, señales Quiver, noticias y tesis educativa. Powered by Alfredo AI.</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <input id="research-ticker" type="text" placeholder="Ej: AAPL, NVDA, META…" autocomplete="off" autocapitalize="characters"
+        style="flex:1;min-width:160px;border:1px solid rgba(59,157,255,.3);border-radius:12px;padding:11px 16px;color:#fff;background:rgba(59,157,255,.05);font-size:15px;font-family:inherit"
+        onkeydown="if(event.key==='Enter')researchTicker()">
+      <button onclick="researchTicker()" class="btn" style="border-color:rgba(59,157,255,.4);color:#3b9dff;font-size:14px;padding:11px 22px">Investigar →</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+      ${watchChips.map(t => `<button onclick="document.getElementById('research-ticker').value='${t}';researchTicker()" style="border:1px solid rgba(120,160,210,.18);background:rgba(255,255,255,.04);color:#9fb3c8;border-radius:9px;padding:4px 11px;font-size:12px;cursor:pointer;font-weight:700;font-family:inherit">${esc(t)}</button>`).join("")}
+    </div>
+    <div id="research-result"></div>
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -3505,9 +3580,37 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 #alfredo-panel{position:fixed;right:20px;bottom:96px;width:min(400px,calc(100vw - 40px));z-index:99;max-height:72vh;overflow-y:auto;border-radius:24px;display:none}
+.brain-float{position:fixed;right:20px;bottom:20px;width:72px;height:72px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:radial-gradient(circle,rgba(0,255,153,.12),rgba(59,157,255,.06));border:1px solid rgba(0,255,153,.3);box-shadow:0 0 28px rgba(0,255,153,.35),0 0 56px rgba(0,255,153,.12);z-index:30;cursor:pointer;animation:brainpulse 3.2s ease-in-out infinite;backdrop-filter:blur(14px)}
+.brain-float:hover{box-shadow:0 0 48px rgba(0,255,153,.55),0 0 80px rgba(59,157,255,.25);border-color:rgba(0,255,153,.6)}
+.brain-float-label{font-size:7px;font-weight:900;letter-spacing:.14em;color:rgba(0,255,153,.75);text-transform:uppercase;line-height:1}
+.brain-ring-o{transform-origin:19px 19px;animation:bspin 8s linear infinite}
+.brain-ring-m{transform-origin:19px 19px;animation:bspin 5s linear infinite reverse}
+@keyframes brainpulse{0%,100%{box-shadow:0 0 28px rgba(0,255,153,.35),0 0 56px rgba(0,255,153,.12)}50%{box-shadow:0 0 48px rgba(0,255,153,.55),0 0 80px rgba(0,255,153,.2)}}
+@keyframes bspin{to{transform:rotate(360deg)}}
+.range-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--muted);border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;transition:.18s;font-family:inherit}
+.range-btn:hover,.range-btn.rb-active{background:rgba(59,157,255,.16);border-color:rgba(59,157,255,.5);color:#3b9dff}
+.news-item{max-width:1280px;margin:8px auto;border:1px solid rgba(120,160,210,.1);border-radius:18px;background:var(--panel);backdrop-filter:blur(16px);overflow:hidden}
+.news-item summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:13px 16px;user-select:none}
+.news-item summary::-webkit-details-marker{display:none}
+.news-item[open]{border-color:rgba(59,157,255,.25)}
+.news-item .ni-caret{transition:.2s;flex:0 0 auto;opacity:.5;font-size:11px}
+.news-item[open] .ni-caret{transform:rotate(180deg)}
+#research-result{animation:fade .3s ease}
 </style></head><body>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
-<button class="float" onclick="toggleAlfredo()" title="Alfredo AI">AI</button>
+<button class="brain-float" onclick="toggleAlfredo()" title="Alfredo AI — Cordelius">
+  <svg width="38" height="38" viewBox="0 0 38 38" fill="none">
+    <circle cx="19" cy="19" r="17" stroke="rgba(0,255,153,.35)" stroke-width="1" stroke-dasharray="6 3" class="brain-ring-o"/>
+    <circle cx="19" cy="19" r="11" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-dasharray="4 4" class="brain-ring-m"/>
+    <circle cx="19" cy="19" r="6" fill="rgba(0,255,153,.15)" stroke="rgba(0,255,153,.8)" stroke-width="1.2"/>
+    <circle cx="19" cy="19" r="2.5" fill="#00ff99"/>
+    <line x1="19" y1="1" x2="19" y2="8" stroke="rgba(0,255,153,.5)" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="19" y1="30" x2="19" y2="37" stroke="rgba(0,255,153,.5)" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="1" y1="19" x2="8" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="30" y1="19" x2="37" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
+  </svg>
+  <div class="brain-float-label">Alfredo</div>
+</button>
 <div id="alfredo-panel" class="panel">
   <div style="padding:16px 20px 20px">
     <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">Alfredo AI · Educativo</div>
@@ -3559,8 +3662,26 @@ ${renderHomePortal(pv, reg)}
   <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
 
-<a id="chart"></a><h2>Gráficas — historial del portafolio</h2>
-<div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px"><span>📅 Hoy</span><span class="muted">${portfolioHistory.length < 7 ? "Histórico no disponible todavía; usando snapshot actual." : portfolioHistory.length + " snapshots guardados · " + (portfolioHistory.length >= 7 ? "7D disponible" : "") + (portfolioHistory.length >= 30 ? " · 30D disponible" : "")}</span></div></div>
+<a id="chart"></a>
+<div style="max-width:1280px;margin:28px auto 8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+  <h2 style="margin:0;font-size:22px;background:linear-gradient(90deg,#fff,#9bd3ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Gráficas — historial del portafolio</h2>
+  <div style="display:flex;gap:6px">
+    <button class="range-btn rb-active" data-days="1" onclick="redrawPortChart(1)">1D</button>
+    <button class="range-btn" data-days="7" onclick="redrawPortChart(7)">7D</button>
+    <button class="range-btn" data-days="30" onclick="redrawPortChart(30)">30D</button>
+    <button class="range-btn" data-days="0" onclick="redrawPortChart(0)">Todo</button>
+  </div>
+</div>
+<div class="panel" style="max-width:1280px;margin:0 auto 8px">
+  <div id="port-chart-area">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}</div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;align-items:center">
+    <span class="muted" id="port-chart-info" style="font-size:12px">${portfolioHistory.length} snapshots</span>
+    <span class="muted" style="font-size:11px">Actualizado: ${esc(nowMX())}</span>
+    ${portfolioHistory.length >= 7 ? `<span style="font-size:11px;color:#00ff99">7D ✓</span>` : ""}
+    ${portfolioHistory.length >= 30 ? `<span style="font-size:11px;color:#00ff99">30D ✓</span>` : ""}
+  </div>
+</div>
+<script>window._portHistory=${JSON.stringify(portfolioHistory.slice(-600))};</script>
 <div class="panel" style="max-width:1280px;margin:0 auto 8px;padding:14px 18px">
   <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Gráficas por activo</div>
   <div style="font-size:13px;color:#9fb3c8">Abre cada activo del portafolio para ver minigrafica, precio, señales y enlace a TradingView.</div>
@@ -3620,6 +3741,7 @@ ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
 <div id="mod-intelligence" class="mod">
+${renderStockResearch()}
 ${renderDailyBrief()}
 ${renderMorningReport()}
 
@@ -4052,6 +4174,76 @@ async function renderAutopilotProgress() {
       + '</div>';
   } catch(e) {
     panel.innerHTML = '<div style="color:#ff4d6d;font-size:12px;padding:8px">Error cargando progreso.</div>';
+  }
+}
+
+// ---- Portfolio chart range selector ----
+function redrawPortChart(days) {
+  document.querySelectorAll('.range-btn').forEach(function(b) {
+    b.classList.remove('rb-active');
+    if (Number(b.dataset.days) === days) b.classList.add('rb-active');
+  });
+  var all = window._portHistory || [];
+  var cutoff = days === 0 ? 0 : Date.now() - days * 86400000;
+  var data = days === 0 ? all : all.filter(function(d) { return d.t >= cutoff; });
+  var area = document.getElementById('port-chart-area');
+  var info = document.getElementById('port-chart-info');
+  if (!area) return;
+  if (data.length < 2) {
+    area.innerHTML = '<div style="min-height:240px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px">Sin datos suficientes para este período (' + (days===0?'Todo':days+'D') + ')</div>';
+    if (info) info.textContent = '0 snapshots en rango';
+    return;
+  }
+  var vals = data.map(function(d) { return d.total; });
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+  var rng = mx - mn || 1;
+  var pH = 280, pW = 940, padT = 28, padB = 40, padL = 72, plotH = pH - padT - padB;
+  var gid = 'pg' + Date.now();
+  var color = '#3b9dff';
+  var xy = data.map(function(d, i) {
+    return { x: padL + (i / Math.max(1, data.length - 1)) * pW, y: padT + (1 - ((d.total - mn) / rng)) * plotH, t: d.t, v: d.total };
+  });
+  var pts = xy.map(function(p) { return p.x.toFixed(1) + ',' + p.y.toFixed(1); }).join(' ');
+  var areaPts = padL + ',' + (pH - padB) + ' ' + pts + ' ' + (padL + pW) + ',' + (pH - padB);
+  var delta = vals[0] ? ((vals[vals.length-1] - vals[0]) / Math.abs(vals[0]) * 100) : 0;
+  function fv(v) { return v >= 10000 ? '$' + (v/1000).toFixed(1) + 'k' : v.toFixed(0); }
+  var yT = ''; for (var i = 0; i <= 4; i++) { var v = mn + (i/4)*rng; var y = padT + (1 - i/4)*plotH; yT += '<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(padL+pW)+'" y2="'+y.toFixed(1)+'" stroke="rgba(255,255,255,.07)"/>'; yT += '<text x="'+(padL-5)+'" y="'+(y+5).toFixed(1)+'" fill="#9fb3c8" font-size="15" text-anchor="end">'+fv(v)+'</text>'; }
+  var xStep = Math.ceil(data.length / 6); var xT = '';
+  data.forEach(function(d, i) { if (i % xStep !== 0 && i !== data.length-1) return; var p = xy[i]; var lbl = new Date(d.t).toLocaleDateString('es-MX',{month:'short',day:'numeric'}); xT += '<text x="'+p.x.toFixed(1)+'" y="'+(pH-6)+'" fill="#9fb3c8" font-size="13" text-anchor="middle">'+lbl+'</text>'; });
+  var svg = '<svg viewBox="0 0 '+(padL+pW+20)+' '+pH+'" style="width:100%;overflow:visible">'
+    + '<defs><linearGradient id="'+gid+'" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+color+'" stop-opacity=".32"/><stop offset="100%" stop-color="'+color+'" stop-opacity="0"/></linearGradient></defs>'
+    + '<line x1="'+padL+'" y1="'+(pH-padB)+'" x2="'+(padL+pW)+'" y2="'+(pH-padB)+'" stroke="rgba(255,255,255,.18)"/>'
+    + '<line x1="'+padL+'" y1="'+padT+'" x2="'+padL+'" y2="'+(pH-padB)+'" stroke="rgba(255,255,255,.18)"/>'
+    + yT + xT
+    + '<text x="'+(padL+pW/2)+'" y="22" fill="'+(delta>=0?'#00ff99':'#ff4d6d')+'" font-size="17" text-anchor="middle" font-weight="bold">'+(delta>=0?'+':'')+delta.toFixed(2)+'%</text>'
+    + '<polygon points="'+areaPts+'" fill="url(#'+gid+')"/>'
+    + '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '</svg>';
+  area.innerHTML = svg;
+  if (info) info.textContent = data.length + ' snapshots · ' + new Date(data[data.length-1].t).toLocaleString('es-MX');
+}
+
+// ---- Stock ticker research ----
+async function researchTicker() {
+  var input = document.getElementById('research-ticker');
+  var result = document.getElementById('research-result');
+  var ticker = input ? input.value.toUpperCase().replace(/[^A-Z0-9.]/g,'').slice(0,10) : '';
+  if (!ticker || !result) return;
+  result.innerHTML = '<div style="color:#9fb3c8;padding:10px 0;font-size:13px">Investigando <b style="color:#3b9dff">' + ticker + '</b>…</div>';
+  try {
+    var r = await fetch('/research', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'ticker='+encodeURIComponent(ticker) });
+    var d = await r.json();
+    if (d.ok) {
+      result.innerHTML = '<div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:18px 20px;margin-top:6px">'
+        + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;color:#3b9dff;margin-bottom:10px">ANÁLISIS · ' + d.ticker + '</div>'
+        + '<div style="font-size:14px;color:#dbeafe;line-height:1.75">'
+        + d.reply.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
+        + '</div></div>';
+    } else {
+      result.innerHTML = '<div style="color:#ff4d6d;font-size:13px;padding:8px 0">Error: ' + (d.error||'desconocido') + '</div>';
+    }
+  } catch(e) {
+    result.innerHTML = '<div style="color:#ff4d6d;font-size:13px;padding:8px 0">Error de conexión.</div>';
   }
 }
 
@@ -4665,6 +4857,39 @@ const server = http.createServer(async (req, res) => {
       },
       summary: computeTradingSummary()
     }));
+  }
+
+  if (req.method === "POST" && path === "/research") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", async () => {
+      const ticker = ((new URLSearchParams(body).get("ticker") || "").toUpperCase().replace(/[^A-Z0-9.]/g, "")).slice(0, 10);
+      if (!ticker) { res.writeHead(400, {"Content-Type":"application/json"}); return res.end(JSON.stringify({ok:false,error:"ticker requerido"})); }
+      const pv = portfolioValue();
+      const portAsset = (pv.assets || []).find(a => a.symbol === ticker);
+      const cong = (quiverData.congress || []).filter(r => r.Ticker === ticker).slice(0, 3);
+      const ins = (quiverData.insiders || []).filter(r => r.Ticker === ticker).slice(0, 3);
+      const relatedNews = news.filter(n => n.impacted && n.impacted.includes(ticker)).slice(0, 3);
+      const context = [
+        `TICKER: ${ticker}`,
+        portAsset
+          ? `EN PORTAFOLIO: Sí — ${portAsset.units} unidades, valor ${money(portAsset.valueMXN)}, ganancia ${pct(portAsset.gainPct)}, score ${portAsset.score}/100, señal: ${portAsset.signal}`
+          : `EN PORTAFOLIO: No — ticker externo`,
+        `QUIVER Congreso: ${cong.length ? cong.map(r => `${r.Date||""} ${r.Representative||""} ${r.Transaction||""}`).join("; ") : "sin datos"}`,
+        `QUIVER Insiders: ${ins.length ? ins.map(r => `${r.Date||""} ${r.InsiderTitle||""} ${r.Transaction||""}`).join("; ") : "sin datos"}`,
+        `NOTICIAS: ${relatedNews.length ? relatedNews.map(n => n.headline).join("; ") : "sin noticias recientes"}`
+      ].join("\n");
+      const q = `Investiga el ticker ${ticker}. Dame: (1) breve descripción del negocio y sector, (2) señales Quiver si las hay, (3) noticias relevantes, (4) tesis educativa de inversión, (5) riesgos principales. Contexto:\n${context}\nMáximo 4 párrafos concisos. Recuerda: análisis educativo, no consejo financiero.`;
+      try {
+        const reply = await alfredoReply(q);
+        res.writeHead(200, {"Content-Type":"application/json"});
+        res.end(JSON.stringify({ok:true, ticker, reply}));
+      } catch(e) {
+        res.writeHead(500, {"Content-Type":"application/json"});
+        res.end(JSON.stringify({ok:false, error:e.message}));
+      }
+    });
+    return;
   }
 
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
