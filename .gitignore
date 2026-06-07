@@ -64,3 +64,17 @@ start-with-env.js
 # Backups / temp
 dashboard.backup*.js
 .gitignore.backup*
+
+# Cordelius runtime database
+data/
+data/*.json
+*.tmp
+
+# Local runtime / secrets
+.env
+whoop_tokens.json
+whoop_today_cache.json
+server.log
+cloudflared.log
+start-with-env.js
+dashboard.backup*.js

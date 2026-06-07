@@ -2307,6 +2307,241 @@ function computeOperatingMode(recovery) {
   return "NEUTRAL";
 }
 
+
+
+// === Cordelius Autopilot Database Memory ===
+const AUTOPILOT_FS = require("fs");
+const AUTOPILOT_PATH = require("path");
+
+const AUTOPILOT_DATA_DIR = AUTOPILOT_PATH.join(__dirname, "data");
+const HEALTH_SNAPSHOTS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "health_snapshots.json");
+const PORTFOLIO_SNAPSHOTS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "portfolio_snapshots.json");
+const TRADING_DECISIONS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "trading_decisions.json");
+const AUTOPILOT_MEMORY_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "autopilot_memory.json");
+const CORDELIUS_PROGRESS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_progress.json");
+
+function ensureDataDir() {
+  if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
+    AUTOPILOT_FS.mkdirSync(AUTOPILOT_DATA_DIR, { recursive: true });
+  }
+}
+
+function readJSONSafe(file, fallback) {
+  try {
+    ensureDataDir();
+    if (!AUTOPILOT_FS.existsSync(file)) {
+      writeJSONAtomic(file, fallback);
+      return fallback;
+    }
+    return JSON.parse(AUTOPILOT_FS.readFileSync(file, "utf8"));
+  } catch (e) {
+    console.log("readJSONSafe error:", file, e.message);
+    return fallback;
+  }
+}
+
+function writeJSONAtomic(file, data) {
+  ensureDataDir();
+  const tmp = file + ".tmp";
+  const body = JSON.stringify(data, null, 2);
+  try {
+    AUTOPILOT_FS.writeFileSync(tmp, body);
+    AUTOPILOT_FS.renameSync(tmp, file);
+  } catch (e) {
+    console.log("writeJSONAtomic fallback:", file, e.message);
+    AUTOPILOT_FS.writeFileSync(file, body);
+  }
+}
+
+function appendSnapshot(arr, item, maxLen, file) {
+  const next = Array.isArray(arr) ? arr.slice() : [];
+  next.unshift(item);
+  const trimmed = next.slice(0, maxLen || 200);
+  writeJSONAtomic(file, trimmed);
+  return trimmed;
+}
+
+function computeTradingSummary() {
+  let health = {};
+  try {
+    health = typeof computeHealthReadiness === "function" ? computeHealthReadiness() : {};
+  } catch (e) {
+    health = {};
+  }
+
+  const recovery = health.recovery ?? null;
+  const sleep = health.sleep ?? null;
+  const hrv = health.hrv ?? null;
+  const strain = health.strain ?? null;
+
+  let riskMode = "NORMAL";
+  if (recovery != null && recovery < 40) riskMode = "DEFENSIVO";
+  else if (recovery != null && recovery < 65) riskMode = "NEUTRAL";
+  else if (recovery != null && recovery >= 80 && strain != null && strain < 10) riskMode = "ÓPTIMO";
+
+  return {
+    timestamp: new Date().toISOString(),
+    equity: null,
+    pnl: null,
+    exposure: {
+      MXN: null,
+      USD: null,
+      CRYPTO: null
+    },
+    topWinner: null,
+    topLoser: null,
+    riskMode,
+    health: {
+      recovery,
+      sleep,
+      hrv,
+      strain,
+      restingHeartRate: health.restingHeartRate ?? null,
+      operatingMode: health.operatingMode ?? health.mode ?? riskMode
+    },
+    note: "Resumen defensivo generado por Autopilot Memory. No es consejo financiero."
+  };
+}
+
+function getAutopilotDatabaseState() {
+  const healthSnapshots = readJSONSafe(HEALTH_SNAPSHOTS_FILE, []);
+  const portfolioSnapshots = readJSONSafe(PORTFOLIO_SNAPSHOTS_FILE, []);
+  const tradingDecisions = readJSONSafe(TRADING_DECISIONS_FILE, []);
+  const memory = readJSONSafe(AUTOPILOT_MEMORY_FILE, {
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    notes: []
+  });
+  const progress = readJSONSafe(CORDELIUS_PROGRESS_FILE, {
+    level: 1,
+    xp: 0,
+    streak: 0,
+    snapshots: 0,
+    lastSnapshotAt: null,
+    updatedAt: new Date().toISOString()
+  });
+
+  let health = {};
+  try {
+    health = typeof computeHealthReadiness === "function" ? computeHealthReadiness() : {};
+  } catch (e) {
+    health = {};
+  }
+
+  const tradingSummary = computeTradingSummary();
+
+  return {
+    ok: true,
+    stores: {
+      healthSnapshots,
+      portfolioSnapshots,
+      tradingDecisions,
+      memory,
+      progress
+    },
+    counts: {
+      health: healthSnapshots.length,
+      portfolio: portfolioSnapshots.length,
+      tradingDecisions: tradingDecisions.length,
+      memoryNotes: Array.isArray(memory.notes) ? memory.notes.length : 0
+    },
+    latest: {
+      health: healthSnapshots[0] || null,
+      portfolio: portfolioSnapshots[0] || null,
+      tradingDecision: tradingDecisions[0] || null
+    },
+    tradingSummary,
+    health
+  };
+}
+
+function saveAutopilotSnapshot() {
+  const now = new Date().toISOString();
+
+  let health = {};
+  try {
+    health = typeof computeHealthReadiness === "function" ? computeHealthReadiness() : {};
+  } catch (e) {
+    health = {};
+  }
+
+  const tradingSummary = computeTradingSummary();
+
+  const healthSnapshots = readJSONSafe(HEALTH_SNAPSHOTS_FILE, []);
+  const portfolioSnapshots = readJSONSafe(PORTFOLIO_SNAPSHOTS_FILE, []);
+  const tradingDecisions = readJSONSafe(TRADING_DECISIONS_FILE, []);
+  const progress = readJSONSafe(CORDELIUS_PROGRESS_FILE, {
+    level: 1,
+    xp: 0,
+    streak: 0,
+    snapshots: 0,
+    lastSnapshotAt: null,
+    updatedAt: now
+  });
+
+  const healthEntry = {
+    timestamp: now,
+    source: "whoop_live",
+    recovery: health.recovery ?? null,
+    sleep: health.sleep ?? null,
+    hrv: health.hrv ?? null,
+    strain: health.strain ?? null,
+    restingHeartRate: health.restingHeartRate ?? null,
+    operatingMode: health.operatingMode ?? health.mode ?? null
+  };
+
+  const portfolioEntry = {
+    timestamp: now,
+    summary: tradingSummary
+  };
+
+  const decisionEntry = {
+    timestamp: now,
+    mode: tradingSummary.riskMode,
+    idea: null,
+    rule: tradingSummary.riskMode === "DEFENSIVO"
+      ? "Reducir riesgo y evitar decisiones impulsivas."
+      : tradingSummary.riskMode === "ÓPTIMO"
+        ? "Permitir análisis profundo con control de riesgo."
+        : "Operar normal/moderado con confirmación."
+  };
+
+  const nextHealth = appendSnapshot(healthSnapshots, healthEntry, 200, HEALTH_SNAPSHOTS_FILE);
+  const nextPortfolio = appendSnapshot(portfolioSnapshots, portfolioEntry, 200, PORTFOLIO_SNAPSHOTS_FILE);
+  const nextDecisions = appendSnapshot(tradingDecisions, decisionEntry, 200, TRADING_DECISIONS_FILE);
+
+  const nextProgress = {
+    ...progress,
+    snapshots: (progress.snapshots || 0) + 1,
+    xp: (progress.xp || 0) + 10,
+    level: Math.max(1, Math.floor(((progress.xp || 0) + 10) / 100) + 1),
+    streak: (progress.streak || 0) + 1,
+    lastSnapshotAt: now,
+    updatedAt: now
+  };
+
+  writeJSONAtomic(CORDELIUS_PROGRESS_FILE, nextProgress);
+
+  return {
+    ok: true,
+    savedAt: now,
+    health: healthEntry,
+    portfolio: portfolioEntry,
+    tradingDecision: decisionEntry,
+    progress: nextProgress,
+    counts: {
+      health: nextHealth.length,
+      portfolio: nextPortfolio.length,
+      tradingDecisions: nextDecisions.length
+    }
+  };
+}
+
+function sendAutopilotJSON(res, obj, statusCode = 200) {
+  res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(obj));
+}
+
 function computeHealthReadiness() {
   const cycleRec = whoopCache.cycle && whoopCache.cycle.records && whoopCache.cycle.records[0]
     ? whoopCache.cycle.records[0]
@@ -4060,7 +4295,40 @@ const server = http.createServer(async (req, res) => {
     if (!whoopCache.connected) return res.end(JSON.stringify({ ok: false, connected: false, reason: "WHOOP not connected" }));
     return res.end(JSON.stringify({ ok: true, connected: true, cycle: whoopCache.cycle }));
   }
-  if (path === "/api/whoop/today") {
+
+  // === Autopilot Database Memory API ===
+  if (path === "/api/autopilot/database" && req.method === "GET") {
+    try {
+      return sendAutopilotJSON(res, getAutopilotDatabaseState());
+    } catch (e) {
+      return sendAutopilotJSON(res, { ok: false, error: e.message }, 500);
+    }
+  }
+
+  if (path === "/api/autopilot/snapshot" && req.method === "POST") {
+    try {
+      return sendAutopilotJSON(res, saveAutopilotSnapshot());
+    } catch (e) {
+      return sendAutopilotJSON(res, { ok: false, error: e.message }, 500);
+    }
+  }
+
+  if (path === "/api/autopilot/progress" && req.method === "GET") {
+    try {
+      const state = getAutopilotDatabaseState();
+      return sendAutopilotJSON(res, {
+        ok: true,
+        progress: state.stores.progress,
+        counts: state.counts,
+        latest: state.latest,
+        tradingSummary: state.tradingSummary
+      });
+    } catch (e) {
+      return sendAutopilotJSON(res, { ok: false, error: e.message }, 500);
+    }
+  }
+
+if (path === "/api/whoop/today") {
     const h = computeHealthReadiness();
     const _cyc = whoopCache.cycle;
     const _kj = _cyc && _cyc.score && _cyc.score.kilojoule != null ? _cyc.score.kilojoule : null;
