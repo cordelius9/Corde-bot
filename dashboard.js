@@ -2373,44 +2373,50 @@ function appendSnapshot(arr, item, maxLen, file) {
 }
 
 function computeTradingSummary() {
-  let health = {};
-  try {
-    health = typeof computeHealthReadiness === "function" ? computeHealthReadiness() : {};
-  } catch (e) {
-    health = {};
-  }
+  const pv = portfolioValue();
+  const h = computeHealthReadiness ? computeHealthReadiness() : {};
+  const assets = Array.isArray(pv.assets) ? pv.assets : [];
 
-  const recovery = health.recovery ?? null;
-  const sleep = health.sleep ?? null;
-  const hrv = health.hrv ?? null;
-  const strain = health.strain ?? null;
+  const total = Number(pv.totalValueMXN || 0);
+  const cost = Number(pv.totalCostMXN || 0);
+  const gain = Number(pv.totalGainMXN || 0);
+  const gainPct = Number(pv.totalGainPct || 0);
 
-  let riskMode = "NORMAL";
-  if (recovery != null && recovery < 40) riskMode = "DEFENSIVO";
-  else if (recovery != null && recovery < 65) riskMode = "NEUTRAL";
-  else if (recovery != null && recovery >= 80 && strain != null && strain < 10) riskMode = "ÓPTIMO";
+  const exposure = {
+    MXN: +total.toFixed(2),
+    USD: +assets.filter(a => a.source === "GBM" || a.currency === "USD").reduce((sum,a)=>sum+Number(a.valueMXN||0),0).toFixed(2),
+    CRYPTO: +assets.filter(a => a.type === "crypto" || a.source === "Bitso").reduce((sum,a)=>sum+Number(a.valueMXN||0),0).toFixed(2)
+  };
+
+  const ranked = assets
+    .map(a => ({
+      symbol: a.symbol,
+      name: a.name,
+      valueMXN: Number(a.valueMXN || 0),
+      gainMXN: Number((a.valueMXN || 0) - (a.costMXN || 0)),
+      gainPct: a.costMXN ? Number((((a.valueMXN || 0) - (a.costMXN || 0)) / a.costMXN * 100).toFixed(2)) : 0
+    }))
+    .sort((a,b) => b.gainPct - a.gainPct);
 
   return {
     timestamp: new Date().toISOString(),
-    equity: null,
-    pnl: null,
-    exposure: {
-      MXN: null,
-      USD: null,
-      CRYPTO: null
-    },
-    topWinner: null,
-    topLoser: null,
-    riskMode,
+    equity: +total.toFixed(2),
+    pnl: +gainPct.toFixed(2),
+    cost: +cost.toFixed(2),
+    gainMXN: +gain.toFixed(2),
+    exposure,
+    topWinner: ranked[0] || null,
+    topLoser: ranked[ranked.length - 1] || null,
+    riskMode: h.operatingMode || h.mode || "NEUTRAL",
     health: {
-      recovery,
-      sleep,
-      hrv,
-      strain,
-      restingHeartRate: health.restingHeartRate ?? null,
-      operatingMode: health.operatingMode ?? health.mode ?? riskMode
+      recovery: h.recovery ?? null,
+      sleep: h.sleep ?? null,
+      hrv: h.hrv ?? null,
+      strain: h.strain ?? null,
+      restingHeartRate: h.restingHeartRate ?? null,
+      operatingMode: h.operatingMode || h.mode || "NEUTRAL"
     },
-    note: "Resumen defensivo generado por Autopilot Memory. No es consejo financiero."
+    note: "Resumen real generado desde portfolioValue(). No es consejo financiero."
   };
 }
 
@@ -4164,7 +4170,7 @@ async function researchTicker() {
       result.innerHTML = '<div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:18px 20px;margin-top:6px">'
         + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;color:#3b9dff;margin-bottom:10px">ANÁLISIS · ' + d.ticker + '</div>'
         + '<div style="font-size:14px;color:#dbeafe;line-height:1.75">'
-        + d.reply.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
+        + String(d.reply || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split(String.fromCharCode(10)).join('<br>').replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
         + '</div></div>';
     } else {
       result.innerHTML = '<div style="color:#ff4d6d;font-size:13px;padding:8px 0">Error: ' + (d.error||'desconocido') + '</div>';
