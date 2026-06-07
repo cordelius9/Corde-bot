@@ -1588,51 +1588,116 @@ function renderPortfolioRows(assets) {
       </summary>
       <div class="asset-detail">
         <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
-        <div class="detail-grid" style="margin-bottom:14px">
-          <div><span>Broker / origen</span><b>${esc(a.source)}</b></div>
-          <div><span>Cantidad</span><b>${unitsLabel}</b></div>
-          <div><span>Costo original</span><b>${money(a.costMXN)}</b></div>
-          <div><span>Valor actual</span><b>${money(a.valueMXN)}</b></div>
-          <div><span>Ganancia MXN</span><b class="${a.gainMXN >= 0 ? "green" : "red"}">${money(a.gainMXN)}</b></div>
-          <div><span>Ganancia %</span><b class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)}</b></div>
-          <div><span>Promedio compra</span><b>${avgLabel}</b></div>
-          <div><span>Precio actual</span><b>${curLabel}</b></div>
-          <div><span>Cambio del día</span><b class="muted">N/D — sin feed en tiempo real</b></div>
-          <div><span>Última actualización</span><b class="muted">${esc(a.quoteSource === "live" ? "Live feed" : "Local: " + nowMX())}</b></div>
+
+        <!-- Positions summary strip -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px">
+          <div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">Broker</div>
+            <div style="font-size:14px;font-weight:900;color:#eaf6ff">${esc(a.source)}</div>
+          </div>
+          <div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">Unidades</div>
+            <div style="font-size:14px;font-weight:900;color:#eaf6ff">${unitsLabel}</div>
+          </div>
+          <div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">Costo original</div>
+            <div style="font-size:14px;font-weight:900;color:#eaf6ff">${money(a.costMXN)}</div>
+          </div>
+          <div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">Valor actual</div>
+            <div style="font-size:14px;font-weight:900;color:#eaf6ff">${money(a.valueMXN)}</div>
+          </div>
+          <div style="background:rgba(${a.gainMXN >= 0 ? "0,255,153" : "255,77,109"},.06);border:1px solid rgba(${a.gainMXN >= 0 ? "0,255,153" : "255,77,109"},.18);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">P&amp;L</div>
+            <div style="font-size:14px;font-weight:900;color:${a.gainMXN >= 0 ? "#00ff99" : "#ff4d6d"}">${money(a.gainMXN)} (${pct(a.gainPct)})</div>
+          </div>
+          <div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">Precio actual</div>
+            <div style="font-size:14px;font-weight:900;color:#eaf6ff">${curLabel}</div>
+          </div>
+          <div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">Precio compra</div>
+            <div style="font-size:14px;font-weight:900;color:#eaf6ff">${avgLabel}</div>
+          </div>
+          <div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:12px;padding:10px 12px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">Fuente precio</div>
+            <div style="font-size:13px;font-weight:700;color:#eaf6ff">${esc(a.quoteSource === "live" ? "LIVE" : "Manual")}</div>
+          </div>
         </div>
-        <div class="ind-row">
-          <div class="ind"><span>RSI</span><b class="${ind.rsi > 70 ? "red" : ind.rsi < 30 ? "green" : ""}">${ind.rsi}</b></div>
-          <div class="ind"><span>MACD</span><b class="${ind.macd >= 0 ? "green" : "red"}">${ind.macd}</b></div>
-          <div class="ind"><span>Momentum</span><b class="${ind.momentum >= 0 ? "green" : "red"}">${ind.momentum}</b></div>
-          <div class="ind"><span>Tendencia</span><b>${ind.trend}</b></div>
-          <div class="ind"><span>Volatilidad</span><b>${ind.volatility}</b></div>
-          <div class="ind"><span>Score IA</span><b>${a.score}/100</b></div>
-          <div class="ind"><span>Riesgo</span><b class="${a.risk === "ALTO" ? "red" : a.risk === "BAJO" ? "green" : "yellow"}">${a.risk}</b></div>
-          <div class="ind"><span>Señal</span><b style="font-size:12px">${esc(a.signal)}</b></div>
+
+        <!-- Technical Indicators -->
+        <div style="background:rgba(59,157,255,.04);border:1px solid rgba(59,157,255,.14);border-radius:16px;padding:14px 16px;margin-bottom:12px">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Indicadores técnicos</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">
+            ${[
+              { label: "RSI",       val: ind.rsi,        color: ind.rsi > 70 ? "#ff4d6d" : ind.rsi < 30 ? "#00ff99" : "#ffd35c", note: ind.rsi > 70 ? "Sobrecomprado" : ind.rsi < 30 ? "Sobrevendido" : "Neutro" },
+              { label: "MACD",      val: ind.macd.toFixed(2), color: ind.macd >= 0 ? "#00ff99" : "#ff4d6d", note: ind.macd >= 0 ? "Positivo" : "Negativo" },
+              { label: "Momentum",  val: ind.momentum.toFixed(1), color: ind.momentum >= 0 ? "#00ff99" : "#ff4d6d", note: ind.momentum > 5 ? "Fuerte" : ind.momentum < -5 ? "Débil" : "Moderado" },
+              { label: "Tendencia", val: ind.trend,       color: ind.trend === "ALCISTA" ? "#00ff99" : ind.trend === "BAJISTA" ? "#ff4d6d" : "#ffd35c", note: "" },
+              { label: "Volatilidad",val: ind.volatility,  color: ind.volatility === "ALTA" ? "#ff4d6d" : ind.volatility === "BAJA" ? "#00ff99" : "#ffd35c", note: "" },
+              { label: "Volumen",   val: ind.volatility === "ALTA" ? "ALTO" : ind.volatility === "BAJA" ? "BAJO" : "MEDIO", color: "#9fb3c8", note: "" },
+              { label: "Score IA",  val: a.score + "/100", color: a.score >= 65 ? "#00ff99" : a.score >= 40 ? "#ffd35c" : "#ff4d6d", note: a.score >= 65 ? "Sólido" : a.score >= 40 ? "Moderado" : "Débil" },
+              { label: "Riesgo",    val: a.risk,          color: a.risk === "ALTO" ? "#ff4d6d" : a.risk === "BAJO" ? "#00ff99" : "#ffd35c", note: "" },
+            ].map(item => `<div style="background:rgba(0,0,0,.25);border:1px solid ${item.color}28;border-radius:10px;padding:8px 10px;text-align:center">
+              <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${item.label}</div>
+              <div style="font-size:16px;font-weight:950;color:${item.color}">${esc(String(item.val))}</div>
+              ${item.note ? `<div style="font-size:10px;color:${item.color}88;margin-top:2px">${esc(item.note)}</div>` : ""}
+            </div>`).join("")}
+          </div>
         </div>
-        <div class="alfredo-score" style="border-color:${act.color}55">
+
+        <!-- Alfredo Score + Signal -->
+        <div class="alfredo-score" style="border-color:${act.color}55;margin-bottom:12px">
           <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Score ${act.score}/100</span></div>
           <ul>${act.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
         </div>
-        <div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:14px;padding:12px 16px;margin-bottom:12px">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">¿Por qué vigilarlo?</div>
-          <div style="font-size:13px;color:#c8d8f0">
-            ${a.risk === "ALTO" ? `⚠ Riesgo alto — score ${a.score}/100. ` : ""}
-            ${a.gainPct < -15 ? `Caída de ${pct(a.gainPct)} desde costo. ` : a.gainPct > 50 ? `Ganancia de ${pct(a.gainPct)} — evaluar toma parcial. ` : ""}
-            ${a.type === "crypto" ? "Activo cripto: volatilidad elevada. " : ""}
-            ${a.signal.includes("BUY") ? "Señal educativa de entrada detectada. " : a.signal.includes("VIGILAR") ? "Señal de vigilancia activa. " : ""}
-            ${a.score >= 65 ? "Score sólido — mantener y monitorear." : a.score < 35 ? "Score bajo — no promediar sin revisar la tesis." : "Score neutro — monitoreo regular recomendado."}
+
+        <!-- Tesis / Riesgos / Catalizadores -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:12px">
+          <div style="background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.14);border-radius:14px;padding:12px 14px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99;margin-bottom:7px">Tesis</div>
+            <div style="font-size:13px;color:#c8d8f0;line-height:1.55">
+              ${a.gainPct > 20 ? `Posición en ganancia (${pct(a.gainPct)}) — la tesis de entrada se confirmó parcialmente. ` : ""}
+              ${a.gainPct < -10 ? `Posición en pérdida (${pct(a.gainPct)}) — revisar si la tesis original sigue vigente. ` : ""}
+              ${a.type === "crypto" ? "Activo cripto: alta volatilidad, bajo en fundamentales clásicos. " : ""}
+              ${a.score >= 65 ? "Score sólido — mantener posición actual." : a.score >= 40 ? "Score moderado — vigilar catalizadores." : "Score bajo — no promediar sin revisar."}
+            </div>
+          </div>
+          <div style="background:rgba(255,77,109,.04);border:1px solid rgba(255,77,109,.14);border-radius:14px;padding:12px 14px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ff4d6d;margin-bottom:7px">Riesgos</div>
+            <div style="font-size:13px;color:#c8d8f0;line-height:1.55">
+              ${a.risk === "ALTO" ? "Riesgo alto: posición concentrada o volátil. " : ""}
+              ${isCrypto ? "Riesgo regulatorio y de liquidez en cripto. " : ""}
+              ${ind.rsi > 70 ? "RSI sobrecomprado — posible corrección a corto plazo. " : ""}
+              ${ind.trend === "BAJISTA" ? "Tendencia bajista activa — esperar señal de reversión. " : ""}
+              ${a.gainPct < -20 ? `Caída mayor al 20% — evaluar salida defensiva. ` : ""}
+              ${a.risk !== "ALTO" && !isCrypto && ind.rsi <= 70 ? "Perfil de riesgo moderado." : ""}
+            </div>
+          </div>
+          <div style="background:rgba(255,211,92,.04);border:1px solid rgba(255,211,92,.14);border-radius:14px;padding:12px 14px">
+            <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ffd35c;margin-bottom:7px">Catalizadores</div>
+            <div style="font-size:13px;color:#c8d8f0;line-height:1.55">
+              ${a.signal.includes("BUY") ? "Señal educativa de compra activa. " : ""}
+              ${ind.rsi < 35 ? "RSI bajo — posible zona de acumulación. " : ""}
+              ${ind.macd > 0 && ind.momentum > 0 ? "MACD y momentum positivos: momento técnico favorable. " : ""}
+              ${a.gainPct > 50 ? "Ganancia acumulada alta: evaluar toma parcial de utilidades. " : ""}
+              ${a.signal.includes("VIGILAR") ? "Señal de vigilancia: monitorear en próximas sesiones. " : ""}
+              ${!a.signal.includes("BUY") && ind.rsi >= 35 ? "Sin catalizadores técnicos claros en este momento." : ""}
+            </div>
           </div>
         </div>
-        <div class="detail-grid">
+
+        <!-- Zones + Links -->
+        <div class="detail-grid" style="margin-bottom:10px">
           <div><span>Zona compra</span><b>${a.currency === "USD" ? money(z.buy, "USD") : money(z.buy)}</b></div>
           <div><span>Zona venta</span><b>${a.currency === "USD" ? money(z.sell, "USD") : money(z.sell)}</b></div>
           <div><span>Stop educativo</span><b>${a.currency === "USD" ? money(z.stop, "USD") : money(z.stop)}</b></div>
-          <div><span>Fuente precio</span><b>${esc(a.quoteSource)}</b></div>
+          <div><span>Señal Alfredo</span><b style="font-size:12px">${esc(a.signal)}</b></div>
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
           <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
-          <button onclick="setAlfredoQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+          <button onclick="setAlfredoQ('analiza ${a.symbol} en mi portafolio')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+          <button onclick="openDecisionModal && openDecisionModal()" class="btn" style="font-size:12px;padding:7px 14px;color:#00c8ff;border-color:rgba(0,200,255,.3)">Guardar decisión</button>
         </div>
       </div>
     </details>`;
@@ -2054,23 +2119,42 @@ function renderNews() {
   function newsCard(n, openByDefault) {
     const c = n.classification;
     const impacted = n.impacted && n.impacted.length ? n.impacted : ["Mercado"];
+    const portfolioHits = impacted.filter(x => portfolioSymbols.has(x));
     const dateStr = n.datetime ? new Date(n.datetime * 1000).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
     const impactColor = c.impactColor || "#3b9dff";
-    const img = n.image ? `<img style="width:100%;max-height:180px;object-fit:cover;border-radius:12px;margin-bottom:12px" src="${esc(n.image)}" alt="">` : "";
+    const isPositive  = c.impact === "POSITIVO";
+    const isNegative  = c.impact === "NEGATIVO";
+    const riskLabel   = isNegative ? "RIESGO" : isPositive ? "OPORTUNIDAD" : "NEUTRAL";
+    const riskColor   = isNegative ? "#ff4d6d" : isPositive ? "#00ff99" : "#ffd35c";
+    const img = n.image ? `<img style="width:100%;max-height:160px;object-fit:cover;border-radius:12px;margin-bottom:10px" src="${esc(n.image)}" alt="">` : "";
+    const alfredoMini = portfolioHits.length > 0
+      ? `${riskLabel} · ${portfolioHits.join(", ")} → ${isNegative ? "Vigilar exposición" : isPositive ? "Revisar catalizador" : "Monitorear"}`
+      : `${esc(c.type)} · ${esc(c.region)} · Mercado general`;
     return `<details class="news-item"${openByDefault ? " open" : ""}>
       <summary>
         <span style="flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:${impactColor};flex-shrink:0"></span>
         <span style="flex:1;font-size:14px;font-weight:700;color:#dbeafe;line-height:1.35">${esc(n.headline || "Sin título")}</span>
+        ${portfolioHits.length ? `<span style="flex:0 0 auto;border-radius:99px;padding:2px 8px;background:${riskColor}22;border:1px solid ${riskColor}44;color:${riskColor};font-size:10px;font-weight:900;white-space:nowrap">${esc(riskLabel)}</span>` : ""}
         ${n.source ? `<span style="flex:0 0 auto;font-size:10px;color:#9fb3c8;white-space:nowrap">${esc(n.source)}</span>` : ""}
         ${dateStr ? `<span style="flex:0 0 auto;font-size:10px;color:#9fb3c8;white-space:nowrap">${esc(dateStr)}</span>` : ""}
         <span class="ni-caret">▾</span>
       </summary>
       <div style="padding:0 16px 14px">
         ${img}
-        <div class="chips"><span>${esc(c.type)}</span><span style="background:${impactColor}22;border-color:${impactColor}55;color:${impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span></div>
+        <div class="chips">
+          <span>${esc(c.type)}</span>
+          <span style="background:${impactColor}22;border-color:${impactColor}55;color:${impactColor}">${esc(c.impact)} · ${c.confidence}%</span>
+          <span>${esc(c.region)}</span>
+          ${portfolioHits.length ? `<span style="background:${riskColor}18;border-color:${riskColor}44;color:${riskColor};font-weight:900">${esc(riskLabel)}</span>` : ""}
+        </div>
         <p style="color:#cbd5e1;font-size:14px;margin:8px 0;line-height:1.6">${esc((n.summary || "").slice(0, 300))}</p>
+        ${portfolioHits.length ? `
+        <div style="padding:8px 12px;border-radius:10px;background:${riskColor}0d;border:1px solid ${riskColor}30;margin:8px 0">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${riskColor};margin-bottom:4px">Impacto en tu portafolio</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">${portfolioHits.map(x => `<span style="background:${riskColor}18;border:1px solid ${riskColor}40;border-radius:8px;padding:3px 10px;font-size:12px;font-weight:900;color:${riskColor}">${esc(x)}</span>`).join("")}</div>
+        </div>` : ""}
         <div class="impact"><b>Activos:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
-        <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
+        <div class="why" style="border-left-color:${riskColor}">Alfredo: ${esc(alfredoMini)}. No ejecutar sin análisis propio.</div>
         <a target="_blank" href="${esc(n.url || "#")}" style="font-size:13px;color:#3b9dff">Leer fuente ↗</a>
       </div>
     </details>`;
@@ -2686,23 +2770,69 @@ function computeHealthReadiness() {
     ? whoopCache.sleep.records[0]
     : null;
 
-  const cycleScore = cycleRec && cycleRec.score ? cycleRec.score : {};
+  const cycleScore    = cycleRec    && cycleRec.score    ? cycleRec.score    : {};
   const recoveryScore = recoveryRec && recoveryRec.score ? recoveryRec.score : {};
-  const sleepScore = sleepRec && sleepRec.score ? sleepRec.score : {};
+  const sleepScore    = sleepRec    && sleepRec.score    ? sleepRec.score    : {};
+  const stageSummary  = sleepScore.stage_summary        ? sleepScore.stage_summary : {};
+  const sleepNeeded   = sleepScore.sleep_needed         ? sleepScore.sleep_needed  : {};
 
-  const recovery = recoveryScore.recovery_score != null ? Math.round(recoveryScore.recovery_score) : null;
-  const sleep = sleepScore.sleep_performance_percentage != null ? Math.round(sleepScore.sleep_performance_percentage) : null;
-  const strain = cycleScore.strain != null ? cycleScore.strain : null;
-  const hrv = recoveryScore.hrv_rmssd_milli != null ? recoveryScore.hrv_rmssd_milli : null;
-  const restingHeartRate = recoveryScore.resting_heart_rate != null ? Math.round(recoveryScore.resting_heart_rate) : null;
-  const averageHeartRate = cycleScore.average_heart_rate != null ? Math.round(cycleScore.average_heart_rate) : null;
-  const maxHeartRate = cycleScore.max_heart_rate != null ? Math.round(cycleScore.max_heart_rate) : null;
+  // Core metrics
+  const recovery       = recoveryScore.recovery_score               != null ? Math.round(recoveryScore.recovery_score)               : null;
+  const sleep          = sleepScore.sleep_performance_percentage     != null ? Math.round(sleepScore.sleep_performance_percentage)     : null;
+  const strain         = cycleScore.strain                           != null ? cycleScore.strain                                       : null;
+  const hrv            = recoveryScore.hrv_rmssd_milli               != null ? recoveryScore.hrv_rmssd_milli                           : null;
+  const restingHeartRate  = recoveryScore.resting_heart_rate         != null ? Math.round(recoveryScore.resting_heart_rate)            : null;
+  const averageHeartRate  = cycleScore.average_heart_rate            != null ? Math.round(cycleScore.average_heart_rate)               : null;
+  const maxHeartRate      = cycleScore.max_heart_rate                != null ? Math.round(cycleScore.max_heart_rate)                   : null;
+
+  // Extended sleep metrics
+  const respiratoryRate   = sleepScore.respiratory_rate              != null ? Number(sleepScore.respiratory_rate).toFixed(1)          : null;
+  const sleepEfficiency   = sleepScore.sleep_efficiency_percentage   != null ? Math.round(sleepScore.sleep_efficiency_percentage)      : null;
+  const sleepConsistency  = sleepScore.sleep_consistency_percentage  != null ? Math.round(sleepScore.sleep_consistency_percentage)     : null;
+
+  // Sleep stages (ms → minutes)
+  function msToMin(ms) { return ms != null ? Math.round(ms / 60000) : null; }
+  const remMins   = msToMin(stageSummary.total_rem_sleep_time_milli);
+  const deepMins  = msToMin(stageSummary.total_slow_wave_sleep_time_milli);
+  const lightMins = msToMin(stageSummary.total_light_sleep_time_milli);
+  const awakeMins = msToMin(stageSummary.total_awake_time_milli);
+
+  // Sleep duration from record timestamps
+  let sleepDurationMins = null;
+  if (sleepRec && sleepRec.start && sleepRec.end) {
+    const dur = new Date(sleepRec.end) - new Date(sleepRec.start);
+    if (dur > 0) sleepDurationMins = Math.round(dur / 60000);
+  } else if (remMins != null && deepMins != null && lightMins != null) {
+    sleepDurationMins = (remMins || 0) + (deepMins || 0) + (lightMins || 0) + (awakeMins || 0);
+  }
+
+  // Sleep debt/need (ms → hours, rounded to 1 decimal)
+  function msToHrs(ms) { return ms != null ? Math.round(ms / 360000) / 10 : null; }
+  const sleepNeedBaseline  = msToHrs(sleepNeeded.baseline_milli);
+  const sleepDebt          = (() => {
+    const needMs = sleepNeeded.baseline_milli;
+    const actualMs = sleepDurationMins != null ? sleepDurationMins * 60000 : null;
+    if (needMs != null && actualMs != null) return Math.round((needMs - actualMs) / 360000) / 10;
+    return null;
+  })();
 
   const connected = !!(whoopTokens && whoopTokens.access_token && (recovery != null || sleep != null || strain != null || hrv != null));
 
+  // Derived scores (0-100)
+  const strainPct = strain != null ? Math.min(100, (strain / 21) * 100) : 50;
+  const hrvScore  = hrv    != null ? Math.min(100, (hrv / 160) * 100)   : 50;
+  const rhrScore  = restingHeartRate ? Math.max(0, Math.min(100, 100 - Math.max(0, restingHeartRate - 38) * 2)) : 70;
+  const rec0 = recovery ?? 50, slp0 = sleep ?? 50;
+
+  const healthScore       = Math.round(rec0 * 0.34 + slp0 * 0.24 + hrvScore * 0.18 + rhrScore * 0.12 + (100 - strainPct) * 0.12);
+  const energyScore       = Math.round(rec0 * 0.40 + slp0 * 0.35 + (100 - strainPct) * 0.25);
+  const deepWorkScore     = Math.round(slp0 * 0.40 + hrvScore * 0.35 + (100 - strainPct) * 0.25);
+  const nervousSystemScore= Math.round(hrvScore * 0.55 + (100 - strainPct) * 0.25 + rhrScore * 0.20);
+  const stressLoadScore   = Math.round(100 - nervousSystemScore * 0.6 - (100 - strainPct) * 0.4);
+
+  // Operating mode
   let operatingMode = "NORMAL";
   let suggestion = "usa modo neutral";
-
   if (connected) {
     if (recovery != null && recovery < 40) {
       operatingMode = "DEFENSIVO";
@@ -2719,23 +2849,44 @@ function computeHealthReadiness() {
     }
   }
 
+  // 7-day trend from snapshots
+  let recoveryTrend = null, sleepTrend = null, fatigueTrend = null;
+  try {
+    const snaps = readJSONSafe(HEALTH_SNAPSHOTS_FILE, []).slice(0, 7).filter(s => s && s.recovery != null);
+    if (snaps.length >= 3) {
+      const avgRec = snaps.slice(0, 3).reduce((s, x) => s + (x.recovery || 0), 0) / 3;
+      const avgRecOld = snaps.slice(-3).reduce((s, x) => s + (x.recovery || 0), 0) / 3;
+      recoveryTrend = avgRec > avgRecOld + 5 ? "SUBIENDO" : avgRec < avgRecOld - 5 ? "BAJANDO" : "ESTABLE";
+      const slpSnaps = snaps.filter(s => s.sleep != null);
+      if (slpSnaps.length >= 3) {
+        const avgSlp = slpSnaps.slice(0, 2).reduce((s, x) => s + (x.sleep || 0), 0) / 2;
+        const avgSlpOld = slpSnaps.slice(-2).reduce((s, x) => s + (x.sleep || 0), 0) / 2;
+        sleepTrend = avgSlp > avgSlpOld + 5 ? "MEJORANDO" : avgSlp < avgSlpOld - 5 ? "EMPEORANDO" : "ESTABLE";
+      }
+      fatigueTrend = recoveryTrend === "BAJANDO" ? "ACUMULANDO" : recoveryTrend === "SUBIENDO" ? "DISMINUYENDO" : "ESTABLE";
+    }
+  } catch(e) {}
+
   return {
     ok: true,
     configured: WHOOP_CONFIGURED,
     connected,
     source: connected ? "whoop_live" : WHOOP_CONFIGURED ? "whoop_tokens_missing" : "not_configured",
-    recovery,
-    sleep,
-    strain,
-    hrv,
-    restingHeartRate,
-    averageHeartRate,
-    maxHeartRate,
-    operatingMode,
-    mode: operatingMode,
-    suggestion,
+    // Core
+    recovery, sleep, strain, hrv,
+    restingHeartRate, averageHeartRate, maxHeartRate,
+    // Extended sleep
+    respiratoryRate, sleepEfficiency, sleepConsistency,
+    remMins, deepMins, lightMins, awakeMins,
+    sleepDurationMins, sleepNeedBaseline, sleepDebt,
+    // Derived scores
+    healthScore, energyScore, deepWorkScore, nervousSystemScore, stressLoadScore,
+    // Trends
+    recoveryTrend, sleepTrend, fatigueTrend,
+    // Legacy
+    operatingMode, mode: operatingMode, suggestion,
     message: connected
-      ? `WHOOP conectado. Recovery: ${recovery ?? "—"}%. Sleep: ${sleep ?? "—"}%. Strain: ${strain != null ? strain.toFixed(1) : "—"}.`
+      ? `WHOOP conectado. Recovery: ${recovery ?? "—"}%. Sleep: ${sleep ?? "—"}%. HRV: ${hrv != null ? hrv.toFixed(1) : "—"} ms. Strain: ${strain != null ? strain.toFixed(1) : "—"}.`
       : WHOOP_CONFIGURED
         ? "WHOOP configurado — tokens pendientes o cache sin datos."
         : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
@@ -3147,49 +3298,40 @@ function renderHealthReadinessPanel() {
 function renderHealthOSPanel() {
   const h = computeHealthReadiness();
 
-  function clamp(n, min, max) {
-    n = Number(n);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(min, Math.min(max, n));
-  }
-
+  function clamp(n, min, max) { n = Number(n); return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : 0; }
   function fmt(v, suffix) {
     if (v === null || v === undefined || v === "") return "—";
-    if (typeof v === "number") {
-      const out = Math.abs(v) % 1 ? v.toFixed(1) : String(v);
-      return esc(out + (suffix || ""));
-    }
+    if (typeof v === "number") { const o = Math.abs(v) % 1 ? v.toFixed(1) : String(v); return esc(o + (suffix || "")); }
     return esc(String(v) + (suffix || ""));
   }
+  function fmtMin(mins) {
+    if (mins == null) return "—";
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+  function trendArrow(t) {
+    if (!t) return "";
+    if (t === "SUBIENDO" || t === "MEJORANDO" || t === "DISMINUYENDO") return ' <span style="color:#00ff99">↑</span>';
+    if (t === "BAJANDO" || t === "EMPEORANDO" || t === "ACUMULANDO")  return ' <span style="color:#ff4d6d">↓</span>';
+    return ' <span style="color:#ffd35c">→</span>';
+  }
 
-  const recovery = clamp(h.recovery, 0, 100);
-  const sleep = clamp(h.sleep, 0, 100);
-  const strainRaw = Number(h.strain || 0);
-  const strainPct = clamp((strainRaw / 21) * 100, 0, 100);
-  const hrvScore = clamp((Number(h.hrv || 0) / 160) * 100, 0, 100);
-  const rhrScore = h.restingHeartRate ? clamp(100 - Math.max(0, Number(h.restingHeartRate) - 38) * 2, 0, 100) : 70;
+  const recovery  = clamp(h.recovery,  0, 100);
+  const sleep     = clamp(h.sleep,     0, 100);
+  const strainPct = clamp((Number(h.strain || 0) / 21) * 100, 0, 100);
+  const hrvScore  = clamp((Number(h.hrv    || 0) / 160) * 100, 0, 100);
 
-  const healthScore = Math.round(
-    recovery * 0.34 +
-    sleep * 0.24 +
-    hrvScore * 0.18 +
-    rhrScore * 0.12 +
-    (100 - strainPct) * 0.12
-  );
+  const hs = h.healthScore     ?? Math.round(recovery * 0.34 + sleep * 0.24 + hrvScore * 0.18 + (100 - strainPct) * 0.28);
+  const es = h.energyScore     ?? Math.round(recovery * 0.40 + sleep * 0.35 + (100 - strainPct) * 0.25);
+  const dw = h.deepWorkScore   ?? Math.round(sleep * 0.40 + hrvScore * 0.35 + (100 - strainPct) * 0.25);
+  const ns = h.nervousSystemScore ?? Math.round(hrvScore * 0.6 + (100 - strainPct) * 0.4);
 
-  const status =
-    healthScore >= 85 ? "EXCELENTE" :
-    healthScore >= 70 ? "BUENO" :
-    healthScore >= 55 ? "MEDIO" :
-    healthScore >= 40 ? "BAJO" : "CRÍTICO";
-
-  const statusColor =
-    healthScore >= 70 ? "#00ff99" :
-    healthScore >= 55 ? "#ffd35c" :
-    "#ff4d6d";
-
-  const badgeLabel = h.connected ? "WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "WHOOP PENDIENTE";
-  const mode = h.operatingMode || "NORMAL";
+  const status = hs >= 85 ? "EXCELENTE" : hs >= 70 ? "BUENO" : hs >= 55 ? "MEDIO" : hs >= 40 ? "BAJO" : "CRÍTICO";
+  const statusColor = hs >= 70 ? "#00ff99" : hs >= 55 ? "#ffd35c" : "#ff4d6d";
+  const badgeLabel  = h.connected ? "WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "WHOOP PENDIENTE";
+  const badgeBg     = h.connected ? "rgba(0,255,153,.12)" : h.configured ? "rgba(255,211,92,.12)" : "rgba(120,160,210,.08)";
+  const badgeColor  = h.connected ? "#00ff99" : h.configured ? "#ffd35c" : "#9fb3c8";
+  const mode        = h.operatingMode || "NORMAL";
 
   function donut(label, value, raw, color) {
     const v = clamp(value, 0, 100);
@@ -3203,83 +3345,141 @@ function renderHealthOSPanel() {
     </div>`;
   }
 
-  const aiText = `Hoy tu sistema está en modo ${mode}. Recovery ${h.recovery ?? "—"}%, Sleep ${h.sleep ?? "—"}%, HRV ${h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—"} y Strain ${h.strain != null ? Number(h.strain).toFixed(1) : "—"}. Esto significa que tu cuerpo debe guiar el nivel de agresividad del día. Si la recuperación baja o el strain sube, conviene priorizar decisiones más lentas, menos impulsivas y con menor exposición. Para trading: evita sobreoperar, revenge trading y entradas grandes si estás cansado. Para estudio: enfócate en bloques profundos si la energía mental está alta; si no, usa tareas mecánicas. Para social: mantén planes que no drenen demasiado si el sistema nervioso está cargado. Prioridad: dormir bien, hidratarte, comer completo y registrar hábitos como sauna, cannabis, estrés o entrenamiento para detectar correlaciones.`;
+  function scoreBar(label, score, color) {
+    const pct = clamp(score, 0, 100);
+    return `<div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+        <span style="font-size:11px;font-weight:700;color:#9fb3c8;text-transform:uppercase;letter-spacing:.08em">${esc(label)}</span>
+        <b style="font-size:13px;font-weight:900;color:${color}">${pct}</b>
+      </div>
+      <div style="height:5px;border-radius:99px;background:rgba(120,160,210,.12);overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:${color};border-radius:99px;transition:.4s"></div>
+      </div>
+    </div>`;
+  }
+
+  const aiText = `Sistema en modo ${mode}. Recovery ${h.recovery ?? "—"}% · Sleep ${h.sleep ?? "—"}% · HRV ${h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—"} · Strain ${h.strain != null ? Number(h.strain).toFixed(1) : "—"}. Health Score ${hs}/100 — ${status}. ${h.suggestion}. ${h.connected ? `RHR ${h.restingHeartRate ?? "—"} bpm. ` : ""}Educativo — no es consejo médico.`;
 
   return `<section id="health-os-shell" class="health-os-shell">
     <style>
-      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.20),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
-      .health-os-hero{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
+      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px 26px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.20),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
+      .health-os-hero{display:grid;grid-template-columns:1.3fr .7fr;gap:18px;margin-bottom:18px}
       .health-os-title{font-size:44px;font-weight:950;letter-spacing:-.04em;background:linear-gradient(90deg,#f9a8d4,#3b9dff,#00ff99);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:6px 0}
       .health-os-kicker{font-size:11px;font-weight:950;letter-spacing:.18em;text-transform:uppercase;color:#f472b6}
       .health-os-sub{color:#9fb3c8;font-size:13px;line-height:1.6}
-      .health-os-badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;background:rgba(0,255,153,.12);border:1px solid rgba(0,255,153,.24);color:#00ff99;font-size:12px;font-weight:900}
-      .health-os-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
-      .health-os-card{border:1px solid rgba(120,160,210,.14);background:rgba(255,255,255,.045);border-radius:22px;padding:16px;box-shadow:inset 0 1px rgba(255,255,255,.04)}
+      .health-os-badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;font-size:12px;font-weight:900}
+      .health-os-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px}
+      .health-os-card{border:1px solid rgba(120,160,210,.14);background:rgba(255,255,255,.042);border-radius:22px;padding:16px 18px;box-shadow:inset 0 1px rgba(255,255,255,.04),0 8px 24px rgba(0,0,0,.18);backdrop-filter:blur(12px)}
       .health-os-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px}
       .health-os-value{font-size:30px;font-weight:950;color:#eaf6ff;line-height:1}
-      .health-os-small{font-size:12px;color:#9fb3c8;margin-top:7px;line-height:1.5}
-      .health-os-donut-row{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:14px;margin-bottom:14px}
-      .health-os-donut-card{display:flex;align-items:center;justify-content:center;min-height:230px}
-      .health-os-donut{width:178px;height:178px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 45px rgba(0,0,0,.35)}
-      .health-os-donut-inner{width:126px;height:126px;border-radius:50%;background:rgba(4,10,22,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.08)}
-      .health-os-donut-value{font-size:28px;font-weight:950;color:#eaf6ff}
-      .health-os-donut-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-top:4px}
+      .health-os-small{font-size:12px;color:#9fb3c8;margin-top:5px;line-height:1.6}
+      .health-os-donut-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:14px}
+      .health-os-donut-card{display:flex;align-items:center;justify-content:center;min-height:210px}
+      .health-os-donut{width:168px;height:168px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 14px 40px rgba(0,0,0,.35)}
+      .health-os-donut-inner{width:118px;height:118px;border-radius:50%;background:rgba(4,10,22,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.08)}
+      .health-os-donut-value{font-size:26px;font-weight:950;color:#eaf6ff}
+      .health-os-donut-label{font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#9fb3c8;margin-top:4px}
       .health-os-wide{grid-column:1/-1}
       .health-os-ai{font-size:14px;color:#dbeafe;line-height:1.75}
-      .health-os-chip{display:inline-flex;border-radius:999px;padding:6px 11px;margin:4px;background:rgba(244,114,182,.08);border:1px solid rgba(244,114,182,.18);color:#f9a8d4;font-size:12px;font-weight:800}
-      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:24px}}
+      .health-os-chip{display:inline-flex;border-radius:999px;padding:6px 11px;margin:4px;background:rgba(244,114,182,.08);border:1px solid rgba(244,114,182,.18);color:#f9a8d4;font-size:12px;font-weight:800;cursor:pointer;transition:.18s}
+      .health-os-chip:hover{background:rgba(244,114,182,.18)}
+      .health-os-stage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-top:8px}
+      .health-os-stage-pill{border-radius:12px;padding:8px 10px;text-align:center}
+      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:32px}.health-os-donut-row{grid-template-columns:repeat(2,1fr)}.health-os-value{font-size:24px}}
     </style>
 
+    <!-- HERO -->
     <div class="health-os-hero">
       <div class="health-os-card">
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
           <div>
-            <div class="health-os-kicker">Cordelius Health</div>
-            <div class="health-os-title">Biological Operating System</div>
-            <div class="health-os-sub">WHOOP-first · Health no depende del Journal · sistema educativo para energía, enfoque y riesgo de sobreoperar.</div>
+            <div class="health-os-kicker">Cordelius Health OS 2.0</div>
+            <div class="health-os-title">Biological OS</div>
+            <div class="health-os-sub">WHOOP-first · Sueño · Recovery · HRV · Energía · Sistema nervioso · No es consejo médico.</div>
           </div>
-          <span id="health-os-whoop-badge" class="health-os-badge">● ${esc(badgeLabel)}</span>
+          <span id="health-os-whoop-badge" class="health-os-badge" style="background:${badgeBg};border:1px solid ${badgeColor}40;color:${badgeColor}">● ${esc(badgeLabel)}</span>
+        </div>
+        <!-- Trend row -->
+        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+          <span style="font-size:11px;color:#9fb3c8">Recovery 7d:${trendArrow(h.recoveryTrend)}<b style="color:#eaf6ff"> ${esc(h.recoveryTrend || "—")}</b></span>
+          <span style="font-size:11px;color:#9fb3c8">Sueño 7d:${trendArrow(h.sleepTrend)}<b style="color:#eaf6ff"> ${esc(h.sleepTrend || "—")}</b></span>
+          <span style="font-size:11px;color:#9fb3c8">Fatiga:${trendArrow(h.fatigueTrend === "DISMINUYENDO" ? "SUBIENDO" : h.fatigueTrend === "ACUMULANDO" ? "BAJANDO" : "")}<b style="color:#eaf6ff"> ${esc(h.fatigueTrend || "—")}</b></span>
         </div>
       </div>
-
-      <div class="health-os-card">
+      <div class="health-os-card" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:6px">
         <div class="health-os-label">Health Score</div>
-        <div id="health-os-score" class="health-os-value" style="color:${statusColor}">${healthScore}</div>
-        <div id="health-os-status" class="health-os-small" style="font-weight:900;color:${statusColor}">${status}</div>
-        <div class="health-os-small">Modo operativo: <b id="health-os-mode" style="color:#ffd35c">${esc(mode)}</b></div>
+        <div id="health-os-score" style="font-size:56px;font-weight:950;color:${statusColor};line-height:1">${hs}</div>
+        <div id="health-os-status" style="font-size:13px;font-weight:900;color:${statusColor}">${status}</div>
+        <div style="font-size:11px;color:#9fb3c8">Modo: <b id="health-os-mode" style="color:#ffd35c">${esc(mode)}</b></div>
       </div>
     </div>
 
-    <div class="health-os-grid">
-      <div class="health-os-card"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">${fmt(h.recovery, "%")}</div><div class="health-os-small">Capacidad de carga del día</div></div>
-      <div class="health-os-card"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">${fmt(h.sleep, "%")}</div><div class="health-os-small">Base de recuperación mental</div></div>
-      <div class="health-os-card"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">${fmt(h.hrv, " ms")}</div><div class="health-os-small">Sistema nervioso</div></div>
-      <div class="health-os-card"><div class="health-os-label">Resting HR</div><div id="health-os-rhr" class="health-os-value">${fmt(h.restingHeartRate, " bpm")}</div><div class="health-os-small">Carga fisiológica</div></div>
-      <div class="health-os-card"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">${fmt(h.strain, "")}</div><div class="health-os-small">Carga acumulada</div></div>
-      <div class="health-os-card"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">${esc(status)}</div><div class="health-os-small">Lectura Cordelius</div></div>
-    </div>
-
+    <!-- CORE DONUTS -->
     <div class="health-os-donut-row">
-      ${donut("Recovery", recovery, h.recovery != null ? h.recovery + "%" : "—", "#00ff99")}
-      ${donut("Sleep", sleep, h.sleep != null ? h.sleep + "%" : "—", "#3b9dff")}
-      ${donut("Strain", strainPct, h.strain != null ? Number(h.strain).toFixed(1) : "—", "#f472b6")}
+      ${donut("Recovery",  recovery,  h.recovery != null  ? h.recovery  + "%" : "—", "#00ff99")}
+      ${donut("Sleep",     sleep,     h.sleep    != null  ? h.sleep     + "%" : "—", "#3b9dff")}
+      ${donut("Strain",    strainPct, h.strain   != null  ? Number(h.strain).toFixed(1)  : "—", "#f472b6")}
+      ${donut("HRV Score", clamp(hrvScore, 0, 100), h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—", "#818cf8")}
     </div>
 
-    <div class="health-os-grid">
+    <!-- CORE METRICS -->
+    <div class="health-os-grid" style="margin-bottom:14px">
+      <div class="health-os-card"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value" style="color:#00ff99">${fmt(h.recovery, "%")}</div><div class="health-os-small">Capacidad de carga del día${trendArrow(h.recoveryTrend)}</div></div>
+      <div class="health-os-card"><div class="health-os-label">Sleep Performance</div><div id="health-os-sleep" class="health-os-value" style="color:#3b9dff">${fmt(h.sleep, "%")}</div><div class="health-os-small">Base de recuperación mental${trendArrow(h.sleepTrend)}</div></div>
+      <div class="health-os-card"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value" style="color:#818cf8">${fmt(h.hrv, " ms")}</div><div class="health-os-small">Sistema nervioso autónomo</div></div>
+      <div class="health-os-card"><div class="health-os-label">Resting HR</div><div id="health-os-rhr" class="health-os-value">${fmt(h.restingHeartRate, " bpm")}</div><div class="health-os-small">Carga fisiológica base</div></div>
+      <div class="health-os-card"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value" style="color:#f472b6">${fmt(h.strain != null ? Number(h.strain).toFixed(1) : null, "")}</div><div class="health-os-small">Carga acumulada del ciclo</div></div>
+      <div class="health-os-card"><div class="health-os-label">Freq. Respiratoria</div><div id="health-os-rr" class="health-os-value" style="font-size:22px">${fmt(h.respiratoryRate, " rpm")}</div><div class="health-os-small">Indicador ANS nocturno</div></div>
+    </div>
+
+    <!-- SLEEP STAGES -->
+    <div class="health-os-card health-os-wide" style="margin-bottom:14px">
+      <div class="health-os-label">Arquitectura del sueño</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:10px">
+        <div class="health-os-stage-pill" style="background:rgba(129,140,248,.1);border:1px solid rgba(129,140,248,.2)">
+          <div style="font-size:11px;font-weight:900;letter-spacing:.1em;color:#818cf8;margin-bottom:4px">REM</div>
+          <div style="font-size:20px;font-weight:950;color:#eaf6ff">${esc(fmtMin(h.remMins))}</div>
+        </div>
+        <div class="health-os-stage-pill" style="background:rgba(59,157,255,.1);border:1px solid rgba(59,157,255,.2)">
+          <div style="font-size:11px;font-weight:900;letter-spacing:.1em;color:#3b9dff;margin-bottom:4px">DEEP</div>
+          <div style="font-size:20px;font-weight:950;color:#eaf6ff">${esc(fmtMin(h.deepMins))}</div>
+        </div>
+        <div class="health-os-stage-pill" style="background:rgba(120,160,210,.08);border:1px solid rgba(120,160,210,.15)">
+          <div style="font-size:11px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:4px">LIGHT</div>
+          <div style="font-size:20px;font-weight:950;color:#eaf6ff">${esc(fmtMin(h.lightMins))}</div>
+        </div>
+        <div class="health-os-stage-pill" style="background:rgba(255,211,92,.07);border:1px solid rgba(255,211,92,.15)">
+          <div style="font-size:11px;font-weight:900;letter-spacing:.1em;color:#ffd35c;margin-bottom:4px">TOTAL</div>
+          <div style="font-size:20px;font-weight:950;color:#eaf6ff">${esc(fmtMin(h.sleepDurationMins))}</div>
+        </div>
+        <div class="health-os-stage-pill" style="background:rgba(0,255,153,.07);border:1px solid rgba(0,255,153,.15)">
+          <div style="font-size:11px;font-weight:900;letter-spacing:.1em;color:#00ff99;margin-bottom:4px">EFICIENCIA</div>
+          <div style="font-size:20px;font-weight:950;color:#eaf6ff">${fmt(h.sleepEfficiency, "%")}</div>
+        </div>
+        <div class="health-os-stage-pill" style="background:rgba(244,114,182,.07);border:1px solid rgba(244,114,182,.15)">
+          <div style="font-size:11px;font-weight:900;letter-spacing:.1em;color:#f472b6;margin-bottom:4px">DEUDA</div>
+          <div style="font-size:20px;font-weight:950;color:${h.sleepDebt != null && h.sleepDebt > 0.5 ? '#ff4d6d' : '#eaf6ff'}">${h.sleepDebt != null ? (h.sleepDebt > 0 ? '+' : '') + h.sleepDebt + 'h' : '—'}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DERIVED SCORES -->
+    <div class="health-os-grid" style="margin-bottom:14px">
+      <div class="health-os-card">
+        <div class="health-os-label">Scores derivados</div>
+        ${scoreBar("Energy Score",        clamp(es, 0, 100), es >= 70 ? "#00ff99" : es >= 50 ? "#ffd35c" : "#ff4d6d")}
+        ${scoreBar("Deep Work Score",     clamp(dw, 0, 100), dw >= 70 ? "#3b9dff" : dw >= 50 ? "#ffd35c" : "#ff4d6d")}
+        ${scoreBar("Nervous System",      clamp(ns, 0, 100), ns >= 70 ? "#818cf8" : ns >= 50 ? "#ffd35c" : "#ff4d6d")}
+        ${scoreBar("Stress Load",         clamp(h.stressLoadScore ?? 50, 0, 100), "#f472b6")}
+      </div>
+
       <div class="health-os-card">
         <div class="health-os-label">Energy Engine</div>
-        <div class="health-os-small">Physical Energy: <b id="health-os-energy-physical">${Math.round((recovery + sleep) / 2)}</b>/100</div>
-        <div class="health-os-small">Mental Energy: <b id="health-os-energy-mental">${Math.round((sleep + hrvScore) / 2)}</b>/100</div>
-        <div class="health-os-small">Focus Capacity: <b id="health-os-energy-focus">${Math.round((sleep + recovery + hrvScore) / 3)}</b>/100</div>
-        <div class="health-os-small">Deep Work: <b id="health-os-energy-deepwork">${Math.round((sleep + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
-        <div class="health-os-small">Trading Capacity: <b id="health-os-energy-trading">${Math.round((recovery + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Radar Health</div>
-        <div id="health-os-radar" class="health-os-small">
-          Recovery ${Math.round(recovery)} · Sleep ${Math.round(sleep)} · HRV ${Math.round(hrvScore)} · Nervous System ${Math.round(hrvScore)} · Energy ${Math.round((recovery + sleep)/2)} · Focus ${Math.round((sleep + hrvScore)/2)}
-        </div>
+        <div class="health-os-small">Physical Energy: <b id="health-os-energy-physical" style="color:#00ff99">${Math.round((recovery + sleep) / 2)}</b>/100</div>
+        <div class="health-os-small">Mental Energy: <b id="health-os-energy-mental" style="color:#3b9dff">${Math.round((sleep + hrvScore) / 2)}</b>/100</div>
+        <div class="health-os-small">Focus Capacity: <b id="health-os-energy-focus" style="color:#818cf8">${Math.round((sleep + recovery + hrvScore) / 3)}</b>/100</div>
+        <div class="health-os-small">Deep Work: <b id="health-os-energy-deepwork" style="color:#ffd35c">${dw}</b>/100</div>
+        <div class="health-os-small">Trading Capacity: <b id="health-os-energy-trading" style="color:#f472b6">${Math.round((recovery + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
       </div>
 
       <div class="health-os-card">
@@ -3289,13 +3489,15 @@ function renderHealthOSPanel() {
           <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('cannabis')">Cannabis</button>
           <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('training')">Training</button>
           <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('stress')">High Stress</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('alcohol')">Alcohol</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('meditation')">Meditación</button>
         </div>
-        <div class="health-os-small">Opcional. Sin formularios grandes.</div>
+        <div class="health-os-small" style="margin-top:8px">Opcional. Ayuda a detectar correlaciones.</div>
       </div>
 
       <div class="health-os-card">
         <div class="health-os-label">Correlation Engine</div>
-        <div id="health-os-correlations" class="health-os-small">Recolectando datos. Se activará con más snapshots diarios.</div>
+        <div id="health-os-correlations" class="health-os-small">Recolectando snapshots. Se activa con más días de datos para detectar patrones sueño→decisión.</div>
       </div>
 
       <div class="health-os-card health-os-wide">
@@ -3304,9 +3506,10 @@ function renderHealthOSPanel() {
       </div>
 
       <div class="health-os-card health-os-wide">
-        <div class="health-os-label">Trading Integration</div>
+        <div class="health-os-label">Integración Trading</div>
         <div id="health-os-trading-risk" class="health-os-small">
-          Recovery &lt; 50 → modo defensivo · Recovery &gt; 80 → modo normal · Strain alto → bajar agresividad · Overtrading alto → no operar impulsivo.
+          Recovery &lt; 50% → modo <b style="color:#ff4d6d">DEFENSIVO</b> · Recovery 50–79% → <b style="color:#ffd35c">NEUTRAL</b> · Recovery ≥ 80% + Strain bajo → <b style="color:#00ff99">ÓPTIMO</b>
+          <br>Strain alto (&gt;16) → reducir agresividad · HRV bajo → evitar sobreoperar · Deuda de sueño alta → no tomar posiciones impulsivas.
           <br>Educativo. No es asesoría médica ni financiera.
         </div>
       </div>
@@ -3376,7 +3579,10 @@ function renderHomePortal(pv, reg) {
       <div>
         <div style="font-size:10px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8;margin-bottom:4px">CORDELIUS PERSONAL OS · ${esc(dayName.toUpperCase())}</div>
         <div style="font-size:32px;font-weight:900;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${greet}, Pedro</div>
-        <div style="color:#9fb3c8;font-size:13px;margin-top:4px">${esc(nl.date)} · ${esc(nowMX())}</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px">
+          <span style="color:#9fb3c8;font-size:13px">${esc(nl.date)}</span>
+          <span id="home-live-clock" style="font-size:16px;font-weight:900;color:#eaf6ff;font-variant-numeric:tabular-nums;letter-spacing:.06em">${esc(nowMX())}</span>
+        </div>
       </div>
       <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
         <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border:1px solid rgba(0,255,153,.2)">Servidor ON</span>
@@ -3778,19 +3984,35 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 #research-result{animation:fade .3s ease}
 </style></head><body>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
-<button class="brain-float" onclick="toggleAlfredo()" title="Alfredo AI — Cordelius">
-  <svg width="38" height="38" viewBox="0 0 38 38" fill="none">
-    <circle cx="19" cy="19" r="17" stroke="rgba(0,255,153,.35)" stroke-width="1" stroke-dasharray="6 3" class="brain-ring-o"/>
-    <circle cx="19" cy="19" r="11" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-dasharray="4 4" class="brain-ring-m"/>
-    <circle cx="19" cy="19" r="6" fill="rgba(0,255,153,.15)" stroke="rgba(0,255,153,.8)" stroke-width="1.2"/>
-    <circle cx="19" cy="19" r="2.5" fill="#00ff99"/>
-    <line x1="19" y1="1" x2="19" y2="8" stroke="rgba(0,255,153,.5)" stroke-width="1.2" stroke-linecap="round"/>
-    <line x1="19" y1="30" x2="19" y2="37" stroke="rgba(0,255,153,.5)" stroke-width="1.2" stroke-linecap="round"/>
-    <line x1="1" y1="19" x2="8" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
-    <line x1="30" y1="19" x2="37" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
+${(function(){
+  const hb = computeHealthReadiness();
+  const brainColor = hb.operatingMode === "ÓPTIMO" ? "#00ff99"
+    : hb.operatingMode === "DEFENSIVO" ? "#ff4d6d"
+    : hb.operatingMode === "NEUTRAL"   ? "#ffd35c"
+    : "#3b9dff";
+  const brainGlow = hb.operatingMode === "DEFENSIVO" ? "rgba(255,77,109,.55)" : hb.operatingMode === "ÓPTIMO" ? "rgba(0,255,153,.55)" : "rgba(59,157,255,.45)";
+  const reg = marketRegime ? marketRegime() : { label: "—" };
+  const modeShort = hb.operatingMode === "ÓPTIMO" ? "OPT" : hb.operatingMode === "DEFENSIVO" ? "DEF" : hb.operatingMode === "NEUTRAL" ? "NEU" : "ON";
+  return `<button id="brain-float-btn" class="brain-float" onclick="toggleAlfredo()" title="Alfredo AI · Cordelius · ${esc(hb.operatingMode)}" style="border-color:${brainColor}55;box-shadow:0 0 28px ${brainGlow},0 0 56px ${brainGlow}40">
+  <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+    <circle cx="20" cy="20" r="18" stroke="${brainColor}45" stroke-width="1" stroke-dasharray="5 3" class="brain-ring-o"/>
+    <circle cx="20" cy="20" r="12" stroke="rgba(59,157,255,.55)" stroke-width="1.2" stroke-dasharray="3 4" class="brain-ring-m"/>
+    <circle cx="20" cy="20" r="7" fill="${brainColor}20" stroke="${brainColor}" stroke-width="1.4"/>
+    <circle cx="20" cy="20" r="2.8" fill="${brainColor}"/>
+    <line x1="20" y1="1" x2="20" y2="8" stroke="${brainColor}66" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="20" y1="32" x2="20" y2="39" stroke="${brainColor}66" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="1" y1="20" x2="8" y2="20" stroke="rgba(59,157,255,.55)" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="32" y1="20" x2="39" y2="20" stroke="rgba(59,157,255,.55)" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="8" cy="8" r="2" fill="${brainColor}55"/>
+    <circle cx="32" cy="8" r="2" fill="${brainColor}55"/>
+    <circle cx="8" cy="32" r="2" fill="rgba(59,157,255,.4)"/>
+    <circle cx="32" cy="32" r="2" fill="rgba(59,157,255,.4)"/>
+    <line x1="8" y1="8" x2="20" y2="20" stroke="${brainColor}25" stroke-width=".8"/>
+    <line x1="32" y1="8" x2="20" y2="20" stroke="${brainColor}25" stroke-width=".8"/>
   </svg>
-  <div class="brain-float-label">Alfredo</div>
-</button>
+  <div class="brain-float-label" style="color:${brainColor}cc">${esc(modeShort)}</div>
+</button>`;
+})()}
 <div id="alfredo-panel" class="panel">
   <div style="padding:16px 20px 20px">
     <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">Alfredo AI · Educativo</div>
@@ -4547,6 +4769,21 @@ async function saveAutopilotDecisionFromScan() {
     setTimeout(function() { if (btn) btn.textContent = 'Guardar en Autopilot Memory'; }, 1500);
   }
 }
+
+// ---- Live clock ----
+(function() {
+  function tickClock() {
+    var el = document.getElementById('home-live-clock');
+    if (!el) return;
+    var now = new Date();
+    var hh = now.getHours().toString().padStart(2, '0');
+    var mm = now.getMinutes().toString().padStart(2, '0');
+    var ss = now.getSeconds().toString().padStart(2, '0');
+    el.textContent = hh + ':' + mm + ':' + ss;
+  }
+  setInterval(tickClock, 1000);
+  tickClock();
+})();
 
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
