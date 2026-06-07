@@ -43,7 +43,7 @@ function nowMX() { return new Date().toLocaleString("es-MX"); }
 
 let settings = loadJSON(SETTINGS_FILE, {
   thinkingEnabled: true, autoRefreshSeconds: 60, themeMode: "neural",
-  appName: "Cordelius OS", assistantName: "Alfredo AI"
+  appName: "Cordelius", assistantName: "Alfredo AI"
 });
 
 let quotes = {};
@@ -559,10 +559,25 @@ function computeDailyScan() {
   const energyMatches = allQuiverMatches.filter(x => energySyms.includes(x.symbol)).length;
   const healthMatches = allQuiverMatches.filter(x => healthSyms.includes(x.symbol)).length;
 
+  const intelAffected = [...new Set(intelItems.flatMap(x => x.affected || []))];
+  const intelPositive = intelItems.filter(x => x.mood === "POSITIVO").length;
+  const intelNegative = intelItems.filter(x => x.mood === "NEGATIVO").length;
+  const intelHotTickers = intelAffected
+    .map(sym => ({
+      symbol: sym,
+      count: intelItems.filter(x => (x.affected || []).includes(sym)).length,
+      pos: intelItems.filter(x => (x.affected || []).includes(sym) && x.mood === "POSITIVO").length,
+      neg: intelItems.filter(x => (x.affected || []).includes(sym) && x.mood === "NEGATIVO").length,
+      inPortfolio: !!pv.assets.find(a => a.symbol === sym)
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
   const marketThemes = [];
   if (techMatches > 3)   marketThemes.push({ theme: "Tech / AI Infrastructure",   strength: techMatches > 12   ? "FUERTE" : "MODERADO",   quiverSignals: techMatches,   tickers: techSyms.filter(s => pv.assets.find(a => a.symbol === s)) });
   if (energyMatches > 1) marketThemes.push({ theme: "Energia / Grid / Cobre",      strength: energyMatches > 6  ? "FUERTE" : "MODERADO",   quiverSignals: energyMatches, tickers: energySyms });
   if (healthMatches > 0) marketThemes.push({ theme: "Healthcare / Regulacion",     strength: healthMatches > 4  ? "FUERTE" : "BAJO",       quiverSignals: healthMatches, tickers: healthSyms });
+  if (intelItems.length) marketThemes.push({ theme: "Cordelius Intelligence Manual", strength: intelNegative > intelPositive ? "DEFENSIVO" : "ACTIVO", quiverSignals: 0, intelSignals: intelItems.length, tickers: intelHotTickers.map(x => x.symbol), hotTickers: intelHotTickers });
   if (bitsoPct > 40)     marketThemes.push({ theme: "Cripto concentrado",          strength: "ALTO RIESGO",    quiverSignals: 0,            tickers: cryptoSyms, alert: true });
   if (!marketThemes.length) marketThemes.push({ theme: "Sin temas dominantes",     strength: "NEUTRAL",        quiverSignals: 0,            tickers: [] });
 
@@ -597,6 +612,7 @@ function computeDailyScan() {
   if (bitsoPct > 60) summaryLines.push("Concentracion cripto muy alta (" + bitsoPct.toFixed(0) + "%). Bitso domina el portafolio — revisa exposicion.");
   else if (bitsoPct > 45) summaryLines.push("Cripto/Bitso sobre 45% (" + bitsoPct.toFixed(0) + "%) — vigilar correlacion en caidas.");
   if (allQuiverMatches.length > 0) summaryLines.push(allQuiverMatches.length + " senales institucionales en tus activos (Quiver: congreso, insiders, contratos).");
+  if (intelItems.length > 0) summaryLines.push("Intel manual: " + intelItems.length + " items (" + intelPositive + " positivos, " + intelNegative + " negativos) cruzados contra tus tickers.");
   const topAsset = ranked[0], bottomAsset = ranked[ranked.length - 1];
   summaryLines.push("Mejor posicion: " + topAsset.symbol + " (score " + topAsset.score + "/100, " + (topAsset.gainPct >= 0 ? "+" : "") + topAsset.gainPct.toFixed(0) + "%).");
   summaryLines.push("Activo a vigilar: " + bottomAsset.symbol + " (score " + bottomAsset.score + "/100, " + bottomAsset.gainPct.toFixed(1) + "%).");
@@ -611,7 +627,14 @@ function computeDailyScan() {
     educationalActions: educationalActions.slice(0, 6),
     educationalSummary,
     rawMatchesLimited: allQuiverMatches.slice(0, 20),
-    intel: { count: intelItems.length, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
+    intel: {
+      count: intelItems.length,
+      positive: intelPositive,
+      negative: intelNegative,
+      affectedTickers: intelAffected,
+      hotTickers: intelHotTickers,
+      recent: intelItems.slice(0, 5).map(x => ({ mood: x.mood, affected: x.affected, tags: x.tags, time: x.time, snippet: String(x.text || "").slice(0, 180) }))
+    }
   };
 }
 
@@ -2375,44 +2398,50 @@ function appendSnapshot(arr, item, maxLen, file) {
 }
 
 function computeTradingSummary() {
-  let health = {};
-  try {
-    health = typeof computeHealthReadiness === "function" ? computeHealthReadiness() : {};
-  } catch (e) {
-    health = {};
-  }
+  const pv = portfolioValue();
+  const h = computeHealthReadiness ? computeHealthReadiness() : {};
+  const assets = Array.isArray(pv.assets) ? pv.assets : [];
 
-  const recovery = health.recovery ?? null;
-  const sleep = health.sleep ?? null;
-  const hrv = health.hrv ?? null;
-  const strain = health.strain ?? null;
+  const total = Number(pv.totalValueMXN || 0);
+  const cost = Number(pv.totalCostMXN || 0);
+  const gain = Number(pv.totalGainMXN || 0);
+  const gainPct = Number(pv.totalGainPct || 0);
 
-  let riskMode = "NORMAL";
-  if (recovery != null && recovery < 40) riskMode = "DEFENSIVO";
-  else if (recovery != null && recovery < 65) riskMode = "NEUTRAL";
-  else if (recovery != null && recovery >= 80 && strain != null && strain < 10) riskMode = "ÓPTIMO";
+  const exposure = {
+    MXN: +total.toFixed(2),
+    USD: +assets.filter(a => a.source === "GBM" || a.currency === "USD").reduce((sum,a)=>sum+Number(a.valueMXN||0),0).toFixed(2),
+    CRYPTO: +assets.filter(a => a.type === "crypto" || a.source === "Bitso").reduce((sum,a)=>sum+Number(a.valueMXN||0),0).toFixed(2)
+  };
+
+  const ranked = assets
+    .map(a => ({
+      symbol: a.symbol,
+      name: a.name,
+      valueMXN: Number(a.valueMXN || 0),
+      gainMXN: Number((a.valueMXN || 0) - (a.costMXN || 0)),
+      gainPct: a.costMXN ? Number((((a.valueMXN || 0) - (a.costMXN || 0)) / a.costMXN * 100).toFixed(2)) : 0
+    }))
+    .sort((a,b) => b.gainPct - a.gainPct);
 
   return {
     timestamp: new Date().toISOString(),
-    equity: null,
-    pnl: null,
-    exposure: {
-      MXN: null,
-      USD: null,
-      CRYPTO: null
-    },
-    topWinner: null,
-    topLoser: null,
-    riskMode,
+    equity: +total.toFixed(2),
+    pnl: +gainPct.toFixed(2),
+    cost: +cost.toFixed(2),
+    gainMXN: +gain.toFixed(2),
+    exposure,
+    topWinner: ranked[0] || null,
+    topLoser: ranked[ranked.length - 1] || null,
+    riskMode: h.operatingMode || h.mode || "NEUTRAL",
     health: {
-      recovery,
-      sleep,
-      hrv,
-      strain,
-      restingHeartRate: health.restingHeartRate ?? null,
-      operatingMode: health.operatingMode ?? health.mode ?? riskMode
+      recovery: h.recovery ?? null,
+      sleep: h.sleep ?? null,
+      hrv: h.hrv ?? null,
+      strain: h.strain ?? null,
+      restingHeartRate: h.restingHeartRate ?? null,
+      operatingMode: h.operatingMode || h.mode || "NEUTRAL"
     },
-    note: "Resumen defensivo generado por Autopilot Memory. No es consejo financiero."
+    note: "Resumen real generado desde portfolioValue(). No es consejo financiero."
   };
 }
 
@@ -3780,7 +3809,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 <header>
   <div class="logo-wrap">
     <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
-    <div><h1 id="brand-title">${esc(settings.appName)}</h1><div class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
+    <div><h1 id="brand-title">Cordelius</h1><div id="module-subtitle" class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
   </div>
   <nav style="display:flex;flex-wrap:wrap;gap:6px">
     <button data-mod="home" class="nav-mod" onclick="showMod('home')">Inicio</button>
@@ -4163,41 +4192,63 @@ ${renderAutopilotPanel()}
 
 </body>
 <script>
-var _VALID_MODS = ['home','trading','health','journal','intelligence','autopilot'];
-var _BRAND_NAMES = {
-  home: 'Cordelius',
-  trading: 'Cordelius Trading',
-  health: 'Cordelius Health',
-  journal: 'Cordelius Journal',
-  intelligence: 'Cordelius Intelligence',
-  autopilot: 'Cordelius Autopilot'
-};
+var _VALID_MODS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
+
+function validModName(name) {
+  var n = String(name || 'home').split('?')[0].replace('#','').toLowerCase().trim();
+  return _VALID_MODS.indexOf(n) === -1 ? 'home' : n;
+}
+
+function getCordeliusModuleTitle(mod) {
+  const titles = {
+    home: "Cordelius",
+    trading: "Cordelius Trading",
+    health: "Cordelius Health",
+    journal: "Cordelius Journal",
+    intelligence: "Cordelius Intelligence",
+    alfredo: "Cordelius Alfredo",
+    autopilot: "Cordelius Autopilot"
+  };
+  return titles[mod] || "Cordelius";
+}
+
+function updateCordeliusBranding(mod) {
+  const title = getCordeliusModuleTitle(mod);
+  document.title = title;
+  const brand = document.getElementById("brand-title");
+  if (brand) brand.textContent = title;
+  const subtitle = document.getElementById("module-subtitle");
+  if (subtitle) {
+    subtitle.textContent = mod === "home"
+      ? "Personal OS · Trading · Health · Intelligence · Autopilot"
+      : "Módulo activo dentro de Cordelius";
+  }
+}
 
 function showMod(name) {
-  var n = (name || '').toLowerCase().trim();
-  if (_VALID_MODS.indexOf(n) === -1) {
-    console.warn('showMod: unknown module "' + name + '", falling back to home');
-    n = 'home';
-  }
+  var n = validModName(name);
+  updateCordeliusBranding(n);
   document.querySelectorAll('.mod').forEach(function(m){ m.classList.remove('active-mod'); });
   document.querySelectorAll('.nav-mod').forEach(function(b){ b.classList.remove('nav-active'); });
   var mod = document.getElementById('mod-' + n);
-  if (mod) {
-    mod.classList.add('active-mod');
-  } else {
-    console.warn('showMod: #mod-' + n + ' not found, showing home');
-    var home = document.getElementById('mod-home');
-    if (home) home.classList.add('active-mod');
+  if (!mod) {
     n = 'home';
+    mod = document.getElementById('mod-home');
+    updateCordeliusBranding(n);
   }
+  if (mod) mod.classList.add('active-mod');
   var btn = document.querySelector('[data-mod="' + n + '"]');
   if (btn) btn.classList.add('nav-active');
-  var brand = document.getElementById('brand-title');
-  if (brand) brand.textContent = _BRAND_NAMES[n] || 'Cordelius';
-  document.title = _BRAND_NAMES[n] || 'Cordelius';
   try { localStorage.setItem('corde_mod', n); } catch(e) {}
+  try {
+    if (window.location.hash !== '#' + n) history.replaceState(null, '', '#' + n);
+  } catch(e) {}
   if (n === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
+  if (n === 'journal' && typeof loadJournal === 'function') loadJournal();
+  if (n === 'intelligence' && typeof loadIntelligence === 'function') loadIntelligence();
+  if (n === 'alfredo' && typeof loadAlfredo === 'function') loadAlfredo();
   if (n === 'autopilot' && typeof loadAutopilotDecisions === 'function') loadAutopilotDecisions();
+}
 }
 
 function healthOSSet(id, value) {
