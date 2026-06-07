@@ -3780,7 +3780,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 <header>
   <div class="logo-wrap">
     <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
-    <div><h1>${esc(settings.appName)}</h1><div class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
+    <div><h1 id="brand-title">${esc(settings.appName)}</h1><div class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
   </div>
   <nav style="display:flex;flex-wrap:wrap;gap:6px">
     <button data-mod="home" class="nav-mod" onclick="showMod('home')">Inicio</button>
@@ -3800,7 +3800,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </div>
 
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
-<div id="mod-home" class="mod">
+<div id="mod-home" class="mod active-mod">
 ${renderHomePortal(pv, reg)}
 </div>
 
@@ -4163,16 +4163,41 @@ ${renderAutopilotPanel()}
 
 </body>
 <script>
+var _VALID_MODS = ['home','trading','health','journal','intelligence','autopilot'];
+var _BRAND_NAMES = {
+  home: 'Cordelius',
+  trading: 'Cordelius Trading',
+  health: 'Cordelius Health',
+  journal: 'Cordelius Journal',
+  intelligence: 'Cordelius Intelligence',
+  autopilot: 'Cordelius Autopilot'
+};
+
 function showMod(name) {
-  document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
-  document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
-  var mod = document.getElementById('mod-' + name);
-  if (mod) mod.classList.add('active-mod');
-  var btn = document.querySelector('[data-mod="' + name + '"]');
+  var n = (name || '').toLowerCase().trim();
+  if (_VALID_MODS.indexOf(n) === -1) {
+    console.warn('showMod: unknown module "' + name + '", falling back to home');
+    n = 'home';
+  }
+  document.querySelectorAll('.mod').forEach(function(m){ m.classList.remove('active-mod'); });
+  document.querySelectorAll('.nav-mod').forEach(function(b){ b.classList.remove('nav-active'); });
+  var mod = document.getElementById('mod-' + n);
+  if (mod) {
+    mod.classList.add('active-mod');
+  } else {
+    console.warn('showMod: #mod-' + n + ' not found, showing home');
+    var home = document.getElementById('mod-home');
+    if (home) home.classList.add('active-mod');
+    n = 'home';
+  }
+  var btn = document.querySelector('[data-mod="' + n + '"]');
   if (btn) btn.classList.add('nav-active');
-  try { localStorage.setItem('corde_mod', name); } catch(e) {}
-  if (name === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
-  if (name === 'autopilot' && typeof loadAutopilotDecisions === 'function') loadAutopilotDecisions();
+  var brand = document.getElementById('brand-title');
+  if (brand) brand.textContent = _BRAND_NAMES[n] || 'Cordelius';
+  document.title = _BRAND_NAMES[n] || 'Cordelius';
+  try { localStorage.setItem('corde_mod', n); } catch(e) {}
+  if (n === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
+  if (n === 'autopilot' && typeof loadAutopilotDecisions === 'function') loadAutopilotDecisions();
 }
 
 function healthOSSet(id, value) {
