@@ -559,10 +559,25 @@ function computeDailyScan() {
   const energyMatches = allQuiverMatches.filter(x => energySyms.includes(x.symbol)).length;
   const healthMatches = allQuiverMatches.filter(x => healthSyms.includes(x.symbol)).length;
 
+  const intelAffected = [...new Set(intelItems.flatMap(x => x.affected || []))];
+  const intelPositive = intelItems.filter(x => x.mood === "POSITIVO").length;
+  const intelNegative = intelItems.filter(x => x.mood === "NEGATIVO").length;
+  const intelHotTickers = intelAffected
+    .map(sym => ({
+      symbol: sym,
+      count: intelItems.filter(x => (x.affected || []).includes(sym)).length,
+      pos: intelItems.filter(x => (x.affected || []).includes(sym) && x.mood === "POSITIVO").length,
+      neg: intelItems.filter(x => (x.affected || []).includes(sym) && x.mood === "NEGATIVO").length,
+      inPortfolio: !!pv.assets.find(a => a.symbol === sym)
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
   const marketThemes = [];
   if (techMatches > 3)   marketThemes.push({ theme: "Tech / AI Infrastructure",   strength: techMatches > 12   ? "FUERTE" : "MODERADO",   quiverSignals: techMatches,   tickers: techSyms.filter(s => pv.assets.find(a => a.symbol === s)) });
   if (energyMatches > 1) marketThemes.push({ theme: "Energia / Grid / Cobre",      strength: energyMatches > 6  ? "FUERTE" : "MODERADO",   quiverSignals: energyMatches, tickers: energySyms });
   if (healthMatches > 0) marketThemes.push({ theme: "Healthcare / Regulacion",     strength: healthMatches > 4  ? "FUERTE" : "BAJO",       quiverSignals: healthMatches, tickers: healthSyms });
+  if (intelItems.length) marketThemes.push({ theme: "Cordelius Intelligence Manual", strength: intelNegative > intelPositive ? "DEFENSIVO" : "ACTIVO", quiverSignals: 0, intelSignals: intelItems.length, tickers: intelHotTickers.map(x => x.symbol), hotTickers: intelHotTickers });
   if (bitsoPct > 40)     marketThemes.push({ theme: "Cripto concentrado",          strength: "ALTO RIESGO",    quiverSignals: 0,            tickers: cryptoSyms, alert: true });
   if (!marketThemes.length) marketThemes.push({ theme: "Sin temas dominantes",     strength: "NEUTRAL",        quiverSignals: 0,            tickers: [] });
 
@@ -597,6 +612,7 @@ function computeDailyScan() {
   if (bitsoPct > 60) summaryLines.push("Concentracion cripto muy alta (" + bitsoPct.toFixed(0) + "%). Bitso domina el portafolio — revisa exposicion.");
   else if (bitsoPct > 45) summaryLines.push("Cripto/Bitso sobre 45% (" + bitsoPct.toFixed(0) + "%) — vigilar correlacion en caidas.");
   if (allQuiverMatches.length > 0) summaryLines.push(allQuiverMatches.length + " senales institucionales en tus activos (Quiver: congreso, insiders, contratos).");
+  if (intelItems.length > 0) summaryLines.push("Intel manual: " + intelItems.length + " items (" + intelPositive + " positivos, " + intelNegative + " negativos) cruzados contra tus tickers.");
   const topAsset = ranked[0], bottomAsset = ranked[ranked.length - 1];
   summaryLines.push("Mejor posicion: " + topAsset.symbol + " (score " + topAsset.score + "/100, " + (topAsset.gainPct >= 0 ? "+" : "") + topAsset.gainPct.toFixed(0) + "%).");
   summaryLines.push("Activo a vigilar: " + bottomAsset.symbol + " (score " + bottomAsset.score + "/100, " + bottomAsset.gainPct.toFixed(1) + "%).");
@@ -611,7 +627,14 @@ function computeDailyScan() {
     educationalActions: educationalActions.slice(0, 6),
     educationalSummary,
     rawMatchesLimited: allQuiverMatches.slice(0, 20),
-    intel: { count: intelItems.length, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
+    intel: {
+      count: intelItems.length,
+      positive: intelPositive,
+      negative: intelNegative,
+      affectedTickers: intelAffected,
+      hotTickers: intelHotTickers,
+      recent: intelItems.slice(0, 5).map(x => ({ mood: x.mood, affected: x.affected, tags: x.tags, time: x.time, snippet: String(x.text || "").slice(0, 180) }))
+    }
   };
 }
 
