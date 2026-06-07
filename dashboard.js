@@ -58,6 +58,41 @@ let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
 const FX_USD_MXN = Number(process.env.USD_MXN) || 18.50;
 
+// Autopilot Database — persistent memory in data/
+const DATA_DIR = "data";
+const HEALTH_SNAPSHOTS_DB_FILE  = "data/health_snapshots.json";
+const PORTFOLIO_SNAPSHOTS_FILE  = "data/portfolio_snapshots.json";
+const TRADING_DECISIONS_FILE    = "data/trading_decisions.json";
+const AUTOPILOT_MEMORY_FILE     = "data/autopilot_memory.json";
+const CORDELIUS_PROGRESS_FILE   = "data/cordelius_progress.json";
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) { try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch(e) {} }
+}
+function readJSONSafe(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
+}
+function writeJSONAtomic(file, data) {
+  ensureDataDir();
+  const tmp = file + ".tmp";
+  try { fs.writeFileSync(tmp, JSON.stringify(data, null, 2)); fs.renameSync(tmp, file); }
+  catch(e) { try { fs.unlinkSync(tmp); } catch(_) {} try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch(_) {} }
+}
+function appendSnapshot(arr, item, maxLen, file) {
+  arr.unshift(item);
+  if (arr.length > maxLen) arr.length = maxLen;
+  writeJSONAtomic(file, arr);
+  return arr;
+}
+
+let healthSnapshotsDB   = readJSONSafe(HEALTH_SNAPSHOTS_DB_FILE, []);
+let portfolioSnapshotsDB = readJSONSafe(PORTFOLIO_SNAPSHOTS_FILE, []);
+let tradingDecisionsDB  = readJSONSafe(TRADING_DECISIONS_FILE, []);
+let autopilotMemory     = readJSONSafe(AUTOPILOT_MEMORY_FILE,
+  { created: new Date().toISOString(), snapshots: 0, lastSnapshot: null, totalDecisions: 0 });
+let cordeliusProgress   = readJSONSafe(CORDELIUS_PROGRESS_FILE,
+  { level: 1, xp: 0, insights: 0, streakDays: 0, lastActivity: null, lastActivityDate: null });
+
 const PORTFOLIO = [
   { source: "GBM", category: "Acciones SIC", symbol: "AAPL", display: "AAPL *", name: "Apple Computer Inc.", units: 1, currency: "MXN", valueManual: 5450.00, costManual: 2640.01, brokerGainPct: 106.44, logo: "AA", color: "#0f172a", liveTicker: "AAPL", type: "stock" },
   { source: "GBM", category: "Acciones Mexico", symbol: "BBVA", display: "BBVA *", name: "Banco Bilbao Vizcaya", units: 11, currency: "MXN", valueManual: 4400.00, costManual: 1811.70, brokerGainPct: 142.87, logo: "BB", color: "#0069aa", liveTicker: "BBVA.MX", type: "stock_mx" },
@@ -2300,6 +2335,40 @@ function computeTradeIdea() {
   return { hasIdea: false, type: "NO_TRADE", symbol: null, action: "SIN SEÑAL", reason: "Sin señales destacadas ahora", score: null, risk: null, confidence: "N/A", source: null, missingData: "N/A", timestamp: nowMX() };
 }
 
+function computeTradingSummary() {
+  try {
+    const pv = portfolioValue();
+    const assets = Array.isArray(pv.assets) ? pv.assets : [];
+    const ranked = assets.slice().sort((a, b) => (b.gainPct || b.totalGainPct || 0) - (a.gainPct || a.totalGainPct || 0));
+    const mxn    = assets.filter(a => a.currency === "MXN")   .reduce((s, a) => s + (a.valueMXN || 0), 0);
+    const usd    = assets.filter(a => a.currency === "USD")   .reduce((s, a) => s + (a.valueMXN || 0), 0);
+    const crypto = assets.filter(a => a.currency === "CRYPTO" || a.type === "crypto").reduce((s, a) => s + (a.valueMXN || 0), 0);
+    const reg = marketRegime();
+    const h   = computeHealthReadiness();
+    const gainPct = pv.totalGainPct || 0;
+    let riskMode = reg.label;
+    if (h.operatingMode === "DEFENSIVO" || h.operatingMode === "CONSERVADOR") riskMode = "REDUCIR";
+    else if (gainPct < -5) riskMode = "DRAWDOWN";
+    const top = ranked[0];
+    const bot = ranked[ranked.length - 1];
+    return {
+      equityTotalMXN: pv.totalValueMXN || 0,
+      totalGainMXN:   pv.totalGainMXN  || 0,
+      totalGainPct:   gainPct,
+      assetCount:     assets.length,
+      exposureByCurrency: { MXN: mxn, USD: usd, CRYPTO: crypto },
+      topWinner: top ? { symbol: top.symbol, gainPct: top.gainPct || top.totalGainPct || 0, score: top.score || null } : null,
+      topLoser:  bot ? { symbol: bot.symbol, gainPct: bot.gainPct || bot.totalGainPct || 0, score: bot.score || null } : null,
+      riskMode,
+      marketRegime: reg.label,
+      healthMode:   h.operatingMode
+    };
+  } catch(e) {
+    return { error: e.message, equityTotalMXN: 0, totalGainMXN: 0, totalGainPct: 0, assetCount: 0,
+             exposureByCurrency: {}, topWinner: null, topLoser: null, riskMode: "NORMAL" };
+  }
+}
+
 function computeOperatingMode(recovery) {
   if (recovery === null || recovery === undefined) return "NORMAL";
   if (recovery < 33) return "CONSERVADOR";
@@ -2582,6 +2651,43 @@ function renderAutopilotPanel() {
         <div class="muted" style="font-size:11px;margin-top:8px">Próximo: Termux:Boot — ver AUTOMATION.md</div>
       </div>
     </div>
+  </div>
+  <div style="border:1px solid rgba(129,140,248,.2);border-radius:18px;padding:20px 22px;background:rgba(129,140,248,.04);margin-top:14px;max-width:1280px;margin-left:auto;margin-right:auto">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:14px">Cordelius Database · Operating Memory</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px">
+      <div style="background:rgba(0,255,153,.06);border:1px solid rgba(0,255,153,.18);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#00ff99;margin-bottom:4px">Health Logs</div>
+        <div id="autopilot-db-health-count" style="font-size:22px;font-weight:900;color:#00ff99">${healthSnapshotsDB.length}</div>
+        <div class="muted" style="font-size:10px;margin-top:2px">snapshots</div>
+      </div>
+      <div style="background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.18);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Portfolio Logs</div>
+        <div id="autopilot-db-portfolio-count" style="font-size:22px;font-weight:900;color:#3b9dff">${portfolioSnapshotsDB.length}</div>
+        <div class="muted" style="font-size:10px;margin-top:2px">snapshots</div>
+      </div>
+      <div style="background:rgba(255,211,92,.06);border:1px solid rgba(255,211,92,.18);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#ffd35c;margin-bottom:4px">Trading Decisions</div>
+        <div id="autopilot-db-trading-count" style="font-size:22px;font-weight:900;color:#ffd35c">${tradingDecisionsDB.length}</div>
+        <div class="muted" style="font-size:10px;margin-top:2px">registros</div>
+      </div>
+      <div style="background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.18);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#f472b6;margin-bottom:4px">Last Snapshot</div>
+        <div id="autopilot-db-last-ts" style="font-size:11px;font-weight:700;color:#f472b6">${autopilotMemory.lastSnapshot ? new Date(autopilotMemory.lastSnapshot).toLocaleString("es-MX") : "—"}</div>
+        <div class="muted" style="font-size:10px;margin-top:2px">timestamp</div>
+      </div>
+      <div style="background:rgba(167,139,250,.06);border:1px solid rgba(167,139,250,.18);border-radius:12px;padding:12px;text-align:center">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#a78bfa;margin-bottom:4px">Learning Status</div>
+        <div id="autopilot-db-learning-val" style="font-size:14px;font-weight:900;color:#a78bfa">${cordeliusProgress.streakDays > 0 ? cordeliusProgress.streakDays + "d streak" : "Iniciando"}</div>
+        <div class="muted" style="font-size:10px;margin-top:2px">Lv.${cordeliusProgress.level} · ${cordeliusProgress.xp}xp</div>
+      </div>
+    </div>
+    <div id="autopilot-db-live" style="font-size:12px;color:#9fb3c8;margin-bottom:12px;min-height:18px">Cargando estado de base de datos...</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn" onclick="saveAutopilotSnapshot()" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.4);color:#818cf8;font-size:13px;padding:9px 18px">Guardar snapshot ahora</button>
+      <button class="btn" onclick="renderAutopilotProgress()" style="background:rgba(0,255,153,.08);border-color:rgba(0,255,153,.25);color:#00ff99;font-size:13px;padding:9px 18px">Ver progreso</button>
+      <a href="/api/autopilot/database" target="_blank" style="display:inline-flex;align-items:center;border:1px solid rgba(120,160,210,.2);border-radius:8px;padding:9px 14px;font-size:11px;color:#9fb3c8;text-decoration:none">JSON</a>
+    </div>
+    <div id="autopilot-progress-panel" style="margin-top:14px;display:none"></div>
   </div>`;
 }
 
@@ -3559,6 +3665,7 @@ function showMod(name) {
   if (btn) btn.classList.add('nav-active');
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
   if (name === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
+  if (name === 'autopilot') loadAutopilotDatabase();
 }
 
 function healthOSSet(id, value) {
@@ -3657,6 +3764,82 @@ function setAlfredoQ(q) {
   var p = document.getElementById('alfredo-panel');
   if (p) p.style.display = 'block';
 }
+
+async function loadAutopilotDatabase() {
+  var liveEl = document.getElementById('autopilot-db-live');
+  try {
+    var r = await fetch('/api/autopilot/database', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var d = await r.json();
+    function aSet(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = String(val); }
+    aSet('autopilot-db-health-count',    d.counts ? d.counts.health    : '—');
+    aSet('autopilot-db-portfolio-count', d.counts ? d.counts.portfolio : '—');
+    aSet('autopilot-db-trading-count',   d.counts ? d.counts.decisions : '—');
+    if (d.stores && d.stores.autopilotMemory && d.stores.autopilotMemory.lastSnapshot) {
+      aSet('autopilot-db-last-ts', new Date(d.stores.autopilotMemory.lastSnapshot).toLocaleString('es-MX'));
+    }
+    if (d.stores && d.stores.progress) {
+      var p = d.stores.progress;
+      aSet('autopilot-db-learning-val', p.streakDays > 0 ? p.streakDays + 'd streak' : 'Iniciando');
+    }
+    if (liveEl) liveEl.textContent = 'Base de datos: '
+      + (d.counts ? d.counts.health : 0)    + ' health · '
+      + (d.counts ? d.counts.portfolio : 0) + ' portfolio · '
+      + (d.counts ? d.counts.decisions : 0) + ' decisiones';
+  } catch(e) {
+    if (liveEl) liveEl.textContent = 'Error cargando base de datos.';
+  }
+}
+
+async function saveAutopilotSnapshot() {
+  var btn = document.querySelector('[onclick*="saveAutopilotSnapshot"]');
+  if (btn) btn.textContent = 'Guardando...';
+  try {
+    var r = await fetch('/api/autopilot/snapshot', { method: 'POST', cache: 'no-store' });
+    var d = r.ok ? await r.json() : null;
+    if (d && d.ok) {
+      if (btn) btn.textContent = 'Guardado ✓';
+      var liveEl = document.getElementById('autopilot-db-live');
+      if (liveEl && d.summary) liveEl.textContent = 'Snapshot guardado · Lv.' + d.summary.level
+        + ' · ' + d.summary.xp + 'xp · streak ' + d.summary.streakDays + 'd';
+      await loadAutopilotDatabase();
+    } else {
+      if (btn) btn.textContent = 'Error al guardar';
+    }
+  } catch(e) {
+    if (btn) btn.textContent = 'Error';
+  }
+  setTimeout(function() { if (btn) btn.textContent = 'Guardar snapshot ahora'; }, 3000);
+}
+
+async function renderAutopilotProgress() {
+  var panel = document.getElementById('autopilot-progress-panel');
+  if (!panel) return;
+  panel.style.display = 'block';
+  panel.innerHTML = '<div style="color:#9fb3c8;font-size:12px;padding:10px 0">Cargando progreso...</div>';
+  try {
+    var r = await fetch('/api/autopilot/progress', { cache: 'no-store' });
+    var d = r.ok ? await r.json() : null;
+    if (!d || !d.ok) throw new Error('no data');
+    var p = d.progress || {}; var c = d.counts || {}; var rec = d.latest || {};
+    function e2(v) { return String(v == null ? '—' : v).replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+    panel.innerHTML = '<div style="border:1px solid rgba(167,139,250,.18);border-radius:14px;padding:16px;background:rgba(167,139,250,.04)">'
+      + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#a78bfa;margin-bottom:12px">Cordelius Progress</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:12px">'
+      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#a78bfa">' + e2(p.level || 1) + '</div><div class="muted" style="font-size:10px">Nivel</div></div>'
+      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#ffd35c">' + e2(p.xp || 0) + '</div><div class="muted" style="font-size:10px">XP total</div></div>'
+      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#00ff99">' + e2(p.streakDays || 0) + '</div><div class="muted" style="font-size:10px">Días streak</div></div>'
+      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#3b9dff">' + e2(p.insights || 0) + '</div><div class="muted" style="font-size:10px">Insights</div></div>'
+      + '</div>'
+      + '<div style="font-size:11px;color:#9fb3c8;margin-bottom:6px"><b style="color:#00ff99">' + e2(c.health) + '</b> health · <b style="color:#3b9dff">' + e2(c.portfolio) + '</b> portfolio · <b style="color:#ffd35c">' + e2(c.decisions) + '</b> decisiones</div>'
+      + (rec.decision ? '<div style="font-size:11px;color:#9fb3c8;padding:8px;background:rgba(0,0,0,.2);border-radius:8px;margin-top:6px">Última decisión: <b style="color:#ffd35c">' + e2(rec.decision.idea) + '</b> · ' + e2(rec.decision.symbol || 'N/A') + ' · ' + e2(rec.decision.timestamp ? new Date(rec.decision.timestamp).toLocaleString('es-MX') : '—') + '</div>' : '')
+      + '<div style="margin-top:10px"><button onclick="document.getElementById(\'autopilot-progress-panel\').style.display=\'none\'" style="border:1px solid rgba(120,160,210,.2);border-radius:8px;padding:6px 12px;background:transparent;color:#9fb3c8;cursor:pointer;font-size:11px">Cerrar</button></div>'
+      + '</div>';
+  } catch(e) {
+    panel.innerHTML = '<div style="color:#ff4d6d;font-size:12px;padding:8px">Error cargando progreso.</div>';
+  }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
@@ -4150,6 +4333,125 @@ const server = http.createServer(async (req, res) => {
       }
     }));
   }
+  if (path === "/api/autopilot/database") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      stores: {
+        healthSnapshots:   healthSnapshotsDB,
+        portfolioSnapshots: portfolioSnapshotsDB,
+        tradingDecisions:  tradingDecisionsDB,
+        autopilotMemory,
+        progress: cordeliusProgress
+      },
+      counts: {
+        health:    healthSnapshotsDB.length,
+        portfolio: portfolioSnapshotsDB.length,
+        decisions: tradingDecisionsDB.length
+      },
+      latest: {
+        health:    healthSnapshotsDB[0]    || null,
+        portfolio: portfolioSnapshotsDB[0] || null,
+        decision:  tradingDecisionsDB[0]   || null
+      },
+      tradingSummary: computeTradingSummary(),
+      health: computeHealthReadiness()
+    }));
+  }
+
+  if (req.method === "POST" && path === "/api/autopilot/snapshot") {
+    try {
+      const ts  = new Date().toISOString();
+      const h   = computeHealthReadiness();
+      const pv  = portfolioValue();
+      const idea = computeTradeIdea();
+      const summary = computeTradingSummary();
+
+      const healthSnap = {
+        timestamp: ts,
+        recovery: h.recovery, sleep: h.sleep, hrv: h.hrv,
+        restingHeartRate: h.restingHeartRate, strain: h.strain,
+        averageHeartRate: h.averageHeartRate, maxHeartRate: h.maxHeartRate,
+        operatingMode: h.operatingMode, connected: h.connected, source: h.source
+      };
+      const portfolioSnap = {
+        timestamp: ts,
+        equityMXN: pv.totalValueMXN, gainMXN: pv.totalGainMXN,
+        gainPct: pv.totalGainPct, assetCount: (pv.assets || []).length
+      };
+      const tradingDecision = {
+        timestamp: ts,
+        idea: idea.type, symbol: idea.symbol, action: idea.action,
+        confidence: idea.confidence, operatingMode: h.operatingMode,
+        riskMode: summary.riskMode
+      };
+
+      healthSnapshotsDB    = appendSnapshot(healthSnapshotsDB,    healthSnap,      200, HEALTH_SNAPSHOTS_DB_FILE);
+      portfolioSnapshotsDB = appendSnapshot(portfolioSnapshotsDB, portfolioSnap,   200, PORTFOLIO_SNAPSHOTS_FILE);
+      tradingDecisionsDB   = appendSnapshot(tradingDecisionsDB,   tradingDecision, 200, TRADING_DECISIONS_FILE);
+
+      autopilotMemory.snapshots    = (autopilotMemory.snapshots || 0) + 1;
+      autopilotMemory.lastSnapshot = ts;
+      autopilotMemory.totalDecisions = tradingDecisionsDB.length;
+      writeJSONAtomic(AUTOPILOT_MEMORY_FILE, autopilotMemory);
+
+      cordeliusProgress.xp       = (cordeliusProgress.xp || 0) + 10;
+      cordeliusProgress.insights = (cordeliusProgress.insights || 0) + 1;
+      cordeliusProgress.lastActivity = ts;
+      cordeliusProgress.level    = Math.max(1, Math.floor((cordeliusProgress.xp || 0) / 100) + 1);
+      const todayStr = ts.slice(0, 10);
+      if (cordeliusProgress.lastActivityDate && cordeliusProgress.lastActivityDate !== todayStr) {
+        const prev = new Date(cordeliusProgress.lastActivityDate + "T00:00:00");
+        const diff = Math.round((new Date(todayStr + "T00:00:00") - prev) / 86400000);
+        cordeliusProgress.streakDays = diff === 1 ? (cordeliusProgress.streakDays || 0) + 1 : 1;
+      } else if (!cordeliusProgress.lastActivityDate) {
+        cordeliusProgress.streakDays = 1;
+      }
+      cordeliusProgress.lastActivityDate = todayStr;
+      writeJSONAtomic(CORDELIUS_PROGRESS_FILE, cordeliusProgress);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: true, ts,
+        saved: { health: true, portfolio: true, trading: true },
+        summary: {
+          healthSnapshots:   healthSnapshotsDB.length,
+          portfolioSnapshots: portfolioSnapshotsDB.length,
+          tradingDecisions:  tradingDecisionsDB.length,
+          xp:    cordeliusProgress.xp,
+          level: cordeliusProgress.level,
+          streakDays: cordeliusProgress.streakDays
+        },
+        snapshot: { timestamp: ts, whoop: healthSnap, portfolio: portfolioSnap,
+                    tradingIdea: idea, tradingSummary: summary, operatingMode: h.operatingMode },
+        educationalNote: "Snapshot educativo. Paper trading only. No es consejo financiero ni médico."
+      }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "autopilot_snapshot_crash", message: e.message }));
+    }
+  }
+
+  if (path === "/api/autopilot/progress") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true, ts: Date.now(),
+      progress: cordeliusProgress,
+      counts: {
+        health:    healthSnapshotsDB.length,
+        portfolio: portfolioSnapshotsDB.length,
+        decisions: tradingDecisionsDB.length
+      },
+      latest: {
+        health:    healthSnapshotsDB[0]    || null,
+        portfolio: portfolioSnapshotsDB[0] || null,
+        decision:  tradingDecisionsDB[0]   || null
+      },
+      summary: computeTradingSummary()
+    }));
+  }
+
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
