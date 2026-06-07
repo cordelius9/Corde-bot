@@ -3684,6 +3684,100 @@ ${(function(){
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
 <div id="mod-autopilot" class="mod">
 <h2>Autopilot — Estado del sistema · Automatización</h2>
+
+<section id="autopilot-db-panel" style="margin:22px 0;padding:22px;border-radius:28px;background:radial-gradient(circle at 0% 0%,rgba(0,255,170,.18),transparent 34%),linear-gradient(135deg,rgba(5,11,24,.96),rgba(8,18,35,.88));border:1px solid rgba(0,255,170,.22);box-shadow:0 20px 70px rgba(0,0,0,.42)">
+  <div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px">
+    <div>
+      <div style="font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:#00ffaa;font-weight:900">Cordelius Database</div>
+      <h2 style="margin:6px 0 4px;font-size:32px;color:#f5f8ff">Operating Memory</h2>
+      <p style="margin:0;color:#aab6c8">Memoria real de Health, portfolio y decisiones. Cordelius ya está guardando progreso.</p>
+    </div>
+    <button id="adm-save-btn" style="padding:12px 16px;border-radius:16px;border:1px solid rgba(0,255,170,.35);background:rgba(0,255,170,.12);color:#00ffaa;font-weight:900">
+      Guardar snapshot
+    </button>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:14px">
+    <div class="adm-card"><b>Health Logs</b><strong id="adm-health">—</strong><span>Snapshots WHOOP</span></div>
+    <div class="adm-card"><b>Portfolio Logs</b><strong id="adm-portfolio">—</strong><span>Snapshots portafolio</span></div>
+    <div class="adm-card"><b>Trading Decisions</b><strong id="adm-decisions">—</strong><span>Decisiones guardadas</span></div>
+    <div class="adm-card"><b>XP</b><strong id="adm-xp">—</strong><span id="adm-level">Nivel —</span></div>
+    <div class="adm-card"><b>Streak</b><strong id="adm-streak">—</strong><span>Racha memoria</span></div>
+  </div>
+
+  <div style="margin-top:16px;padding:18px;border-radius:22px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);color:#dce7f7;line-height:1.55">
+    <b>Último estado WHOOP:</b>
+    <span id="adm-health-latest">Cargando...</span>
+    <br><br>
+    <b>Regla actual:</b>
+    <span id="adm-rule">Cargando...</span>
+  </div>
+</section>
+
+<style>
+  .adm-card{padding:18px;border-radius:22px;background:rgba(10,18,35,.72);border:1px solid rgba(0,255,170,.18);box-shadow:0 12px 34px rgba(0,0,0,.25)}
+  .adm-card b{display:block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#8aa0b8}
+  .adm-card strong{display:block;font-size:30px;font-weight:900;color:#00ffaa;margin-top:8px}
+  .adm-card span{display:block;font-size:12px;color:#aab6c8;margin-top:6px}
+</style>
+
+<script>
+(function(){
+  function setText(id, value){
+    var el = document.getElementById(id);
+    if (el) el.textContent = value == null ? "—" : String(value);
+  }
+
+  async function loadAutopilotMemoryPanel(){
+    try {
+      var r = await fetch("/api/autopilot/progress", { cache: "no-store" });
+      var d = await r.json();
+      if (!d || !d.ok) return;
+
+      var progress = d.progress || {};
+      var counts = d.counts || {};
+      var latest = d.latest || {};
+      var health = latest.health || {};
+      var decision = latest.tradingDecision || {};
+
+      setText("adm-health", counts.health || 0);
+      setText("adm-portfolio", counts.portfolio || 0);
+      setText("adm-decisions", counts.tradingDecisions || 0);
+      setText("adm-xp", progress.xp || 0);
+      setText("adm-level", "Nivel " + (progress.level || 1));
+      setText("adm-streak", (progress.streak || 0) + "d");
+
+      var healthText =
+        "Recovery " + (health.recovery ?? "—") +
+        " · Sleep " + (health.sleep ?? "—") +
+        " · HRV " + (health.hrv ? Number(health.hrv).toFixed(1) : "—") +
+        " · Strain " + (health.strain ? Number(health.strain).toFixed(1) : "—") +
+        " · Modo " + (health.operatingMode || "—");
+
+      setText("adm-health-latest", healthText);
+      setText("adm-rule", decision.rule || "Sin regla guardada todavía.");
+    } catch(e) {
+      console.error("Autopilot Memory Panel error", e);
+    }
+  }
+
+  var btn = document.getElementById("adm-save-btn");
+  if (btn) {
+    btn.addEventListener("click", async function(){
+      btn.textContent = "Guardando...";
+      await fetch("/api/autopilot/snapshot", { method: "POST" });
+      btn.textContent = "Guardado ✅";
+      await loadAutopilotMemoryPanel();
+      setTimeout(function(){ btn.textContent = "Guardar snapshot"; }, 1200);
+    });
+  }
+
+  window.loadAutopilotMemoryPanel = loadAutopilotMemoryPanel;
+  setTimeout(loadAutopilotMemoryPanel, 500);
+  setInterval(loadAutopilotMemoryPanel, 60000);
+})();
+</script>
+
 ${renderAutopilotPanel()}
 
 <h2>Sistema</h2>
