@@ -53,6 +53,7 @@ whoop_today_cache.json
 health_profile.json
 health_daily_snapshots.json
 health_behaviors.json
+health_behavior_log.json
 
 # Logs
 server.log
