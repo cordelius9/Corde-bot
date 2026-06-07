@@ -2622,72 +2622,212 @@ function renderMorningReport() {
 }
 
 function renderAutopilotPanel() {
+  const h   = computeHealthReadiness();
+  const ts  = computeTradingSummary();
+  const prog = cordeliusProgress;
+  const mem  = autopilotMemory;
+
+  const RISK_COLORS = {
+    DEFENSIVO:"#ff4d6d", CONSERVADOR:"#ffd35c", BAJO:"#ffd35c",
+    NORMAL:"#00ff99", NEUTRAL:"#9fb3c8", ÓPTIMO:"#818cf8",
+    REDUCIR:"#ff4d6d", DRAWDOWN:"#ff4d6d"
+  };
+  const riskMode  = ts.riskMode || h.operatingMode || "NORMAL";
+  const riskColor = RISK_COLORS[riskMode] || "#9fb3c8";
+  const recColor  = h.recovery != null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+
   const statusCards = [
-    { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
-    { label: "CLOUDFLARE",   value: "MANUAL",   sub: "bash tunnel.sh",    bg: "rgba(255,211,92,.07)",   border: "rgba(255,211,92,.18)",   color: "#ffd35c" },
-    { label: "PAPER MODE",   value: "ON",       sub: "Sin dinero real",   bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
-    { label: "REAL TRADING", value: "OFF",      sub: "Desactivado",       bg: "rgba(255,77,109,.07)",   border: "rgba(255,77,109,.18)",   color: "#ff4d6d" },
-    { label: "QUIVER",       value: quiverData.configured ? "ON" : "—",  sub: quiverData.configured ? "Datos en vivo" : "Agrega API key", bg: quiverData.configured ? "rgba(0,255,153,.07)" : "rgba(255,211,92,.07)", border: quiverData.configured ? "rgba(0,255,153,.18)" : "rgba(255,211,92,.18)", color: quiverData.configured ? "#00ff99" : "#ffd35c" },
-    { label: "ALPACA",       value: "PENDIENTE",sub: "Paper solo (F3)",   bg: "rgba(129,140,248,.07)",  border: "rgba(129,140,248,.18)",  color: "#818cf8" },
-    { label: "WHOOP",        value: WHOOP_CONFIGURED ? "DETECTADO" : "PENDIENTE", sub: WHOOP_CONFIGURED ? "API key lista" : "Conecta para readiness", bg: WHOOP_CONFIGURED ? "rgba(0,255,153,.07)" : "rgba(244,114,182,.07)", border: WHOOP_CONFIGURED ? "rgba(0,255,153,.18)" : "rgba(244,114,182,.18)", color: WHOOP_CONFIGURED ? "#00ff99" : "#f472b6" },
+    { label:"SERVIDOR",     value:"ON",        sub:"Cordelius OS",    bg:"rgba(0,255,153,.07)",   border:"rgba(0,255,153,.18)",   color:"#00ff99" },
+    { label:"CLOUDFLARE",   value:"MANUAL",    sub:"bash tunnel.sh",  bg:"rgba(255,211,92,.07)",  border:"rgba(255,211,92,.18)",  color:"#ffd35c" },
+    { label:"PAPER MODE",   value:"ON",        sub:"Sin dinero real", bg:"rgba(0,255,153,.07)",   border:"rgba(0,255,153,.18)",   color:"#00ff99" },
+    { label:"REAL TRADING", value:"OFF",       sub:"Desactivado",     bg:"rgba(255,77,109,.07)",  border:"rgba(255,77,109,.18)",  color:"#ff4d6d" },
+    { label:"QUIVER",       value:quiverData.configured?"ON":"—",   sub:quiverData.configured?"Datos en vivo":"Agrega API key", bg:quiverData.configured?"rgba(0,255,153,.07)":"rgba(255,211,92,.07)", border:quiverData.configured?"rgba(0,255,153,.18)":"rgba(255,211,92,.18)", color:quiverData.configured?"#00ff99":"#ffd35c" },
+    { label:"ALPACA",       value:"PENDIENTE", sub:"Paper solo (F3)", bg:"rgba(129,140,248,.07)", border:"rgba(129,140,248,.18)", color:"#818cf8" },
+    { label:"WHOOP",        value:WHOOP_CONFIGURED?"DETECTADO":"PENDIENTE", sub:WHOOP_CONFIGURED?"API key lista":"Conecta para readiness", bg:WHOOP_CONFIGURED?"rgba(0,255,153,.07)":"rgba(244,114,182,.07)", border:WHOOP_CONFIGURED?"rgba(0,255,153,.18)":"rgba(244,114,182,.18)", color:WHOOP_CONFIGURED?"#00ff99":"#f472b6" },
   ];
-  return `<div style="max-width:1280px;margin:0 auto 16px">
-    <div class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.04)">
-      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Autopilot — Estado del sistema</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
-        ${statusCards.map(c => `<div style="background:${c.bg};border:1px solid ${c.border};border-radius:12px;padding:10px 12px;text-align:center">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:${c.color};margin-bottom:3px">${c.label}</div>
-          <div style="font-size:16px;font-weight:900;color:${c.color}">${c.value}</div>
-          <div class="muted" style="font-size:10px;margin-top:2px">${c.sub}</div>
-        </div>`).join("")}
+
+  const riskDesc = riskMode === "DEFENSIVO" || riskMode === "REDUCIR"
+    ? "Recovery bajo — reducir tamaño, evitar decisiones impulsivas."
+    : riskMode === "CONSERVADOR" || riskMode === "BAJO"
+    ? "Recuperación moderada — operar con precaución, stops ajustados."
+    : riskMode === "ÓPTIMO"
+    ? "Recovery óptimo — enfoque profundo, análisis sin prisa."
+    : riskMode === "DRAWDOWN"
+    ? "Drawdown activo — no promediar a la baja sin tesis clara."
+    : "Modo normal — operar con disciplina y control de riesgo.";
+
+  const whoopMetrics = [
+    { label:"Recovery",   id:"adm-w-recovery", val: h.recovery != null ? h.recovery + "%" : "—",                          color: recColor  },
+    { label:"Sleep",      id:"adm-w-sleep",    val: h.sleep    != null ? h.sleep    + "%" : "—",                          color: "#818cf8" },
+    { label:"Strain",     id:"adm-w-strain",   val: h.strain   != null ? h.strain.toFixed(1) : "—",                       color: "#ffd35c" },
+    { label:"HRV",        id:"adm-w-hrv",      val: h.hrv      != null ? h.hrv.toFixed(1)  + " ms" : "—",                color: "#f472b6" },
+    { label:"Resting HR", id:"adm-w-rhr",      val: h.restingHeartRate != null ? Math.round(h.restingHeartRate) + " bpm" : "—", color: "#3b9dff" },
+  ];
+
+  const timelineItems = healthSnapshotsDB.slice(0, 5);
+  const fmtTs = (iso) => {
+    try { return new Date(iso).toLocaleString("es-MX",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }
+    catch { return "—"; }
+  };
+  const lastHealthTs   = healthSnapshotsDB[0]   && healthSnapshotsDB[0].timestamp   ? fmtTs(healthSnapshotsDB[0].timestamp)   : "—";
+  const lastPortfolio  = portfolioSnapshotsDB[0] && portfolioSnapshotsDB[0].equityMXN != null
+    ? "$" + Math.round(portfolioSnapshotsDB[0].equityMXN).toLocaleString("es-MX") + " MXN" : "—";
+  const lastDecision   = tradingDecisionsDB[0]
+    ? esc(tradingDecisionsDB[0].idea || "—") + (tradingDecisionsDB[0].symbol ? " · " + esc(tradingDecisionsDB[0].symbol) : "") : "—";
+  const lastSnapshotTs = mem.lastSnapshot ? fmtTs(mem.lastSnapshot) : "—";
+
+  return `<div style="max-width:1280px;margin:0 auto">
+
+  <!-- ── Sistema de estado ────────────────────────────────────── -->
+  <div class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.04);margin-bottom:16px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Autopilot — Estado del sistema</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
+      ${statusCards.map(c => `<div style="background:${c.bg};border:1px solid ${c.border};border-radius:12px;padding:10px 12px;text-align:center">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:${c.color};margin-bottom:3px">${c.label}</div>
+        <div style="font-size:16px;font-weight:900;color:${c.color}">${c.value}</div>
+        <div class="muted" style="font-size:10px;margin-top:2px">${c.sub}</div>
+      </div>`).join("")}
+    </div>
+    <div style="border-top:1px solid rgba(120,160,210,.08);padding-top:10px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${["health_check.sh","restart_safe.sh","morning_report.sh","final_check.sh"].map(s =>
+          `<span style="border:1px solid rgba(129,140,248,.22);border-radius:99px;padding:3px 10px;font-size:11px;font-family:monospace;color:#818cf8">bash scripts/${esc(s)}</span>`
+        ).join("")}
       </div>
-      <div style="border-top:1px solid rgba(120,160,210,.08);padding-top:10px">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${["health_check.sh","restart_safe.sh","morning_report.sh","final_check.sh"].map(s =>
-            `<span style="border:1px solid rgba(129,140,248,.22);border-radius:99px;padding:3px 10px;font-size:11px;font-family:monospace;color:#818cf8">bash scripts/${esc(s)}</span>`
-          ).join("")}
-        </div>
-        <div class="muted" style="font-size:11px;margin-top:8px">Próximo: Termux:Boot — ver AUTOMATION.md</div>
-      </div>
+      <div class="muted" style="font-size:11px;margin-top:8px">Próximo: Termux:Boot — ver AUTOMATION.md</div>
     </div>
   </div>
-  <div style="border:1px solid rgba(129,140,248,.2);border-radius:18px;padding:20px 22px;background:rgba(129,140,248,.04);margin-top:14px;max-width:1280px;margin-left:auto;margin-right:auto">
-    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:14px">Cordelius Database · Operating Memory</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px">
-      <div style="background:rgba(0,255,153,.06);border:1px solid rgba(0,255,153,.18);border-radius:12px;padding:12px;text-align:center">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#00ff99;margin-bottom:4px">Health Logs</div>
-        <div id="autopilot-db-health-count" style="font-size:22px;font-weight:900;color:#00ff99">${healthSnapshotsDB.length}</div>
-        <div class="muted" style="font-size:10px;margin-top:2px">snapshots</div>
-      </div>
-      <div style="background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.18);border-radius:12px;padding:12px;text-align:center">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Portfolio Logs</div>
-        <div id="autopilot-db-portfolio-count" style="font-size:22px;font-weight:900;color:#3b9dff">${portfolioSnapshotsDB.length}</div>
-        <div class="muted" style="font-size:10px;margin-top:2px">snapshots</div>
-      </div>
-      <div style="background:rgba(255,211,92,.06);border:1px solid rgba(255,211,92,.18);border-radius:12px;padding:12px;text-align:center">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#ffd35c;margin-bottom:4px">Trading Decisions</div>
-        <div id="autopilot-db-trading-count" style="font-size:22px;font-weight:900;color:#ffd35c">${tradingDecisionsDB.length}</div>
-        <div class="muted" style="font-size:10px;margin-top:2px">registros</div>
-      </div>
-      <div style="background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.18);border-radius:12px;padding:12px;text-align:center">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#f472b6;margin-bottom:4px">Last Snapshot</div>
-        <div id="autopilot-db-last-ts" style="font-size:11px;font-weight:700;color:#f472b6">${autopilotMemory.lastSnapshot ? new Date(autopilotMemory.lastSnapshot).toLocaleString("es-MX") : "—"}</div>
-        <div class="muted" style="font-size:10px;margin-top:2px">timestamp</div>
-      </div>
-      <div style="background:rgba(167,139,250,.06);border:1px solid rgba(167,139,250,.18);border-radius:12px;padding:12px;text-align:center">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#a78bfa;margin-bottom:4px">Learning Status</div>
-        <div id="autopilot-db-learning-val" style="font-size:14px;font-weight:900;color:#a78bfa">${cordeliusProgress.streakDays > 0 ? cordeliusProgress.streakDays + "d streak" : "Iniciando"}</div>
-        <div class="muted" style="font-size:10px;margin-top:2px">Lv.${cordeliusProgress.level} · ${cordeliusProgress.xp}xp</div>
+
+  <!-- ── Cordelius Database · Operating Memory (HERO) ─────────── -->
+  <div style="border:1px solid rgba(129,140,248,.28);border-radius:24px;background:linear-gradient(135deg,rgba(129,140,248,.07),rgba(0,0,0,.25));overflow:hidden">
+
+    <!-- Hero header -->
+    <div style="padding:24px 28px 20px;border-bottom:1px solid rgba(129,140,248,.1);background:linear-gradient(90deg,rgba(129,140,248,.06),transparent)">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div>
+          <div style="font-size:9px;font-weight:900;letter-spacing:.22em;text-transform:uppercase;color:#818cf8;margin-bottom:6px">Cordelius Database · Operating Memory</div>
+          <div style="font-size:26px;font-weight:900;color:#fff;line-height:1.1;letter-spacing:-.01em">Memory Panel</div>
+          <div style="font-size:12px;color:#9fb3c8;margin-top:5px">WHOOP · Portfolio · Decisions · Progress · Risk Mode</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+          <span style="border-radius:99px;padding:6px 14px;font-size:11px;font-weight:900;background:rgba(255,77,109,.12);color:#ff4d6d;border:1px solid rgba(255,77,109,.28)">REAL TRADING OFF</span>
+          <span id="adm-risk-badge" style="border-radius:99px;padding:5px 14px;font-size:11px;font-weight:900;background:${riskColor}12;color:${riskColor};border:1px solid ${riskColor}30">MODO: ${esc(riskMode)}</span>
+        </div>
       </div>
     </div>
-    <div id="autopilot-db-live" style="font-size:12px;color:#9fb3c8;margin-bottom:12px;min-height:18px">Cargando estado de base de datos...</div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <button class="btn" onclick="saveAutopilotSnapshot()" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.4);color:#818cf8;font-size:13px;padding:9px 18px">Guardar snapshot ahora</button>
-      <button class="btn" onclick="renderAutopilotProgress()" style="background:rgba(0,255,153,.08);border-color:rgba(0,255,153,.25);color:#00ff99;font-size:13px;padding:9px 18px">Ver progreso</button>
-      <a href="/api/autopilot/database" target="_blank" style="display:inline-flex;align-items:center;border:1px solid rgba(120,160,210,.2);border-radius:8px;padding:9px 14px;font-size:11px;color:#9fb3c8;text-decoration:none">JSON</a>
+
+    <div style="padding:22px 28px">
+
+      <!-- Big stat cards -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin-bottom:20px">
+
+        <div style="background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.18);border-radius:18px;padding:18px 14px;text-align:center">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99;margin-bottom:8px">Health Logs</div>
+          <div id="adm-health-count" style="font-size:38px;font-weight:900;color:#00ff99;line-height:1">${healthSnapshotsDB.length}</div>
+          <div class="muted" style="font-size:10px;margin-top:4px">snapshots guardados</div>
+          <div id="adm-health-last" style="font-size:10px;color:#00ff99;margin-top:6px;opacity:.65">${lastHealthTs}</div>
+        </div>
+
+        <div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.18);border-radius:18px;padding:18px 14px;text-align:center">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Portfolio Logs</div>
+          <div id="adm-portfolio-count" style="font-size:38px;font-weight:900;color:#3b9dff;line-height:1">${portfolioSnapshotsDB.length}</div>
+          <div class="muted" style="font-size:10px;margin-top:4px">valuaciones guardadas</div>
+          <div id="adm-portfolio-last-equity" style="font-size:10px;color:#3b9dff;margin-top:6px;opacity:.65">${lastPortfolio}</div>
+        </div>
+
+        <div style="background:rgba(255,211,92,.05);border:1px solid rgba(255,211,92,.18);border-radius:18px;padding:18px 14px;text-align:center">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Trading Decisions</div>
+          <div id="adm-trading-count" style="font-size:38px;font-weight:900;color:#ffd35c;line-height:1">${tradingDecisionsDB.length}</div>
+          <div class="muted" style="font-size:10px;margin-top:4px">decisiones registradas</div>
+          <div id="adm-trading-last" style="font-size:10px;color:#ffd35c;margin-top:6px;opacity:.65">${lastDecision}</div>
+        </div>
+
+        <div style="background:rgba(167,139,250,.05);border:1px solid rgba(167,139,250,.18);border-radius:18px;padding:18px 14px;text-align:center">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#a78bfa;margin-bottom:8px">XP · Level · Streak</div>
+          <div id="adm-xp-val" style="font-size:34px;font-weight:900;color:#a78bfa;line-height:1">${prog.xp || 0}</div>
+          <div class="muted" style="font-size:10px;margin-top:4px">XP · <span id="adm-level-val" style="color:#a78bfa;font-weight:900">Lv.${prog.level || 1}</span></div>
+          <div id="adm-streak-val" style="font-size:11px;color:#a78bfa;margin-top:6px;font-weight:700">${prog.streakDays > 0 ? prog.streakDays + "d streak" : "Iniciando"}</div>
+        </div>
+
+        <div style="background:rgba(244,114,182,.05);border:1px solid rgba(244,114,182,.18);border-radius:18px;padding:18px 14px;text-align:center">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6;margin-bottom:8px">Last Snapshot</div>
+          <div id="adm-last-ts" style="font-size:13px;font-weight:900;color:#f472b6;line-height:1.3">${lastSnapshotTs}</div>
+          <div class="muted" style="font-size:10px;margin-top:4px">último guardado</div>
+          <div id="adm-total-snaps" style="font-size:10px;color:#f472b6;margin-top:6px;opacity:.65">${mem.snapshots || 0} snapshots totales</div>
+        </div>
+
+      </div>
+
+      <!-- WHOOP live reading -->
+      <div style="border:1px solid rgba(0,255,153,.14);border-radius:16px;padding:14px 18px;background:rgba(0,0,0,.18);margin-bottom:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99">WHOOP · Última lectura</div>
+          <span id="adm-whoop-badge" style="border-radius:99px;padding:3px 11px;font-size:10px;font-weight:900;background:${h.connected?"rgba(0,255,153,.12)":"rgba(255,211,92,.1)"};color:${h.connected?"#00ff99":"#ffd35c"}">${h.connected?"● LIVE":"PENDIENTE"}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px">
+          ${whoopMetrics.map(w => `<div style="text-align:center;background:rgba(0,0,0,.14);border-radius:10px;padding:10px 4px">
+            <div style="font-size:8px;font-weight:700;letter-spacing:.08em;color:rgba(120,160,210,.55);text-transform:uppercase;margin-bottom:4px">${esc(w.label)}</div>
+            <div id="${w.id}" style="font-size:16px;font-weight:900;color:${w.color}">${esc(w.val)}</div>
+          </div>`).join("")}
+        </div>
+      </div>
+
+      <!-- Trading Risk Mode -->
+      <div style="border:1px solid ${riskColor}20;border-radius:16px;padding:14px 18px;background:${riskColor}06;margin-bottom:14px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div style="min-width:120px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:${riskColor};margin-bottom:4px">Trading Risk Mode</div>
+          <div id="adm-risk-mode" style="font-size:22px;font-weight:900;color:${riskColor}">${esc(riskMode)}</div>
+        </div>
+        <div style="flex:1;min-width:180px;font-size:12px;color:#9fb3c8;line-height:1.6">${esc(riskDesc)}</div>
+        <div style="font-size:10px;color:rgba(120,160,210,.35)">No es consejo financiero</div>
+      </div>
+
+      <!-- Mini timeline -->
+      <div style="margin-bottom:16px">
+        <div style="font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#9fb3c8;margin-bottom:10px">Timeline · Últimos snapshots</div>
+        <div id="adm-timeline">
+          ${timelineItems.length === 0
+            ? `<div style="color:rgba(120,160,210,.4);font-size:12px;padding:8px 0">Sin snapshots aún. Presiona "Guardar snapshot ahora" para empezar.</div>`
+            : timelineItems.map((snap, i) => {
+                const rc  = snap.recovery != null ? (snap.recovery >= 67 ? "#00ff99" : snap.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+                const rv  = snap.recovery != null ? snap.recovery + "%" : "—";
+                const sv  = snap.sleep    != null ? snap.sleep    + "%" : null;
+                const str = snap.strain   != null ? (typeof snap.strain === "number" ? snap.strain.toFixed(1) : snap.strain) : null;
+                return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(0,0,0,.14);border-radius:10px;border-left:3px solid ${i===0?"#818cf8":"rgba(120,160,210,.12)"}">
+                  <div style="font-size:10px;color:#9fb3c8;min-width:110px;flex-shrink:0">${esc(fmtTs(snap.timestamp))}</div>
+                  <div style="display:flex;gap:10px;flex:1;flex-wrap:wrap;align-items:center">
+                    <span style="font-size:11px;color:${rc};font-weight:700">R ${esc(rv)}</span>
+                    ${sv ? `<span style="font-size:11px;color:#818cf8;font-weight:700">S ${esc(sv)}</span>` : ""}
+                    ${str ? `<span style="font-size:11px;color:#ffd35c;font-weight:700">Str ${esc(str)}</span>` : ""}
+                    ${snap.operatingMode ? `<span style="font-size:10px;color:#9fb3c8;border:1px solid rgba(120,160,210,.18);border-radius:99px;padding:1px 8px">${esc(snap.operatingMode)}</span>` : ""}
+                  </div>
+                </div>`;
+              }).join("")
+          }
+        </div>
+      </div>
+
+      <!-- Live status -->
+      <div id="adm-live-status" style="font-size:11px;color:#9fb3c8;margin-bottom:14px;min-height:16px">Cargando estado en vivo...</div>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button id="adm-save-btn" class="btn" onclick="saveAutopilotSnapshot()" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.4);color:#818cf8;font-size:13px;padding:10px 20px;font-weight:900">Guardar snapshot ahora</button>
+        <button class="btn" onclick="renderAutopilotProgress()" style="background:rgba(0,255,153,.08);border-color:rgba(0,255,153,.25);color:#00ff99;font-size:13px;padding:10px 20px">Ver progreso</button>
+        <a href="/api/autopilot/database" target="_blank" style="display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(120,160,210,.18);border-radius:8px;padding:10px 14px;font-size:11px;color:#9fb3c8;text-decoration:none">JSON DB</a>
+        <a href="/api/autopilot/progress" target="_blank" style="display:inline-flex;align-items:center;gap:4px;border:1px solid rgba(120,160,210,.18);border-radius:8px;padding:10px 14px;font-size:11px;color:#9fb3c8;text-decoration:none">Progreso</a>
+      </div>
+
     </div>
-    <div id="autopilot-progress-panel" style="margin-top:14px;display:none"></div>
+
+    <!-- Progress expanded panel -->
+    <div id="autopilot-progress-panel" style="display:none;padding:0 28px 24px"></div>
+
+    <!-- Footer disclaimer -->
+    <div style="padding:12px 28px;border-top:1px solid rgba(120,160,210,.06);font-size:10px;color:rgba(120,160,210,.38);text-align:center">
+      Cordelius OS — educativo. Paper trading only. Real Trading permanentemente OFF. No es asesoría financiera ni médica.
+    </div>
   </div>`;
 }
 
@@ -3766,40 +3906,97 @@ function setAlfredoQ(q) {
 }
 
 async function loadAutopilotDatabase() {
-  var liveEl = document.getElementById('autopilot-db-live');
+  var liveEl = document.getElementById('adm-live-status');
+  function aSet(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = String(val); }
+  function fmtTs(iso) {
+    try { return new Date(iso).toLocaleString('es-MX',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+    catch(e) { return '—'; }
+  }
+  function e2(v) { return String(v == null ? '—' : v).replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
   try {
     var r = await fetch('/api/autopilot/database', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var d = await r.json();
-    function aSet(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = String(val); }
-    aSet('autopilot-db-health-count',    d.counts ? d.counts.health    : '—');
-    aSet('autopilot-db-portfolio-count', d.counts ? d.counts.portfolio : '—');
-    aSet('autopilot-db-trading-count',   d.counts ? d.counts.decisions : '—');
-    if (d.stores && d.stores.autopilotMemory && d.stores.autopilotMemory.lastSnapshot) {
-      aSet('autopilot-db-last-ts', new Date(d.stores.autopilotMemory.lastSnapshot).toLocaleString('es-MX'));
+    var cnt = d.counts || {};
+    var lat = d.latest || {};
+    var mem = (d.stores && d.stores.autopilotMemory) || {};
+    var prog = (d.stores && d.stores.progress) || {};
+    var h = d.health || {};
+
+    // Big cards
+    aSet('adm-health-count',    cnt.health    != null ? cnt.health    : '—');
+    aSet('adm-portfolio-count', cnt.portfolio != null ? cnt.portfolio : '—');
+    aSet('adm-trading-count',   cnt.decisions != null ? cnt.decisions : '—');
+    if (lat.health && lat.health.timestamp)   aSet('adm-health-last', fmtTs(lat.health.timestamp));
+    if (lat.portfolio && lat.portfolio.equityMXN != null)
+      aSet('adm-portfolio-last-equity', '$' + Math.round(lat.portfolio.equityMXN).toLocaleString('es-MX') + ' MXN');
+    if (lat.decision)
+      aSet('adm-trading-last', (lat.decision.idea || '—') + (lat.decision.symbol ? ' · ' + lat.decision.symbol : ''));
+    if (mem.lastSnapshot) aSet('adm-last-ts', fmtTs(mem.lastSnapshot));
+    aSet('adm-total-snaps', (mem.snapshots || 0) + ' snapshots totales');
+
+    // XP / Level / Streak
+    aSet('adm-xp-val', prog.xp != null ? prog.xp : '—');
+    aSet('adm-level-val', 'Lv.' + (prog.level || 1));
+    aSet('adm-streak-val', prog.streakDays > 0 ? prog.streakDays + 'd streak' : 'Iniciando');
+
+    // WHOOP metrics
+    if (h.recovery != null) aSet('adm-w-recovery', h.recovery + '%');
+    if (h.sleep    != null) aSet('adm-w-sleep',    h.sleep    + '%');
+    if (h.strain   != null) aSet('adm-w-strain',   typeof h.strain === 'number' ? h.strain.toFixed(1) : h.strain);
+    if (h.hrv      != null) aSet('adm-w-hrv',      (typeof h.hrv === 'number' ? h.hrv.toFixed(1) : h.hrv) + ' ms');
+    if (h.restingHeartRate != null) aSet('adm-w-rhr', Math.round(h.restingHeartRate) + ' bpm');
+    var badge = document.getElementById('adm-whoop-badge');
+    if (badge) {
+      badge.textContent = h.connected ? '● LIVE' : 'PENDIENTE';
+      badge.style.background = h.connected ? 'rgba(0,255,153,.12)' : 'rgba(255,211,92,.1)';
+      badge.style.color = h.connected ? '#00ff99' : '#ffd35c';
     }
-    if (d.stores && d.stores.progress) {
-      var p = d.stores.progress;
-      aSet('autopilot-db-learning-val', p.streakDays > 0 ? p.streakDays + 'd streak' : 'Iniciando');
+
+    // Risk mode
+    var tsum = d.tradingSummary || {};
+    var rm = tsum.riskMode || h.operatingMode || 'NORMAL';
+    var RC = {DEFENSIVO:'#ff4d6d',CONSERVADOR:'#ffd35c',BAJO:'#ffd35c',NORMAL:'#00ff99',NEUTRAL:'#9fb3c8',ÓPTIMO:'#818cf8',REDUCIR:'#ff4d6d',DRAWDOWN:'#ff4d6d'};
+    var rc = RC[rm] || '#9fb3c8';
+    aSet('adm-risk-mode', rm);
+    var rb = document.getElementById('adm-risk-badge');
+    if (rb) { rb.textContent = 'MODO: ' + rm; rb.style.color = rc; rb.style.borderColor = rc + '30'; rb.style.background = rc + '12'; }
+    var rmEl = document.getElementById('adm-risk-mode');
+    if (rmEl) rmEl.style.color = rc;
+
+    // Timeline (re-render from latest data)
+    var healthSnaps = (d.stores && Array.isArray(d.stores.healthSnapshots)) ? d.stores.healthSnapshots.slice(0, 5) : [];
+    var tl = document.getElementById('adm-timeline');
+    if (tl && healthSnaps.length > 0) {
+      tl.innerHTML = healthSnaps.map(function(snap, i) {
+        var recC = snap.recovery != null ? (snap.recovery >= 67 ? '#00ff99' : snap.recovery >= 34 ? '#ffd35c' : '#ff4d6d') : '#9fb3c8';
+        var rv   = snap.recovery != null ? snap.recovery + '%' : '—';
+        return '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(0,0,0,.14);border-radius:10px;border-left:3px solid ' + (i===0?'#818cf8':'rgba(120,160,210,.12)') + '">'
+          + '<div style="font-size:10px;color:#9fb3c8;min-width:110px;flex-shrink:0">' + e2(fmtTs(snap.timestamp)) + '</div>'
+          + '<div style="display:flex;gap:10px;flex:1;flex-wrap:wrap;align-items:center">'
+          + '<span style="font-size:11px;color:' + recC + ';font-weight:700">R ' + e2(rv) + '</span>'
+          + (snap.sleep   != null ? '<span style="font-size:11px;color:#818cf8;font-weight:700">S ' + snap.sleep   + '%</span>' : '')
+          + (snap.strain  != null ? '<span style="font-size:11px;color:#ffd35c;font-weight:700">Str ' + e2(typeof snap.strain === 'number' ? snap.strain.toFixed(1) : snap.strain) + '</span>' : '')
+          + (snap.operatingMode ? '<span style="font-size:10px;color:#9fb3c8;border:1px solid rgba(120,160,210,.18);border-radius:99px;padding:1px 8px">' + e2(snap.operatingMode) + '</span>' : '')
+          + '</div></div>';
+      }).join('');
     }
-    if (liveEl) liveEl.textContent = 'Base de datos: '
-      + (d.counts ? d.counts.health : 0)    + ' health · '
-      + (d.counts ? d.counts.portfolio : 0) + ' portfolio · '
-      + (d.counts ? d.counts.decisions : 0) + ' decisiones';
+
+    if (liveEl) liveEl.textContent = (cnt.health || 0) + ' health · ' + (cnt.portfolio || 0) + ' portfolio · ' + (cnt.decisions || 0) + ' decisiones';
   } catch(e) {
     if (liveEl) liveEl.textContent = 'Error cargando base de datos.';
   }
 }
 
 async function saveAutopilotSnapshot() {
-  var btn = document.querySelector('[onclick*="saveAutopilotSnapshot"]');
+  var btn = document.getElementById('adm-save-btn');
   if (btn) btn.textContent = 'Guardando...';
+  var liveEl = document.getElementById('adm-live-status');
   try {
     var r = await fetch('/api/autopilot/snapshot', { method: 'POST', cache: 'no-store' });
     var d = r.ok ? await r.json() : null;
     if (d && d.ok) {
-      if (btn) btn.textContent = 'Guardado ✓';
-      var liveEl = document.getElementById('autopilot-db-live');
+      if (btn) btn.textContent = 'Guardado';
       if (liveEl && d.summary) liveEl.textContent = 'Snapshot guardado · Lv.' + d.summary.level
         + ' · ' + d.summary.xp + 'xp · streak ' + d.summary.streakDays + 'd';
       await loadAutopilotDatabase();
@@ -3808,6 +4005,7 @@ async function saveAutopilotSnapshot() {
     }
   } catch(e) {
     if (btn) btn.textContent = 'Error';
+    if (liveEl) liveEl.textContent = 'Error al guardar snapshot.';
   }
   setTimeout(function() { if (btn) btn.textContent = 'Guardar snapshot ahora'; }, 3000);
 }
@@ -3815,25 +4013,42 @@ async function saveAutopilotSnapshot() {
 async function renderAutopilotProgress() {
   var panel = document.getElementById('autopilot-progress-panel');
   if (!panel) return;
+  var visible = panel.style.display !== 'none' && panel.style.display !== '';
+  if (visible && panel.innerHTML.trim() !== '') { panel.style.display = 'none'; return; }
   panel.style.display = 'block';
-  panel.innerHTML = '<div style="color:#9fb3c8;font-size:12px;padding:10px 0">Cargando progreso...</div>';
+  panel.innerHTML = '<div style="color:#9fb3c8;font-size:12px;padding:12px 0">Cargando progreso...</div>';
   try {
     var r = await fetch('/api/autopilot/progress', { cache: 'no-store' });
     var d = r.ok ? await r.json() : null;
     if (!d || !d.ok) throw new Error('no data');
-    var p = d.progress || {}; var c = d.counts || {}; var rec = d.latest || {};
-    function e2(v) { return String(v == null ? '—' : v).replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
-    panel.innerHTML = '<div style="border:1px solid rgba(167,139,250,.18);border-radius:14px;padding:16px;background:rgba(167,139,250,.04)">'
-      + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#a78bfa;margin-bottom:12px">Cordelius Progress</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:12px">'
-      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#a78bfa">' + e2(p.level || 1) + '</div><div class="muted" style="font-size:10px">Nivel</div></div>'
-      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#ffd35c">' + e2(p.xp || 0) + '</div><div class="muted" style="font-size:10px">XP total</div></div>'
-      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#00ff99">' + e2(p.streakDays || 0) + '</div><div class="muted" style="font-size:10px">Días streak</div></div>'
-      + '<div style="text-align:center"><div style="font-size:24px;font-weight:900;color:#3b9dff">' + e2(p.insights || 0) + '</div><div class="muted" style="font-size:10px">Insights</div></div>'
+    var p = d.progress || {}; var c = d.counts || {}; var lat = d.latest || {};
+    function e2(v) { return String(v == null ? '—' : v).replace(/[&<>]/g, function(cc){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[cc]; }); }
+    var lastDec = lat.decision
+      ? '<div style="font-size:11px;color:#9fb3c8;padding:9px 12px;background:rgba(0,0,0,.2);border-radius:10px;margin-bottom:8px">'
+        + 'Última decisión: <b style="color:#ffd35c">' + e2(lat.decision.idea) + '</b> · '
+        + e2(lat.decision.symbol || 'N/A') + ' · '
+        + e2(lat.decision.timestamp ? new Date(lat.decision.timestamp).toLocaleString('es-MX') : '—')
+        + '</div>' : '';
+    var lastPort = lat.portfolio
+      ? '<div style="font-size:11px;color:#9fb3c8;padding:9px 12px;background:rgba(0,0,0,.2);border-radius:10px;margin-bottom:8px">'
+        + 'Último portfolio: <b style="color:#3b9dff">$' + (lat.portfolio.equityMXN != null ? Math.round(lat.portfolio.equityMXN).toLocaleString('es-MX') : '—') + ' MXN</b>'
+        + ' · PnL: <b style="color:' + (lat.portfolio.gainPct >= 0 ? '#00ff99' : '#ff4d6d') + '">'
+        + (lat.portfolio.gainPct != null ? (lat.portfolio.gainPct >= 0 ? '+' : '') + lat.portfolio.gainPct.toFixed(2) + '%' : '—') + '</b>'
+        + '</div>' : '';
+    panel.innerHTML = '<div style="border:1px solid rgba(167,139,250,.18);border-radius:16px;padding:18px;background:rgba(167,139,250,.04);margin-top:4px">'
+      + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#a78bfa;margin-bottom:14px">Cordelius Progress</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px;margin-bottom:14px">'
+      + '<div style="text-align:center"><div style="font-size:28px;font-weight:900;color:#a78bfa">' + e2(p.level || 1) + '</div><div class="muted" style="font-size:10px">Nivel</div></div>'
+      + '<div style="text-align:center"><div style="font-size:28px;font-weight:900;color:#ffd35c">' + e2(p.xp || 0) + '</div><div class="muted" style="font-size:10px">XP total</div></div>'
+      + '<div style="text-align:center"><div style="font-size:28px;font-weight:900;color:#00ff99">' + e2(p.streakDays || 0) + '</div><div class="muted" style="font-size:10px">Días streak</div></div>'
+      + '<div style="text-align:center"><div style="font-size:28px;font-weight:900;color:#3b9dff">' + e2(p.insights || 0) + '</div><div class="muted" style="font-size:10px">Insights</div></div>'
       + '</div>'
-      + '<div style="font-size:11px;color:#9fb3c8;margin-bottom:6px"><b style="color:#00ff99">' + e2(c.health) + '</b> health · <b style="color:#3b9dff">' + e2(c.portfolio) + '</b> portfolio · <b style="color:#ffd35c">' + e2(c.decisions) + '</b> decisiones</div>'
-      + (rec.decision ? '<div style="font-size:11px;color:#9fb3c8;padding:8px;background:rgba(0,0,0,.2);border-radius:8px;margin-top:6px">Última decisión: <b style="color:#ffd35c">' + e2(rec.decision.idea) + '</b> · ' + e2(rec.decision.symbol || 'N/A') + ' · ' + e2(rec.decision.timestamp ? new Date(rec.decision.timestamp).toLocaleString('es-MX') : '—') + '</div>' : '')
-      + '<div style="margin-top:10px"><button onclick="document.getElementById(\'autopilot-progress-panel\').style.display=\'none\'" style="border:1px solid rgba(120,160,210,.2);border-radius:8px;padding:6px 12px;background:transparent;color:#9fb3c8;cursor:pointer;font-size:11px">Cerrar</button></div>'
+      + '<div style="font-size:11px;color:#9fb3c8;margin-bottom:10px">'
+      + '<b style="color:#00ff99">' + e2(c.health) + '</b> health · '
+      + '<b style="color:#3b9dff">' + e2(c.portfolio) + '</b> portfolio · '
+      + '<b style="color:#ffd35c">' + e2(c.decisions) + '</b> decisiones</div>'
+      + lastDec + lastPort
+      + '<button onclick="document.getElementById(\'autopilot-progress-panel\').style.display=\'none\'" style="border:1px solid rgba(120,160,210,.2);border-radius:8px;padding:6px 14px;background:transparent;color:#9fb3c8;cursor:pointer;font-size:11px;margin-top:4px">Cerrar</button>'
       + '</div>';
   } catch(e) {
     panel.innerHTML = '<div style="color:#ff4d6d;font-size:12px;padding:8px">Error cargando progreso.</div>';
