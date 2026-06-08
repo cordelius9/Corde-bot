@@ -1294,6 +1294,7 @@ async function alfredoReply(question) {
   const botEq = botValue(), botPnl = botEq - bot.initialCapital;
   let reply = "";
   const qCount = quiverData.congressional.length + quiverData.insider.length + quiverData.contracts.length;
+  const _brain = (function(){ try { return readJSONSafe(MARKET_BRAIN_FILE, null); } catch(e){ return null; } })();
 
   // Detect specific portfolio ticker mentioned in question
   const mentionedAsset = pv.assets.find(a =>
@@ -1471,6 +1472,16 @@ EDUCATIVO — no es asesoría financiera.`;
     const idea = computeTradeIdea();
     const nl = computeDailyNewsletter();
     reply = `Resumen del día — ${nl.date}. Portafolio: ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). Estado físico: modo ${h.operatingMode}${h.configured ? "" : " (sin WHOOP)"}. Diario: ${jd.count} entradas${jd.topMood ? ", mood " + jd.topMood : ""}. ${idea.hasIdea ? "Idea paper: " + idea.type + " " + idea.symbol + "." : "Sin idea paper activa."} NO es asesoría financiera.`;
+  } else if (q.includes("market brain") || q.includes("brain") || q.includes("cerebro") || q.includes("escaneo") || q.includes("scan completo")) {
+    if (_brain && _brain.date) {
+      reply = `Cordelius Market Brain [${_brain.hourBlock}] — Régimen: ${_brain.marketRegime} · Riesgo: ${_brain.riskMode || "—"} · Cripto: ${_brain.cryptoExposure}% · Confianza: ${_brain.confidence}. ` +
+        `Riesgos: ${(_brain.topRisks || []).slice(0,2).join("; ")}. ` +
+        `Oportunidades: ${(_brain.topOpportunities || []).slice(0,2).join("; ")}. ` +
+        `Watchlist: ${(_brain.watchlist || []).slice(0,6).join(", ")}. ` +
+        `${_brain.tomorrowPrep} EDUCATIVO — no es asesoría financiera.`;
+    } else {
+      reply = "Market Brain aún no tiene datos de este ciclo. Se genera cada 15 min o tras el snapshot diario. Intenta en un momento.";
+    }
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
@@ -2456,6 +2467,9 @@ const CORDELIUS_PATTERNS_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cor
 const DAILY_INTELLIGENCE_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "daily_intelligence_summary.json");
 const CORDELIUS_ALERTS_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_alerts.json");
 const PORTFOLIO_STORE_FILE        = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_portfolio.json");
+const MARKET_BRAIN_FILE           = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_brain.json");
+const MARKET_BRAIN_HISTORY_FILE   = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_brain_history.json");
+const MARKET_WATCHLIST_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_watchlist.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -2820,6 +2834,11 @@ function runAutoDailySnapshot() {
     try { checkAlerts(); } catch(e) {
       console.log("[AutoSnapshot] checkAlerts error:", e.message);
     }
+    // Reset hour block so market brain reruns with fresh daily data
+    _lastBrainHourBlock = null;
+    try { buildMarketBrain(); } catch(e) {
+      console.log("[AutoSnapshot] buildMarketBrain error:", e.message);
+    }
 
     const cap  = snap && snap.learning && snap.learning.tradingCapacity      ? snap.learning.tradingCapacity      : "—";
     const risk = snap && snap.learning && snap.learning.riskRecommendation   ? snap.learning.riskRecommendation   : "—";
@@ -3015,6 +3034,176 @@ function checkAlerts() {
   }
 }
 
+// ── Continuous Market Intelligence Brain ──────────────────────────────────────
+
+let _lastBrainHourBlock = null;
+
+function buildMarketBrain() {
+  try {
+    const now       = new Date();
+    const dateKey   = todayDateKey();
+    const hourBlock = dateKey + "H" + now.getHours();
+    if (_lastBrainHourBlock === hourBlock) return; // already ran this hour
+    _lastBrainHourBlock = hourBlock;
+    console.log("[MarketBrain] Scanning — " + hourBlock);
+
+    // ── Gather all intelligence sources ──
+    const pi    = (function(){ try { return computePortfolioIntelligence(); } catch(e){ return null; } })();
+    const pv    = (function(){ try { return portfolioValue(); } catch(e){ return null; } })();
+    const radar = (function(){ try { return computeMarketRadar(); } catch(e){ return null; } })();
+    const emi   = (function(){ try { return computeExternalMarketIntelligence(); } catch(e){ return null; } })();
+    const scan  = (function(){ try { return computeDailyScan(); } catch(e){ return null; } })();
+    const health = (function(){ try { return computeHealthReadiness(); } catch(e){ return null; } })();
+    const reg   = (function(){ try { return marketRegime(); } catch(e){ return { label: "NEUTRAL" }; } })();
+
+    const intelligenceSummaries = readJSONSafe(DAILY_INTELLIGENCE_FILE, []);
+    const todayIntel = Array.isArray(intelligenceSummaries) ? (intelligenceSummaries.find(s => s && s.date === dateKey) || intelligenceSummaries[0] || null) : null;
+
+    const allAlerts = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
+    const recentAlerts = Array.isArray(allAlerts) ? allAlerts.filter(a => a && !a.acknowledged).slice(0, 5) : [];
+
+    // ── Portfolio state ──
+    const portState = {};
+    if (pi && !pi.error) {
+      portState.totalMXN     = pi.totalValueMXN;
+      portState.gainPct      = pi.totalGainPct;
+      portState.cryptoPct    = pi.concentration.criptoPct;
+      portState.cryptoAlert  = pi.concentration.alert;
+      portState.topWinner    = pi.best ? pi.best.symbol + " (" + pct(pi.best.gainPct) + ", s" + pi.best.score + ")" : "—";
+      portState.topLoser     = pi.worst ? pi.worst.symbol + " (" + pct(pi.worst.gainPct) + ", s" + pi.worst.score + ")" : "—";
+      portState.riskAssets   = (pi.riskAssets || []).slice(0, 3).map(a => a.symbol + " s" + a.score);
+      portState.opportunities= (pi.oppAssets  || []).slice(0, 3).map(a => a.symbol + " +" + a.gainPct.toFixed(0) + "%");
+      portState.buyDips      = (pi.buyDip     || []).slice(0, 3).map(a => a.symbol + " " + a.signal);
+    } else if (pv) {
+      const sorted = (pv.assets || []).slice().sort((a, b) => (b.gainPct||0) - (a.gainPct||0));
+      const cryptoMXN = (pv.assets || []).filter(a => a.type === "crypto").reduce((s, a) => s + (a.valueMXN||0), 0);
+      portState.totalMXN  = pv.totalValueMXN;
+      portState.gainPct   = pv.totalGainPct;
+      portState.cryptoPct = pv.totalValueMXN > 0 ? +(cryptoMXN / pv.totalValueMXN * 100).toFixed(1) : 0;
+      portState.topWinner = sorted[0] ? sorted[0].symbol + " (" + pct(sorted[0].gainPct) + ")" : "—";
+      portState.topLoser  = sorted[sorted.length - 1] ? sorted[sorted.length - 1].symbol + " (" + pct(sorted[sorted.length - 1].gainPct) + ")" : "—";
+    }
+
+    // ── Risks ──
+    const topRisks = [];
+    if (portState.cryptoAlert) topRisks.push("Concentración cripto " + (portState.cryptoPct || "?") + "% — riesgo de volatilidad.");
+    if (portState.riskAssets && portState.riskAssets.length) topRisks.push("Activos de riesgo: " + portState.riskAssets.join(", ") + ".");
+    if (scan && scan.riskAlerts) scan.riskAlerts.slice(0, 3).forEach(a => topRisks.push(a.message || a.type || "Alerta de portafolio"));
+    if (health && health.recovery !== null && health.recovery < 40) topRisks.push("Recovery WHOOP bajo (" + health.recovery + "%) — evitar decisiones de alta convicción.");
+    recentAlerts.filter(a => a.severity === "CRITICAL" || a.severity === "WARNING").slice(0, 2).forEach(a => topRisks.push(a.title || a.message));
+    if (topRisks.length === 0) topRisks.push("Sin riesgos críticos identificados en este ciclo.");
+
+    // ── Opportunities ──
+    const topOpportunities = [];
+    if (portState.opportunities && portState.opportunities.length) topOpportunities.push("Ganancias destacadas: " + portState.opportunities.join(", ") + ".");
+    if (portState.buyDips && portState.buyDips.length) topOpportunities.push("Señales de compra: " + portState.buyDips.join(", ") + ".");
+    if (radar && radar.hotTickers) {
+      const ext = radar.hotTickers.filter(t => !t.inPortfolio).slice(0, 3);
+      if (ext.length) topOpportunities.push("Externos con señal: " + ext.map(t => t.symbol + (t.quiverSignals > 0 ? " (Q×" + t.quiverSignals + ")" : "")).join(", ") + ".");
+    }
+    recentAlerts.filter(a => a.severity === "OPPORTUNITY").slice(0, 2).forEach(a => topOpportunities.push(a.title || a.message));
+    if (topOpportunities.length === 0) topOpportunities.push("Mercado sin oportunidades claras este ciclo.");
+
+    // ── Watchlist (top 8 from radar) ──
+    const watchlistSymbols = radar ? radar.hotTickers.slice(0, 8).map(t => t.symbol) : [];
+    const customWatchlist = readJSONSafe(MARKET_WATCHLIST_FILE, []);
+    const mergedWatchlist = Array.from(new Set([...watchlistSymbols, ...(Array.isArray(customWatchlist) ? customWatchlist.filter(s => typeof s === "string") : [])])).slice(0, 15);
+
+    // ── News summary (top 5 headlines) ──
+    const newsSummary = news.slice(0, 5).map(n => (n.headline || "").slice(0, 100)).filter(Boolean).join(" | ") || "Sin noticias recientes.";
+
+    // ── Health overlay ──
+    const healthOverlay = {
+      recovery:       health ? health.recovery : null,
+      operatingMode:  health ? health.operatingMode : "DESCONOCIDO",
+      tradingCapacity:todayIntel ? (todayIntel.tradingCapacity || "—") : "—",
+      riskMode:       todayIntel ? (todayIntel.riskMode || "—") : "—"
+    };
+
+    // ── Jarvis prep (narrative bullets) ──
+    const regLabel = reg.label || "NEUTRAL";
+    const portTotal = portState.totalMXN ? "$" + Number(portState.totalMXN).toLocaleString("es-MX", { maximumFractionDigits: 0 }) + " MXN" : "—";
+    const gainStr   = portState.gainPct != null ? (portState.gainPct >= 0 ? "+" : "") + portState.gainPct.toFixed(2) + "%" : "—";
+    const jarvisPreparation = [
+      "Portafolio: " + portTotal + " · " + gainStr + " · Cripto " + (portState.cryptoPct || "?") + "%.",
+      "Régimen: " + regLabel + " · Salud: " + (health ? health.operatingMode : "desconocido") + " (recovery " + (health && health.recovery != null ? health.recovery + "%" : "—") + ").",
+      "Riesgos clave: " + topRisks.slice(0, 2).join(" "),
+      "Oportunidades: " + topOpportunities.slice(0, 2).join(" ")
+    ].join(" ");
+
+    // ── Tomorrow prep ──
+    const tomorrowPrep = todayIntel && todayIntel.tradingCapacity === "ALTA"
+      ? "Capacidad ALTA — revisar señales BUY DIP y watchlist externa mañana."
+      : todayIntel && todayIntel.tradingCapacity === "BAJA"
+      ? "Capacidad BAJA — modo observación, no operar hasta mejora de salud."
+      : "Mantener y monitorear posiciones, ajustar si régimen cambia.";
+
+    // ── Questions to ask Pedro ──
+    const questionsToAskPedro = [];
+    if (portState.cryptoAlert) questionsToAskPedro.push("¿Quieres reducir exposición cripto desde " + portState.cryptoPct + "%?");
+    if (portState.riskAssets && portState.riskAssets.length) questionsToAskPedro.push("¿Tienes tesis vigente para: " + portState.riskAssets.slice(0,2).join(", ") + "?");
+    if (mergedWatchlist.length) questionsToAskPedro.push("¿Hay algún ticker externo del radar que quieras revisar? Top: " + mergedWatchlist.slice(0,4).join(", ") + ".");
+    if (questionsToAskPedro.length === 0) questionsToAskPedro.push("¿Hay algo específico que quieras analizar hoy?");
+
+    // ── Confidence ──
+    const dataSources = [pi, radar, health, todayIntel].filter(Boolean).length;
+    const confidence  = dataSources >= 3 ? "ALTA" : dataSources >= 2 ? "MEDIA" : "BAJA";
+
+    const brain = {
+      date:            dateKey,
+      timestamp:       now.toISOString(),
+      hourBlock,
+      marketRegime:    regLabel,
+      riskMode:        healthOverlay.riskMode,
+      portfolioState:  portState,
+      cryptoExposure:  portState.cryptoPct || 0,
+      topRisks:        topRisks.slice(0, 5),
+      topOpportunities:topOpportunities.slice(0, 5),
+      watchlist:       mergedWatchlist,
+      newsSummary,
+      healthOverlay,
+      jarvisPreparation,
+      tomorrowPrep,
+      questionsToAskPedro,
+      confidence,
+      intelItemCount:  intelItems.length,
+      alertCount:      recentAlerts.length
+    };
+
+    // ── Persist ──
+    writeJSONAtomic(MARKET_BRAIN_FILE, brain);
+
+    const history = readJSONSafe(MARKET_BRAIN_HISTORY_FILE, []);
+    const updated = Array.isArray(history) ? history.filter(e => e && e.hourBlock !== hourBlock) : [];
+    updated.unshift(brain);
+    if (updated.length > 365) updated.length = 365;
+    writeJSONAtomic(MARKET_BRAIN_HISTORY_FILE, updated);
+
+    console.log("[MarketBrain] Done — confidence " + confidence + " | regime " + regLabel + " | risks " + topRisks.length + " | opps " + topOpportunities.length);
+  } catch(e) {
+    _lastBrainHourBlock = null; // allow retry next cycle
+    console.log("[MarketBrain] Error:", e.message);
+  }
+}
+
+// ── Custom watchlist mutations ─────────────────────────────────────────────────
+function addWatchlistSymbol(sym) {
+  const upper = (sym || "").toUpperCase().trim();
+  if (!upper || upper.length > 10) return false;
+  const list = readJSONSafe(MARKET_WATCHLIST_FILE, []);
+  if (Array.isArray(list) && !list.includes(upper)) {
+    list.push(upper);
+    writeJSONAtomic(MARKET_WATCHLIST_FILE, list);
+  }
+  return true;
+}
+function removeWatchlistSymbol(sym) {
+  const upper = (sym || "").toUpperCase().trim();
+  const list  = readJSONSafe(MARKET_WATCHLIST_FILE, []);
+  if (Array.isArray(list)) writeJSONAtomic(MARKET_WATCHLIST_FILE, list.filter(s => s !== upper));
+  return true;
+}
+
 // ============================================================
 // JARVIS MEMORY ENGINE — buildJarvisContext / buildMemorySummary
 // Reads and compresses all persistent memory for Claude injection
@@ -3165,6 +3354,35 @@ function buildJarvisContext() {
     ctx.autopilotLearning = { learningSummary: "" };
   }
 
+  // 7. Market Brain — latest scan result
+  try {
+    const brain = readJSONSafe(MARKET_BRAIN_FILE, null);
+    if (brain && brain.date) {
+      ctx.marketBrain = {
+        date:            brain.date,
+        hourBlock:       brain.hourBlock,
+        marketRegime:    brain.marketRegime,
+        riskMode:        brain.riskMode,
+        portfolioMXN:    brain.portfolioState ? brain.portfolioState.totalMXN : null,
+        gainPct:         brain.portfolioState ? brain.portfolioState.gainPct : null,
+        cryptoPct:       brain.cryptoExposure,
+        topRisks:        (brain.topRisks || []).slice(0, 3),
+        topOpportunities:(brain.topOpportunities || []).slice(0, 3),
+        watchlist:       (brain.watchlist || []).slice(0, 8),
+        healthOverlay:   brain.healthOverlay,
+        jarvisPrep:      brain.jarvisPreparation,
+        tomorrowPrep:    brain.tomorrowPrep,
+        questions:       (brain.questionsToAskPedro || []).slice(0, 3),
+        confidence:      brain.confidence,
+        alertCount:      brain.alertCount
+      };
+    } else {
+      ctx.marketBrain = null;
+    }
+  } catch(e) {
+    ctx.marketBrain = null;
+  }
+
   return ctx;
 }
 
@@ -3239,6 +3457,16 @@ function buildMemorySummary() {
       if (al.bestPatterns && al.bestPatterns.length > 0) {
         lines.push(`MEJOR PATRÓN: ${al.bestPatterns.map(p => p.action + ' en ' + p.sym + ' (cv ' + p.conviction + ')').join(', ')}.`);
       }
+    }
+
+    // Market Brain
+    const mb = ctx.marketBrain;
+    if (mb) {
+      lines.push(`MARKET BRAIN [${mb.hourBlock}]: Régimen ${mb.marketRegime} · Riesgo ${mb.riskMode || "—"} · Cripto ${mb.cryptoPct}% · Confianza ${mb.confidence}.`);
+      if (mb.topRisks && mb.topRisks.length)         lines.push(`RIESGOS BRAIN: ${mb.topRisks.slice(0,2).join(" | ")}`);
+      if (mb.topOpportunities && mb.topOpportunities.length) lines.push(`OPORTUNIDADES BRAIN: ${mb.topOpportunities.slice(0,2).join(" | ")}`);
+      if (mb.tomorrowPrep) lines.push(`PLAN MAÑANA: ${mb.tomorrowPrep}`);
+      if (mb.questions && mb.questions.length) lines.push(`PREGUNTAS PENDIENTES: ${mb.questions.slice(0,2).join(" / ")}`);
     }
 
     if (lines.length === 0) return "Sin memoria disponible todavía.";
@@ -3997,6 +4225,67 @@ function renderDailyLearningPanel() {
       <div style="margin-top:8px;font-size:11px;color:#2e3f52">Educativo — no es consejo financiero ni médico. Solo correlaciones de tus propios datos.</div>
     </div>
   </div>`;
+}
+
+function renderMarketBrainPanel() {
+  const brain = readJSONSafe(MARKET_BRAIN_FILE, null);
+  const CONF_COLOR = { ALTA: "#00ff99", MEDIA: "#ffd35c", BAJA: "#ff8800" };
+  const REGIME_COLOR = { ALCISTA: "#00ff99", NEUTRAL: "#ffd35c", BAJISTA: "#ff4d6d", "RISK_OFF": "#ff4d6d", BEARISH: "#ff4d6d", BULLISH: "#00ff99" };
+  if (!brain || !brain.date) {
+    return `<div style="background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.12);border-radius:20px;padding:20px 24px;margin:0 auto 12px;max-width:1280px">
+      <div style="font-size:13px;font-weight:900;color:#00ff99;letter-spacing:.08em;margin-bottom:8px">⬡ CORDELIUS MARKET BRAIN</div>
+      <div style="color:#9fb3c8;font-size:13px">Sin datos todavía. Se genera al arranque y cada 15 min.</div>
+      <button onclick="runMarketBrainScan()" style="margin-top:10px;background:rgba(0,255,153,.1);color:#00ff99;border:1px solid rgba(0,255,153,.3);border-radius:99px;padding:6px 18px;font-size:12px;cursor:pointer;font-weight:800">Generar ahora ▸</button>
+    </div>`;
+  }
+  const confC  = CONF_COLOR[brain.confidence] || "#ffd35c";
+  const regC   = REGIME_COLOR[(brain.marketRegime||"").toUpperCase()] || "#ffd35c";
+  const riskRows = (brain.topRisks || []).slice(0,3).map(r =>
+    `<li style="color:#ff8888;font-size:12px;margin-bottom:3px">⚑ ${esc(r)}</li>`).join("");
+  const oppRows  = (brain.topOpportunities || []).slice(0,3).map(o =>
+    `<li style="color:#00ff99;font-size:12px;margin-bottom:3px">★ ${esc(o)}</li>`).join("");
+  const watchChips = (brain.watchlist || []).slice(0,8).map(s =>
+    `<span style="display:inline-block;border:1px solid rgba(0,255,153,.25);border-radius:8px;padding:2px 9px;font-size:11px;margin:2px;color:#b8ffd9;font-weight:700">${esc(s)}</span>`).join("");
+  const qRows = (brain.questionsToAskPedro || []).slice(0,3).map(q =>
+    `<li style="color:#9fb3c8;font-size:12px;margin-bottom:3px">? ${esc(q)}</li>`).join("");
+  const ho = brain.healthOverlay || {};
+  const brainAge = brain.timestamp ? Math.round((Date.now() - new Date(brain.timestamp).getTime()) / 60000) : null;
+  const ageStr = brainAge !== null ? (brainAge < 60 ? brainAge + " min" : Math.floor(brainAge/60) + "h") : "—";
+  return `<div style="background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.12);border-radius:20px;padding:20px 24px;margin:0 auto 12px;max-width:1280px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <span style="font-size:13px;font-weight:900;color:#00ff99;letter-spacing:.08em">⬡ CORDELIUS MARKET BRAIN</span>
+      <span style="margin-left:10px;font-size:11px;color:#9fb3c8">${esc(brain.hourBlock || brain.date)} · hace ${ageStr}</span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span style="background:${regC}22;color:${regC};border:1px solid ${regC}44;border-radius:99px;padding:2px 10px;font-size:11px;font-weight:900">${esc(brain.marketRegime)}</span>
+      <span style="background:${confC}22;color:${confC};border:1px solid ${confC}44;border-radius:99px;padding:2px 10px;font-size:11px;font-weight:900">CONF ${esc(brain.confidence)}</span>
+      <button onclick="runMarketBrainScan()" style="background:rgba(0,255,153,.1);color:#00ff99;border:1px solid rgba(0,255,153,.3);border-radius:99px;padding:4px 14px;font-size:11px;cursor:pointer;font-weight:800">↺ Rescan</button>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px">
+    <div>
+      <div style="font-size:11px;color:#9fb3c8;font-weight:700;margin-bottom:6px;letter-spacing:.06em">RIESGOS</div>
+      <ul style="margin:0;padding:0;list-style:none">${riskRows || '<li style="color:#9fb3c8;font-size:12px">Sin riesgos críticos</li>'}</ul>
+    </div>
+    <div>
+      <div style="font-size:11px;color:#9fb3c8;font-weight:700;margin-bottom:6px;letter-spacing:.06em">OPORTUNIDADES</div>
+      <ul style="margin:0;padding:0;list-style:none">${oppRows || '<li style="color:#9fb3c8;font-size:12px">Sin oportunidades claras</li>'}</ul>
+    </div>
+    <div>
+      <div style="font-size:11px;color:#9fb3c8;font-weight:700;margin-bottom:6px;letter-spacing:.06em">WATCHLIST BRAIN</div>
+      <div>${watchChips || '<span style="color:#9fb3c8;font-size:12px">—</span>'}</div>
+      <div style="margin-top:10px;font-size:11px;color:#9fb3c8;font-weight:700;letter-spacing:.06em">ESTADO SALUD</div>
+      <div style="font-size:12px;color:#b8ffd9;margin-top:4px">${esc(ho.operatingMode||"—")} · Recovery ${ho.recovery != null ? ho.recovery + "%" : "—"} · Capacidad ${esc(ho.tradingCapacity||"—")}</div>
+    </div>
+    <div>
+      <div style="font-size:11px;color:#9fb3c8;font-weight:700;margin-bottom:6px;letter-spacing:.06em">PREGUNTAS PARA PEDRO</div>
+      <ul style="margin:0;padding:0;list-style:none">${qRows || '<li style="color:#9fb3c8;font-size:12px">—</li>'}</ul>
+      ${brain.tomorrowPrep ? `<div style="margin-top:8px;font-size:11px;color:#ffd35c;font-weight:700">PLAN: ${esc(brain.tomorrowPrep)}</div>` : ""}
+    </div>
+  </div>
+  ${brain.newsSummary ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06);font-size:11px;color:#9fb3c8"><b style="color:#b8ffd9">Noticias:</b> ${esc((brain.newsSummary||"").slice(0,240))}</div>` : ""}
+</div>`;
 }
 
 function renderAlertsPanel() {
@@ -5302,6 +5591,7 @@ ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
 <div id="mod-intelligence" class="mod">
+${renderMarketBrainPanel()}
 ${renderStockResearch()}
 ${renderDailyBrief()}
 ${renderMorningReport()}
@@ -6420,6 +6710,22 @@ async function ackAlert(alertId) {
     }
   } catch(e) {}
 }
+async function runMarketBrainScan() {
+  try {
+    var btn = event && event.target ? event.target : null;
+    if (btn) { btn.textContent = '⟳ Escaneando…'; btn.disabled = true; }
+    var r = await fetch('/api/market/brain/run', { method: 'POST' });
+    if (r.ok) {
+      if (btn) btn.textContent = '✓ Listo';
+      setTimeout(function(){ location.reload(); }, 800);
+    } else {
+      if (btn) { btn.textContent = '↺ Rescan'; btn.disabled = false; }
+    }
+  } catch(e) {
+    var btn2 = event && event.target ? event.target : null;
+    if (btn2) { btn2.textContent = '↺ Rescan'; btn2.disabled = false; }
+  }
+}
 </script>
 </html>`;
 }
@@ -7357,6 +7663,89 @@ if (path === "/api/whoop/today") {
     }
   }
 
+  // ---- Market Brain API ----
+  if (path === "/api/market/brain" && req.method === "GET") {
+    try {
+      const brain = readJSONSafe(MARKET_BRAIN_FILE, null);
+      if (!brain || !brain.date) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, available: false, message: "Sin datos todavía. Genera con POST /api/market/brain/run." }));
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, available: true, brain }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/market/brain/run" && req.method === "POST") {
+    try {
+      _lastBrainHourBlock = null; // force fresh scan
+      buildMarketBrain();
+      const brain = readJSONSafe(MARKET_BRAIN_FILE, null);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, brain }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/market/watchlist" && req.method === "GET") {
+    try {
+      const custom   = readJSONSafe(MARKET_WATCHLIST_FILE, []);
+      const fromRadar = (function(){ try { return computeMarketRadar().hotTickers.slice(0,10).map(t=>t.symbol); } catch(e){ return []; } })();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, custom: Array.isArray(custom) ? custom : [], fromRadar, merged: Array.from(new Set([...fromRadar, ...(Array.isArray(custom)?custom:[])])).slice(0,20) }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/market/watchlist/add" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.symbol) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: "symbol requerido" }));
+        }
+        addWatchlistSymbol(input.symbol);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, symbol: (input.symbol||"").toUpperCase().trim() }));
+      } catch(e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (path === "/api/market/watchlist/remove" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.symbol) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: "symbol requerido" }));
+        }
+        removeWatchlistSymbol(input.symbol);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, symbol: (input.symbol||"").toUpperCase().trim() }));
+      } catch(e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
@@ -7451,6 +7840,10 @@ async function boot() {
     // Proactive alerts — every 5 minutes (dedup prevents spam)
     try { checkAlerts(); } catch(e) { console.log("checkAlerts boot omitido:", e.message); }
     setInterval(() => { try { checkAlerts(); } catch(e) {} }, 5 * 60 * 1000);
+
+    // Market Brain — on boot + every 15 minutes
+    try { buildMarketBrain(); } catch(e) { console.log("buildMarketBrain boot omitido:", e.message); }
+    setInterval(() => { try { buildMarketBrain(); } catch(e) {} }, 15 * 60 * 1000);
 
   }, 500);
 }
