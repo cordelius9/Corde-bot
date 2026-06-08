@@ -6,6 +6,7 @@ const PORT = process.env.PORT || 3000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const QUIVER_API_KEY = process.env.QUIVER_API_KEY || "";
+const PAC_API_KEY = process.env.PAC_API_KEY || null;
 const QUIVER_CACHE_MS = 2 * 60 * 60 * 1000;
 // WHOOP vars — read at runtime, never logged
 const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLIENT_SECRET);
@@ -19,6 +20,7 @@ const CHAT_FILE = "alfredo_chat_history.json";
 const SETTINGS_FILE = "cordelius_settings.json";
 const INTEL_FILE = "cordelius_intel.json";
 const JOURNAL_FILE = "cordelius_journal.json";
+
 const HEALTH_SNAPSHOT_FILE = "data/health_snapshots.json";
 const HEALTH_BEHAVIOR_FILE = "data/health_behaviors.json";
 const PORTFOLIO_SNAPSHOT_FILE = "data/portfolio_snapshots.json";
@@ -29,6 +31,10 @@ const OPPORTUNITY_ENGINE_FILE = "data/opportunity_engine.json";
 const OPPORTUNITY_HISTORY_FILE = "data/opportunity_history.json";
 const STOCK_RESEARCH_CACHE_FILE = "data/stock_research_cache.json";
 const RESEARCH_QUEUE_FILE = "data/research_queue.json";
+
+const WHOOP_TOKEN_FILE = "whoop_tokens.json";
+const WHOOP_CACHE_MS = 5 * 60 * 1000;
+
 
 function ensureDataDir() {
   try { fs.mkdirSync("data", { recursive: true }); } catch (e) {}
@@ -85,7 +91,9 @@ function nowMX() { return new Date().toLocaleString("es-MX"); }
 
 let settings = loadJSON(SETTINGS_FILE, {
   thinkingEnabled: true, autoRefreshSeconds: 60, themeMode: "neural",
+
   appName: "Cordelius", assistantName: "Jarvis"
+
 });
 const CORDA_APP_NAME = "Cordelius";
 const CORDA_APP_SUBTITLE = "Personal intelligence OS";
@@ -96,6 +104,8 @@ let chatHistory = loadJSON(CHAT_FILE, []);
 let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
 let journalEntries = loadJSON(JOURNAL_FILE, []);
+let whoopTokens = loadJSON(WHOOP_TOKEN_FILE, null);
+let whoopCache = { profile: null, cycle: null, recovery: null, lastFetch: 0, connected: false };
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
@@ -125,8 +135,9 @@ const PORTFOLIO = [
 const TV_SYMBOL = {
   AAPL: "NASDAQ:AAPL", BBVA: "BMV:BBVA", MSFT: "NASDAQ:MSFT", GEV: "NYSE:GEV", IREN: "NASDAQ:IREN",
   PLTR: "NASDAQ:PLTR", AEP: "NASDAQ:AEP", UNH: "NYSE:UNH", SSYS: "NASDAQ:SSYS", PATH: "NYSE:PATH",
-  COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX", XRP: "BINANCE:XRPUSDT", BTC: "BINANCE:BTCUSDT",
-  ETH: "BINANCE:ETHUSDT", BCH: "BINANCE:BCHUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
+  COPX: "AMEX:COPX", NFLX: "NASDAQ:NFLX",
+  BTC: "BITSTAMP:BTCUSD", ETH: "BITSTAMP:ETHUSD", BCH: "COINBASE:BCHUSD",
+  XRP: "BINANCE:XRPUSDT", MANA: "BINANCE:MANAUSDT", SHIB: "BINANCE:SHIBUSDT"
 };
 
 const MARKET_WATCHLIST = ["NVDA","TSLA","AMD","META","GOOGL","AMZN","AAPL","MSFT","PLTR","NFLX","SMCI","COIN","MSTR","SOFI","HOOD","RIVN","NIO","BABA","UNH","LLY","AVGO","QQQ","SPY"];
@@ -148,27 +159,115 @@ function apiGet(url) {
   });
 }
 
-async function refreshQuotes() {
-  for (const a of PORTFOLIO) {
-    if (a.type === "crypto") {
-      const drift = ((Math.random() - 0.5) * 1.8);
-      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/bitso" };
-      continue;
+function apiGetAuth(url, token) {
+  return new Promise(resolve => {
+    try {
+      const parsed = new URL(url);
+      const opts = { hostname: parsed.hostname, port: 443, path: parsed.pathname + parsed.search, method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } };
+      const req = https.request(opts, res => {
+        let data = "";
+        res.on("data", c => data += c);
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(12000, () => { req.destroy(); resolve(null); });
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+function apiPost(url, bodyStr, extraHeaders = {}) {
+  return new Promise(resolve => {
+    try {
+      const parsed = new URL(url);
+      const opts = { hostname: parsed.hostname, port: 443, path: parsed.pathname, method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(bodyStr), ...extraHeaders } };
+      const req = https.request(opts, res => {
+        let data = "";
+        res.on("data", c => data += c);
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(12000, () => { req.destroy(); resolve(null); });
+      req.write(bodyStr);
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+// ── WHOOP OAuth + API ─────────────────────────────────────────────────────────
+const WHOOP_API_BASE = "https://api.prod.whoop.com";
+const WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token";
+
+async function refreshWhoopToken() {
+  if (!whoopTokens || !whoopTokens.refresh_token) return false;
+  const cid = process.env.WHOOP_CLIENT_ID || "";
+  const csec = process.env.WHOOP_CLIENT_SECRET || "";
+  if (!cid || !csec) return false;
+  try {
+    const body = [
+      "grant_type=refresh_token",
+      "refresh_token=" + encodeURIComponent(whoopTokens.refresh_token),
+      "client_id=" + encodeURIComponent(cid),
+      "client_secret=" + encodeURIComponent(csec),
+      "scope=" + encodeURIComponent("offline read:profile read:body_measurement read:cycles read:recovery read:sleep read:workout")
+    ].join("&");
+    const result = await apiPost(WHOOP_TOKEN_URL, body);
+    if (result && result.access_token) {
+      whoopTokens = { ...whoopTokens, ...result, expires_at: Date.now() + (result.expires_in || 3600) * 1000 };
+      saveJSON(WHOOP_TOKEN_FILE, whoopTokens);
+      return true;
     }
-    if (a.source === "GBM" || a.type === "stock_mx") {
-      const drift = ((Math.random() - 0.45) * 1.2);
-      quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/gbm" };
-      continue;
-    }
-    if (FINNHUB_API_KEY && a.liveTicker) {
-      const j = await apiGet(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(a.liveTicker)}&token=${FINNHUB_API_KEY}`);
-      if (j && Number(j.c)) {
-        quotes[a.symbol] = { price: Number(j.c), value: Number(j.c) * a.units, day: Number(j.dp || 0), ok: true, source: "finnhub" };
-        continue;
-      }
-    }
-    const drift = ((Math.random() - 0.45) * 1.2);
-    quotes[a.symbol] = { price: a.valueManual / Math.max(a.units, 1e-8), value: a.valueManual * (1 + drift / 100), day: drift, ok: true, source: "manual/plata" };
+  } catch (e) { console.log("WHOOP refresh error:", e.message); }
+  return false;
+}
+
+async function fetchWhoopAPI(path) {
+  if (!whoopTokens || !whoopTokens.access_token) return null;
+  if (whoopTokens.expires_at && Date.now() > whoopTokens.expires_at - 60000) {
+    const ok = await refreshWhoopToken();
+    if (!ok) return null;
+  }
+  return apiGetAuth(WHOOP_API_BASE + path, whoopTokens.access_token);
+}
+
+async function refreshWhoopCache() {
+  if (!whoopTokens || !whoopTokens.access_token) {
+    whoopCache.connected = false;
+    return;
+  }
+
+  if (Date.now() - whoopCache.lastFetch < WHOOP_CACHE_MS) return;
+
+  try {
+    const [profile, cycle, recovery, sleep] = await Promise.all([
+      fetchWhoopAPI("/developer/v2/user/profile/basic"),
+      fetchWhoopAPI("/developer/v2/cycle?limit=1"),
+      fetchWhoopAPI("/developer/v2/recovery?limit=1"),
+      fetchWhoopAPI("/developer/v2/activity/sleep?limit=1")
+    ]);
+
+    whoopCache.profile = profile;
+    whoopCache.cycle = cycle;
+    whoopCache.recovery = recovery;
+    whoopCache.sleep = sleep;
+    whoopCache.connected = !!(
+      (cycle && cycle.records && cycle.records.length) ||
+      (recovery && recovery.records && recovery.records.length) ||
+      (sleep && sleep.records && sleep.records.length)
+    );
+    whoopCache.lastFetch = Date.now();
+
+    saveJSON("whoop_today_cache.json", {
+      lastFetch: whoopCache.lastFetch,
+      connected: whoopCache.connected,
+      profile,
+      cycle,
+      recovery,
+      sleep
+    });
+  } catch (e) {
+    console.log("WHOOP refresh error:", e.message);
+    whoopCache.connected = false;
   }
 }
 
@@ -512,10 +611,25 @@ function computeDailyScan() {
   const energyMatches = allQuiverMatches.filter(x => energySyms.includes(x.symbol)).length;
   const healthMatches = allQuiverMatches.filter(x => healthSyms.includes(x.symbol)).length;
 
+  const intelAffected = [...new Set(intelItems.flatMap(x => x.affected || []))];
+  const intelPositive = intelItems.filter(x => x.mood === "POSITIVO").length;
+  const intelNegative = intelItems.filter(x => x.mood === "NEGATIVO").length;
+  const intelHotTickers = intelAffected
+    .map(sym => ({
+      symbol: sym,
+      count: intelItems.filter(x => (x.affected || []).includes(sym)).length,
+      pos: intelItems.filter(x => (x.affected || []).includes(sym) && x.mood === "POSITIVO").length,
+      neg: intelItems.filter(x => (x.affected || []).includes(sym) && x.mood === "NEGATIVO").length,
+      inPortfolio: !!pv.assets.find(a => a.symbol === sym)
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
   const marketThemes = [];
   if (techMatches > 3)   marketThemes.push({ theme: "Tech / AI Infrastructure",   strength: techMatches > 12   ? "FUERTE" : "MODERADO",   quiverSignals: techMatches,   tickers: techSyms.filter(s => pv.assets.find(a => a.symbol === s)) });
   if (energyMatches > 1) marketThemes.push({ theme: "Energia / Grid / Cobre",      strength: energyMatches > 6  ? "FUERTE" : "MODERADO",   quiverSignals: energyMatches, tickers: energySyms });
   if (healthMatches > 0) marketThemes.push({ theme: "Healthcare / Regulacion",     strength: healthMatches > 4  ? "FUERTE" : "BAJO",       quiverSignals: healthMatches, tickers: healthSyms });
+  if (intelItems.length) marketThemes.push({ theme: "Cordelius Intelligence Manual", strength: intelNegative > intelPositive ? "DEFENSIVO" : "ACTIVO", quiverSignals: 0, intelSignals: intelItems.length, tickers: intelHotTickers.map(x => x.symbol), hotTickers: intelHotTickers });
   if (bitsoPct > 40)     marketThemes.push({ theme: "Cripto concentrado",          strength: "ALTO RIESGO",    quiverSignals: 0,            tickers: cryptoSyms, alert: true });
   if (!marketThemes.length) marketThemes.push({ theme: "Sin temas dominantes",     strength: "NEUTRAL",        quiverSignals: 0,            tickers: [] });
 
@@ -550,6 +664,7 @@ function computeDailyScan() {
   if (bitsoPct > 60) summaryLines.push("Concentracion cripto muy alta (" + bitsoPct.toFixed(0) + "%). Bitso domina el portafolio — revisa exposicion.");
   else if (bitsoPct > 45) summaryLines.push("Cripto/Bitso sobre 45% (" + bitsoPct.toFixed(0) + "%) — vigilar correlacion en caidas.");
   if (allQuiverMatches.length > 0) summaryLines.push(allQuiverMatches.length + " senales institucionales en tus activos (Quiver: congreso, insiders, contratos).");
+  if (intelItems.length > 0) summaryLines.push("Intel manual: " + intelItems.length + " items (" + intelPositive + " positivos, " + intelNegative + " negativos) cruzados contra tus tickers.");
   const topAsset = ranked[0], bottomAsset = ranked[ranked.length - 1];
   summaryLines.push("Mejor posicion: " + topAsset.symbol + " (score " + topAsset.score + "/100, " + (topAsset.gainPct >= 0 ? "+" : "") + topAsset.gainPct.toFixed(0) + "%).");
   summaryLines.push("Activo a vigilar: " + bottomAsset.symbol + " (score " + bottomAsset.score + "/100, " + bottomAsset.gainPct.toFixed(1) + "%).");
@@ -588,7 +703,18 @@ function computeDailyScan() {
     negativeCount: intelNegativeCount,
     manualMarketTheme,
     rawMatchesLimited: allQuiverMatches.slice(0, 20),
-    intel: { count: intelItems.length, positiveCount: intelPositiveCount, negativeCount: intelNegativeCount, affectedTickers, hotTickers, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
+
+    intel: {
+      count: intelItems.length,
+      positive: intelPositiveCount,
+      negative: intelNegativeCount,
+      positiveCount: intelPositiveCount,
+      negativeCount: intelNegativeCount,
+      affectedTickers,
+      hotTickers,
+      recent: intelItems.slice(0, 5).map(x => ({ mood: x.mood, affected: x.affected, tags: x.tags, time: x.time, snippet: String(x.text || "").slice(0, 180) }))
+    }
+
   };
 }
 
@@ -1446,7 +1572,9 @@ async function askClaude(question, localReply, pv, reg, botEq, botPnl) {
   };
 
   const prompt = `
+
 Eres Jarvis AI dentro de Cordelius. Responde en español mexicano, claro, directo y útil.
+
 No eres asesor financiero. Da análisis educativo, no órdenes definitivas.
 Usa SIEMPRE los costos originales y valores reales del portafolio cuando hables de rendimiento.
 
@@ -1798,10 +1926,19 @@ function brainHtml() {
     "left:2%;top:67%",  "left:19%;top:62%", "left:38%;top:70%", "left:56%;top:63%",
     "left:72%;top:70%", "left:86%;top:61%", "left:10%;top:84%", "left:46%;top:88%",
   ];
-  return `<div class="brain-card">
+  return `<details class="brain-card" style="cursor:pointer">
+    <summary style="list-style:none;display:flex;align-items:center;justify-content:space-between;padding:14px 20px;user-select:none">
+      <div>
+        <div class="brain-title" style="font-size:16px">Mapa vivo del sistema</div>
+        <div class="brain-sub">Vista visual de conexiones entre portafolio, riesgo, cripto, noticias y health.</div>
+      </div>
+      <span class="btn" style="font-size:12px;padding:5px 12px">Expandir ▾</span>
+    </summary>
     <div class="brain-left">
+
       <div class="brain-title">Cerebro Jarvis AI</div>
-      <div class="brain-sub">Red neuronal viva: datos → análisis → señales → decisiones</div>
+      <div class="brain-sub" style="margin:8px 16px 4px">Red neuronal viva: datos → análisis → señales → decisiones</div>
+
       <div class="brain" style="min-height:380px">
         ${nodes.map((n, i) => `<span class="brain-node" style="${positions[i]};${n.color ? "color:"+n.color+";border-color:"+n.color+"44" : ""}">${esc(n.label)}<i class="pulse" style="animation-delay:${n.delay}s"></i></span>`).join("")}
         <svg viewBox="0 0 700 380" class="brain-lines" preserveAspectRatio="none">
@@ -1831,7 +1968,7 @@ function brainHtml() {
       <div class="feed-title">Pensamientos en vivo</div>
       ${thoughts.length ? thoughts.map(t => `<div class="thought ${esc(t.level)}"><b>${esc(t.level.toUpperCase())}</b> ${esc(t.text)}<small>${esc(t.time)}</small></div>`).join("") : `<div class="thought scan">Esperando señales del mercado...</div>`}
     </div>
-  </div>`;
+  </details>`;
 }
 
 function renderPortfolioRows(assets) {
@@ -1863,12 +2000,16 @@ function renderPortfolioRows(assets) {
       <div class="asset-detail">
         <div class="detail-chart">${miniSpark(a.symbol, a.gainPct >= 0 ? "#00ff99" : "#ff4d6d")}</div>
         <div class="detail-grid" style="margin-bottom:14px">
+          <div><span>Broker / origen</span><b>${esc(a.source)}</b></div>
           <div><span>Cantidad</span><b>${unitsLabel}</b></div>
           <div><span>Costo original</span><b>${money(a.costMXN)}</b></div>
           <div><span>Valor actual</span><b>${money(a.valueMXN)}</b></div>
           <div><span>Ganancia MXN</span><b class="${a.gainMXN >= 0 ? "green" : "red"}">${money(a.gainMXN)}</b></div>
+          <div><span>Ganancia %</span><b class="${a.gainPct >= 0 ? "green" : "red"}">${pct(a.gainPct)}</b></div>
           <div><span>Promedio compra</span><b>${avgLabel}</b></div>
           <div><span>Precio actual</span><b>${curLabel}</b></div>
+          <div><span>Cambio del día</span><b class="muted">N/D — sin feed en tiempo real</b></div>
+          <div><span>Última actualización</span><b class="muted">${esc(a.quoteSource === "live" ? "Live feed" : "Local: " + nowMX())}</b></div>
         </div>
         <div class="ind-row">
           <div class="ind"><span>RSI</span><b class="${ind.rsi > 70 ? "red" : ind.rsi < 30 ? "green" : ""}">${ind.rsi}</b></div>
@@ -1884,13 +2025,26 @@ function renderPortfolioRows(assets) {
           <div class="as-head"><b style="color:${act.color}">${act.action}</b><span class="muted">Score ${act.score}/100</span></div>
           <ul>${act.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
         </div>
+        <div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:14px;padding:12px 16px;margin-bottom:12px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">¿Por qué vigilarlo?</div>
+          <div style="font-size:13px;color:#c8d8f0">
+            ${a.risk === "ALTO" ? `⚠ Riesgo alto — score ${a.score}/100. ` : ""}
+            ${a.gainPct < -15 ? `Caída de ${pct(a.gainPct)} desde costo. ` : a.gainPct > 50 ? `Ganancia de ${pct(a.gainPct)} — evaluar toma parcial. ` : ""}
+            ${a.type === "crypto" ? "Activo cripto: volatilidad elevada. " : ""}
+            ${a.signal.includes("BUY") ? "Señal educativa de entrada detectada. " : a.signal.includes("VIGILAR") ? "Señal de vigilancia activa. " : ""}
+            ${a.score >= 65 ? "Score sólido — mantener y monitorear." : a.score < 35 ? "Score bajo — no promediar sin revisar la tesis." : "Score neutro — monitoreo regular recomendado."}
+          </div>
+        </div>
         <div class="detail-grid">
           <div><span>Zona compra</span><b>${a.currency === "USD" ? money(z.buy, "USD") : money(z.buy)}</b></div>
           <div><span>Zona venta</span><b>${a.currency === "USD" ? money(z.sell, "USD") : money(z.sell)}</b></div>
           <div><span>Stop educativo</span><b>${a.currency === "USD" ? money(z.stop, "USD") : money(z.stop)}</b></div>
           <div><span>Fuente precio</span><b>${esc(a.quoteSource)}</b></div>
         </div>
-        <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Abrir TradingView de ${esc(a.symbol)}</a>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
+          <button onclick="setAlfredoQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+        </div>
       </div>
     </details>`;
   }).join("");
@@ -2307,30 +2461,42 @@ function renderDailyScanCard() {
 function renderNews() {
   if (!news.length) return `<div class="muted">Cargando noticias...</div>`;
   const portfolioSymbols = new Set(PORTFOLIO.map(a => a.symbol));
-  function newsCard(n) {
+  function newsCard(n, openByDefault) {
     const c = n.classification;
-    const img = n.image ? `<img class="news-img" src="${esc(n.image)}" alt="">` : `<div class="news-img placeholder">NEWS</div>`;
     const impacted = n.impacted && n.impacted.length ? n.impacted : ["Mercado"];
     const dateStr = n.datetime ? new Date(n.datetime * 1000).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
-    return `<div class="news-card">${img}<div class="news-body">
-      <div class="chips"><span>${esc(c.type)}</span><span style="background:${c.impactColor}22;border-color:${c.impactColor}55;color:${c.impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span><span>${esc(n.source || "Fuente")}</span>${dateStr ? `<span style="color:#9fb3c8">${esc(dateStr)}</span>` : ""}</div>
-      <h3>${esc(n.headline || "Sin titulo")}</h3>
-      <p>${esc((n.summary || "").slice(0, 240))}</p>
-      <div class="impact"><b>Activos impactados:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
-      <div class="why">Lectura Jarvis: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
-      <a target="_blank" href="${esc(n.url || "#")}">Abrir fuente ↗</a>
-    </div></div>`;
+
+    const impactColor = c.impactColor || "#3b9dff";
+    const img = n.image ? `<img style="width:100%;max-height:180px;object-fit:cover;border-radius:12px;margin-bottom:12px" src="${esc(n.image)}" alt="">` : "";
+    return `<details class="news-item"${openByDefault ? " open" : ""}>
+      <summary>
+        <span style="flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:${impactColor};flex-shrink:0"></span>
+        <span style="flex:1;font-size:14px;font-weight:700;color:#dbeafe;line-height:1.35">${esc(n.headline || "Sin título")}</span>
+        ${n.source ? `<span style="flex:0 0 auto;font-size:10px;color:#9fb3c8;white-space:nowrap">${esc(n.source)}</span>` : ""}
+        ${dateStr ? `<span style="flex:0 0 auto;font-size:10px;color:#9fb3c8;white-space:nowrap">${esc(dateStr)}</span>` : ""}
+        <span class="ni-caret">▾</span>
+      </summary>
+      <div style="padding:0 16px 14px">
+        ${img}
+        <div class="chips"><span>${esc(c.type)}</span><span style="background:${impactColor}22;border-color:${impactColor}55;color:${impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span></div>
+        <p style="color:#cbd5e1;font-size:14px;margin:8px 0;line-height:1.6">${esc((n.summary || "").slice(0, 300))}</p>
+        <div class="impact"><b>Activos:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
+        <div class="why">Lectura Jarvis: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
+        <a target="_blank" href="${esc(n.url || "#")}" style="font-size:13px;color:#3b9dff">Leer fuente ↗</a>
+      </div>
+    </details>`;
+
   }
   const portfolioNews = news.filter(n => n.impacted && n.impacted.some(t => portfolioSymbols.has(t)));
   const externalNews = news.filter(n => !portfolioNews.includes(n));
   let html = "";
   if (portfolioNews.length) {
-    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin:8px 0 12px;max-width:1280px">Impactan tu portafolio (${portfolioNews.length})</div>`;
-    html += portfolioNews.map(newsCard).join("");
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin:8px 0 10px;max-width:1280px">Impactan tu portafolio (${portfolioNews.length})</div>`;
+    html += portfolioNews.map((n, i) => newsCard(n, i < 3)).join("");
   }
   if (externalNews.length) {
-    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#9fb3c8;margin:${portfolioNews.length ? "24px" : "8px"} 0 12px;max-width:1280px">Mercado general (${externalNews.length})</div>`;
-    html += externalNews.map(newsCard).join("");
+    html += `<div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#9fb3c8;margin:${portfolioNews.length ? "20px" : "8px"} 0 10px;max-width:1280px">Mercado general (${externalNews.length})</div>`;
+    html += externalNews.map((n, i) => newsCard(n, i < 2 && !portfolioNews.length)).join("");
   }
   return html || `<div class="muted">Sin noticias disponibles.</div>`;
 }
@@ -2609,22 +2775,387 @@ function computeOperatingMode(recovery) {
   return "NEUTRAL";
 }
 
+
+
+// === Cordelius Autopilot Database Memory ===
+const AUTOPILOT_FS = require("fs");
+const AUTOPILOT_PATH = require("path");
+
+const AUTOPILOT_DATA_DIR = AUTOPILOT_PATH.join(__dirname, "data");
+const HEALTH_SNAPSHOTS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "health_snapshots.json");
+const PORTFOLIO_SNAPSHOTS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "portfolio_snapshots.json");
+const TRADING_DECISIONS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "trading_decisions.json");
+function ensureAutopilotDataDir() {
+  if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
+    AUTOPILOT_FS.mkdirSync(AUTOPILOT_DATA_DIR, { recursive: true });
+  }
+}
+
+function readJSONSafe(file, fallback) {
+  try {
+    ensureAutopilotDataDir();
+    if (!AUTOPILOT_FS.existsSync(file)) {
+      writeJSONAtomic(file, fallback);
+      return fallback;
+    }
+    return JSON.parse(AUTOPILOT_FS.readFileSync(file, "utf8"));
+  } catch (e) {
+    console.log("readJSONSafe error:", file, e.message);
+    return fallback;
+  }
+}
+
+function writeJSONAtomic(file, data) {
+  ensureAutopilotDataDir();
+  const tmp = file + ".tmp";
+  const body = JSON.stringify(data, null, 2);
+  try {
+    AUTOPILOT_FS.writeFileSync(tmp, body);
+    AUTOPILOT_FS.renameSync(tmp, file);
+  } catch (e) {
+    console.log("writeJSONAtomic fallback:", file, e.message);
+    AUTOPILOT_FS.writeFileSync(file, body);
+  }
+}
+
+function appendAutopilotSnapshot(arr, item, maxLen, file) {
+  const next = Array.isArray(arr) ? arr.slice() : [];
+  next.unshift(item);
+  const trimmed = next.slice(0, maxLen || 200);
+  writeJSONAtomic(file, trimmed);
+  return trimmed;
+}
+
+function computeTradingSummaryWithHealth() {
+  const pv = portfolioValue();
+  const h = computeHealthReadiness ? computeHealthReadiness() : {};
+  const assets = Array.isArray(pv.assets) ? pv.assets : [];
+
+  const total = Number(pv.totalValueMXN || 0);
+  const cost = Number(pv.totalCostMXN || 0);
+  const gain = Number(pv.totalGainMXN || 0);
+  const gainPct = Number(pv.totalGainPct || 0);
+
+  const exposure = {
+    MXN: +total.toFixed(2),
+    USD: +assets.filter(a => a.source === "GBM" || a.currency === "USD").reduce((sum,a)=>sum+Number(a.valueMXN||0),0).toFixed(2),
+    CRYPTO: +assets.filter(a => a.type === "crypto" || a.source === "Bitso").reduce((sum,a)=>sum+Number(a.valueMXN||0),0).toFixed(2)
+  };
+
+  const ranked = assets
+    .map(a => ({
+      symbol: a.symbol,
+      name: a.name,
+      valueMXN: Number(a.valueMXN || 0),
+      gainMXN: Number((a.valueMXN || 0) - (a.costMXN || 0)),
+      gainPct: a.costMXN ? Number((((a.valueMXN || 0) - (a.costMXN || 0)) / a.costMXN * 100).toFixed(2)) : 0
+    }))
+    .sort((a,b) => b.gainPct - a.gainPct);
+
+  return {
+    timestamp: new Date().toISOString(),
+    equity: +total.toFixed(2),
+    pnl: +gainPct.toFixed(2),
+    cost: +cost.toFixed(2),
+    gainMXN: +gain.toFixed(2),
+    exposure,
+    topWinner: ranked[0] || null,
+    topLoser: ranked[ranked.length - 1] || null,
+    riskMode: h.operatingMode || h.mode || "NEUTRAL",
+    health: {
+      recovery: h.recovery ?? null,
+      sleep: h.sleep ?? null,
+      hrv: h.hrv ?? null,
+      strain: h.strain ?? null,
+      restingHeartRate: h.restingHeartRate ?? null,
+      operatingMode: h.operatingMode || h.mode || "NEUTRAL"
+    },
+    note: "Resumen real generado desde portfolioValue(). No es consejo financiero."
+  };
+}
+
+function getAutopilotDatabaseState() {
+  const healthSnapshots = readJSONSafe(HEALTH_SNAPSHOTS_FILE, []);
+  const portfolioSnapshots = readJSONSafe(PORTFOLIO_SNAPSHOTS_FILE, []);
+  const tradingDecisions = readJSONSafe(TRADING_DECISIONS_FILE, []);
+  const memory = readJSONSafe(AUTOPILOT_MEMORY_FILE, {
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    notes: []
+  });
+  const progress = readJSONSafe(CORDELIUS_PROGRESS_FILE, {
+    level: 1,
+    xp: 0,
+    streak: 0,
+    snapshots: 0,
+    lastSnapshotAt: null,
+    updatedAt: new Date().toISOString()
+  });
+
+  let health = {};
+  try {
+    health = typeof computeHealthReadiness === "function" ? computeHealthReadiness() : {};
+  } catch (e) {
+    health = {};
+  }
+
+  const tradingSummary = computeTradingSummaryWithHealth();
+
+  return {
+    ok: true,
+    stores: {
+      healthSnapshots,
+      portfolioSnapshots,
+      tradingDecisions,
+      memory,
+      progress
+    },
+    counts: {
+      health: healthSnapshots.length,
+      portfolio: portfolioSnapshots.length,
+      tradingDecisions: tradingDecisions.length,
+      memoryNotes: Array.isArray(memory.notes) ? memory.notes.length : 0
+    },
+    latest: {
+      health: healthSnapshots[0] || null,
+      portfolio: portfolioSnapshots[0] || null,
+      tradingDecision: tradingDecisions[0] || null
+    },
+    tradingSummary,
+    health
+  };
+}
+
+function saveAutopilotSnapshot() {
+  const now = new Date().toISOString();
+
+  let health = {};
+  try {
+    health = typeof computeHealthReadiness === "function" ? computeHealthReadiness() : {};
+  } catch (e) {
+    health = {};
+  }
+
+  const tradingSummary = computeTradingSummaryWithHealth();
+
+  const healthSnapshots = readJSONSafe(HEALTH_SNAPSHOTS_FILE, []);
+  const portfolioSnapshots = readJSONSafe(PORTFOLIO_SNAPSHOTS_FILE, []);
+  const tradingDecisions = readJSONSafe(TRADING_DECISIONS_FILE, []);
+  const progress = readJSONSafe(CORDELIUS_PROGRESS_FILE, {
+    level: 1,
+    xp: 0,
+    streak: 0,
+    snapshots: 0,
+    lastSnapshotAt: null,
+    updatedAt: now
+  });
+
+  const healthEntry = {
+    timestamp: now,
+    source: "whoop_live",
+    recovery: health.recovery ?? null,
+    sleep: health.sleep ?? null,
+    hrv: health.hrv ?? null,
+    strain: health.strain ?? null,
+    restingHeartRate: health.restingHeartRate ?? null,
+    operatingMode: health.operatingMode ?? health.mode ?? null
+  };
+
+  const portfolioEntry = {
+    timestamp: now,
+    summary: tradingSummary
+  };
+
+  const decisionEntry = {
+    timestamp: now,
+    mode: tradingSummary.riskMode,
+    idea: null,
+    rule: tradingSummary.riskMode === "DEFENSIVO"
+      ? "Reducir riesgo y evitar decisiones impulsivas."
+      : tradingSummary.riskMode === "ÓPTIMO"
+        ? "Permitir análisis profundo con control de riesgo."
+        : "Operar normal/moderado con confirmación."
+  };
+
+  const nextHealth = appendAutopilotSnapshot(healthSnapshots, healthEntry, 200, HEALTH_SNAPSHOTS_FILE);
+  const nextPortfolio = appendAutopilotSnapshot(portfolioSnapshots, portfolioEntry, 200, PORTFOLIO_SNAPSHOTS_FILE);
+  const nextDecisions = appendAutopilotSnapshot(tradingDecisions, decisionEntry, 200, TRADING_DECISIONS_FILE);
+
+  const nextProgress = {
+    ...progress,
+    snapshots: (progress.snapshots || 0) + 1,
+    xp: (progress.xp || 0) + 10,
+    level: Math.max(1, Math.floor(((progress.xp || 0) + 10) / 100) + 1),
+    streak: (progress.streak || 0) + 1,
+    lastSnapshotAt: now,
+    updatedAt: now
+  };
+
+  writeJSONAtomic(CORDELIUS_PROGRESS_FILE, nextProgress);
+
+  return {
+    ok: true,
+    savedAt: now,
+    health: healthEntry,
+    portfolio: portfolioEntry,
+    tradingDecision: decisionEntry,
+    progress: nextProgress,
+    counts: {
+      health: nextHealth.length,
+      portfolio: nextPortfolio.length,
+      tradingDecisions: nextDecisions.length
+    }
+  };
+}
+
+function sendAutopilotJSON(res, obj, statusCode = 200) {
+  res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(obj));
+}
+
 function computeHealthReadiness() {
+  const cycleRec = whoopCache.cycle && whoopCache.cycle.records && whoopCache.cycle.records[0]
+    ? whoopCache.cycle.records[0]
+    : null;
+
+  const recoveryRec = whoopCache.recovery && whoopCache.recovery.records && whoopCache.recovery.records[0]
+    ? whoopCache.recovery.records[0]
+    : null;
+
+  const sleepRec = whoopCache.sleep && whoopCache.sleep.records && whoopCache.sleep.records[0]
+    ? whoopCache.sleep.records[0]
+    : null;
+
+  const cycleScore = cycleRec && cycleRec.score ? cycleRec.score : {};
+  const recoveryScore = recoveryRec && recoveryRec.score ? recoveryRec.score : {};
+  const sleepScore = sleepRec && sleepRec.score ? sleepRec.score : {};
+
+  const recovery = recoveryScore.recovery_score != null ? Math.round(recoveryScore.recovery_score) : null;
+  const sleep = sleepScore.sleep_performance_percentage != null ? Math.round(sleepScore.sleep_performance_percentage) : null;
+  const strain = cycleScore.strain != null ? cycleScore.strain : null;
+  const hrv = recoveryScore.hrv_rmssd_milli != null ? recoveryScore.hrv_rmssd_milli : null;
+  const restingHeartRate = recoveryScore.resting_heart_rate != null ? Math.round(recoveryScore.resting_heart_rate) : null;
+  const averageHeartRate = cycleScore.average_heart_rate != null ? Math.round(cycleScore.average_heart_rate) : null;
+  const maxHeartRate = cycleScore.max_heart_rate != null ? Math.round(cycleScore.max_heart_rate) : null;
+
+  const connected = !!(whoopTokens && whoopTokens.access_token && (recovery != null || sleep != null || strain != null || hrv != null));
+
+  let operatingMode = "NORMAL";
+  let suggestion = "usa modo neutral";
+
+  if (connected) {
+    if (recovery != null && recovery < 40) {
+      operatingMode = "DEFENSIVO";
+      suggestion = "baja agresividad, evita decisiones impulsivas y prioriza recuperación";
+    } else if (recovery != null && recovery < 65) {
+      operatingMode = "NEUTRAL";
+      suggestion = "modo moderado — evita decisiones impulsivas";
+    } else if (recovery != null && recovery >= 80 && strain != null && strain < 10) {
+      operatingMode = "ÓPTIMO";
+      suggestion = "buen día para enfoque profundo y decisiones con calma";
+    } else {
+      operatingMode = "NORMAL";
+      suggestion = "operación normal con control de riesgo";
+    }
+  }
+
   return {
     ok: true,
     configured: WHOOP_CONFIGURED,
-    source: WHOOP_CONFIGURED ? "whoop_pending_impl" : "whoop_pending",
-    recovery: null,
-    sleep: null,
-    strain: null,
-    hrv: null,
-    restingHeartRate: null,
-    operatingMode: computeOperatingMode(null),
-    message: WHOOP_CONFIGURED
-      ? "WHOOP API key detectada — implementación de datos en progreso."
-      : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
-    suggestion: "usa modo neutral",
-    educationalNote: "No es consejo médico. Sirve para contexto personal."
+    connected,
+    source: connected ? "whoop_live" : WHOOP_CONFIGURED ? "whoop_tokens_missing" : "not_configured",
+    recovery,
+    sleep,
+    strain,
+    hrv,
+    restingHeartRate,
+    averageHeartRate,
+    maxHeartRate,
+    operatingMode,
+    mode: operatingMode,
+    suggestion,
+    message: connected
+      ? `WHOOP conectado. Recovery: ${recovery ?? "—"}%. Sleep: ${sleep ?? "—"}%. Strain: ${strain != null ? strain.toFixed(1) : "—"}.`
+      : WHOOP_CONFIGURED
+        ? "WHOOP configurado — tokens pendientes o cache sin datos."
+        : "Conecta WHOOP para ajustar decisiones según sueño, recuperación y carga fisiológica.",
+    educationalNote: "No es consejo médico ni financiero."
+  };
+}
+
+function computeAutoJournal() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const idea = computeTradeIdea();
+  const cyc = whoopCache.cycle;
+  const dateStr = new Date().toLocaleDateString("es-MX", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+
+  const kilojoule = cyc && cyc.score && cyc.score.kilojoule != null ? cyc.score.kilojoule : null;
+  const scoreState = cyc && cyc.score && cyc.score.state ? cyc.score.state : null;
+
+  let moodEstimated = "neutral";
+  if (h.recovery !== null) {
+    moodEstimated = h.recovery >= 67 ? "positivo" : h.recovery >= 34 ? "neutral" : "low-strain";
+  } else if (h.strain !== null) {
+    moodEstimated = h.strain > 15 ? "caution" : "neutral";
+  }
+
+  let bodyState = "sin datos biométricos";
+  if (h.connected) {
+    if (h.recovery !== null) {
+      bodyState = h.recovery >= 67 ? "cuerpo óptimo — recovery alto"
+        : h.recovery >= 34 ? "cuerpo moderado — en recuperación"
+        : "cuerpo bajo — priorizar descanso";
+    } else if (h.strain !== null) {
+      bodyState = h.strain > 15 ? "cuerpo cargado — strain elevado"
+        : h.strain > 8 ? "cuerpo activo — strain moderado"
+        : "cuerpo descansado — strain bajo";
+    }
+  }
+
+  const tradingModeSuggestion = h.recovery !== null
+    ? (h.recovery >= 67 ? "NORMAL — condiciones óptimas para analizar" : h.recovery >= 34 ? "MODERADO — evitar posiciones nuevas grandes" : "DEFENSIVO — solo monitorear, no entrar")
+    : "NEUTRAL — sin datos biométricos, proceder con cautela";
+
+  const alfredoAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
+    (idea.hasIdea ? `Idea paper: ${idea.type} en ${idea.symbol}. ` : "") +
+    `Modo operativo: ${h.operatingMode}. ${h.suggestion}. NO es consejo médico ni financiero.`;
+
+  return {
+    ok: true,
+    source: h.connected ? "WHOOP + Cordelius" : "local_only",
+    date: dateStr,
+    moodEstimated,
+    bodyState,
+    operatingMode: h.operatingMode,
+    mode: h.operatingMode,
+    tradingModeSuggestion,
+    alfredoNote: alfredoAdvice,
+    alfredoAdvice,
+    // Top-level biometrics (used by renderJournalModule)
+    strain: h.strain,
+    averageHeartRate: h.averageHeartRate,
+    maxHeartRate: h.maxHeartRate,
+    recovery: h.recovery,
+    sleep: h.sleep,
+    hrv: h.hrv,
+    restingHeartRate: h.restingHeartRate,
+    portfolioSnapshot: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct },
+    whoop: {
+      connected: h.connected,
+      strain: h.strain,
+      averageHeartRate: h.averageHeartRate,
+      maxHeartRate: h.maxHeartRate,
+      kilojoule,
+      scoreState,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      mode: h.operatingMode,
+      alfredoAdvice
+    },
+    educationalNote: "Generado automáticamente. No es consejo médico ni financiero."
   };
 }
 
@@ -2970,40 +3501,124 @@ function renderAutopilotPanel() {
         <div class="muted" style="font-size:11px;margin-top:8px">Próximo: Termux:Boot — ver AUTOMATION.md</div>
       </div>
     </div>
+    <!-- PAC — Personal Autopilot Connection scaffold -->
+    <div style="margin-top:12px;padding:16px 18px;background:rgba(255,211,92,.03);border:1px solid rgba(255,211,92,.12);border-radius:16px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:7px;flex-wrap:wrap">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">PAC · Personal Autopilot Connection</div>
+        <span style="border-radius:99px;padding:2px 10px;font-size:10px;font-weight:900;background:rgba(255,211,92,.1);color:#ffd35c">${PAC_API_KEY ? "CONECTADO" : "PENDIENTE"}</span>
+      </div>
+      <div style="font-size:12px;color:#9fb3c8">${PAC_API_KEY ? '<span style="color:#00ff99;font-weight:900">● PAC conectado · listo para ejecución paper</span>' : 'Agrega <code style="color:#ffd35c;background:rgba(0,0,0,.3);padding:1px 6px;border-radius:5px">PAC_API_KEY</code> en .env para activar. Infraestructura de endpoints lista.'}</div>
+    </div>
+  </div>`;
+}
+
+function renderWhoopNotConnected() {
+  const h = computeHealthReadiness();
+  if (h.connected) {
+    // WHOOP is live — show status card with real data
+    const recColor = h.recovery !== null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+    return `<div style="max-width:1280px;margin:0 auto 12px">
+      <div style="border:1px solid rgba(0,255,153,.2);background:rgba(0,255,153,.05);border-radius:20px;padding:16px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <div style="font-size:28px">◉</div>
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:12px;font-weight:900;color:#00ff99;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px">WHOOP CONECTADO</div>
+          ${h.profile ? `<div style="font-size:13px;color:#9fb3c8">Usuario: ${esc(h.profile.first_name || "")} ${esc(h.profile.last_name || "")}</div>` : ""}
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${h.strain !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#eaf6ff">${h.strain.toFixed(1)}</div><div class="muted" style="font-size:10px">Strain</div></div>` : ""}
+          ${h.averageHeartRate !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#f472b6">${h.averageHeartRate}</div><div class="muted" style="font-size:10px">Avg HR</div></div>` : ""}
+          ${h.maxHeartRate !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#ff4d6d">${h.maxHeartRate}</div><div class="muted" style="font-size:10px">Max HR</div></div>` : ""}
+          ${h.recovery !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:${recColor}">${h.recovery}%</div><div class="muted" style="font-size:10px">Recovery</div></div>` : ""}
+          ${h.hrv !== null ? `<div style="text-align:center"><div style="font-size:22px;font-weight:900;color:#818cf8">${h.hrv.toFixed(1)}</div><div class="muted" style="font-size:10px">HRV ms</div></div>` : ""}
+        </div>
+        <div style="width:100%;font-size:12px;color:#9fb3c8;padding-top:6px;border-top:1px solid rgba(0,255,153,.1)">
+          Modo: <b style="color:#00ff99">${esc(h.operatingMode)}</b> · ${esc(h.suggestion)}
+        </div>
+      </div>
+    </div>`;
+  }
+  // Not connected — show setup instructions
+  const vars = { clientId: !!process.env.WHOOP_CLIENT_ID, clientSecret: !!process.env.WHOOP_CLIENT_SECRET, redirectUri: !!process.env.WHOOP_REDIRECT_URI };
+  const hasVars = vars.clientId && vars.clientSecret;
+  return `<div style="max-width:1280px;margin:0 auto 12px">
+    <div style="border:1px solid rgba(244,114,182,.25);background:rgba(244,114,182,.06);border-radius:20px;padding:18px 22px;display:flex;align-items:flex-start;gap:16px">
+      <div style="font-size:28px;margin-top:2px">◉</div>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:900;color:#f472b6;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">WHOOP no conectado</div>
+        ${hasVars
+          ? `<div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Env vars detectadas — necesitas completar el flujo OAuth para obtener tokens.</div><div style="font-size:12px;color:#9fb3c8">Visita <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">/whoop/auth</code> para iniciar la autorización.</div>`
+          : `<div style="font-size:14px;color:#eaf6ff;margin-bottom:8px">Sin datos de recuperación, sueño, HRV o strain.</div>
+             <div style="font-size:12px;color:#9fb3c8;margin-bottom:10px">Agrega en <code style="background:rgba(0,0,0,.3);padding:2px 7px;border-radius:6px">.env</code>:</div>
+             <div style="display:flex;flex-wrap:wrap;gap:6px">
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_ID=YOUR_CLIENT_ID</code>
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_CLIENT_SECRET=YOUR_CLIENT_SECRET</code>
+               <code style="background:rgba(0,0,0,.3);color:#ffd35c;padding:4px 10px;border-radius:8px;font-size:12px">WHOOP_REDIRECT_URI=http://localhost:3000/whoop/callback</code>
+             </div>`}
+      </div>
+    </div>
   </div>`;
 }
 
 function renderHealthReadinessPanel() {
   const h = computeHealthReadiness();
+  const cyc = whoopCache.cycle;
+  const scoreState = cyc && cyc.score && cyc.score.state ? cyc.score.state : null;
+  const kilojoule = cyc && cyc.score && cyc.score.kilojoule != null ? cyc.score.kilojoule : null;
+
+  const recColor = h.recovery !== null ? (h.recovery >= 67 ? "#00ff99" : h.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const slpColor = h.sleep !== null ? (h.sleep >= 70 ? "#00ff99" : h.sleep >= 50 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const strColor = h.strain !== null ? (h.strain > 15 ? "#ff4d6d" : h.strain > 8 ? "#ffd35c" : "#00ff99") : "#9fb3c8";
+  const hrvColor = h.hrv !== null ? (h.hrv >= 50 ? "#00ff99" : h.hrv >= 30 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8";
+  const stateColor = scoreState === "SCORED" ? "#00ff99" : scoreState ? "#ffd35c" : "#9fb3c8";
+
+  // id attr for each metric so JS can update live
   const metrics = [
-    { id: "health-recovery",       label: "Recovery",       value: h.recovery !== null ? h.recovery + "%" : "—", color: "#9fb3c8" },
-    { id: "health-sleep",          label: "Sleep",          value: h.sleep !== null ? h.sleep + "%" : "—", color: "#9fb3c8" },
-    { id: "health-strain",         label: "Strain",         value: h.strain !== null ? String(h.strain) : "—", color: "#9fb3c8" },
-    { id: "health-avg-hr",         label: "Avg HR",         value: "—", color: "#9fb3c8" },
-    { id: "health-max-hr",         label: "Max HR",         value: "—", color: "#9fb3c8" },
-    { id: "health-hrv",            label: "HRV",            value: h.hrv !== null ? h.hrv + " ms" : "—", color: "#9fb3c8" },
-    { id: "health-resting-hr",     label: "Resting HR",     value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—", color: "#9fb3c8" },
-    { id: "health-operating-mode", label: "Modo Operativo", value: h.operatingMode || "NORMAL", color: "#ffd35c" },
+
+    { id: "hr-recovery", label: "Recovery",   value: h.recovery !== null ? h.recovery + "%" : "—",                       color: recColor },
+    { id: "hr-sleep",    label: "Sleep",       value: h.sleep !== null ? h.sleep + "%" : "—",                             color: slpColor },
+    { id: "hr-strain",   label: "Strain",      value: h.strain !== null ? h.strain.toFixed(1) : "—",                      color: strColor },
+    { id: "hr-avghr",    label: "Avg HR",      value: h.averageHeartRate !== null ? h.averageHeartRate + " bpm" : "—",    color: "#f472b6" },
+    { id: "hr-maxhr",    label: "Max HR",      value: h.maxHeartRate !== null ? h.maxHeartRate + " bpm" : "—",            color: "#ff4d6d" },
+    { id: "hr-hrv",      label: "HRV",         value: h.hrv !== null ? h.hrv.toFixed(1) + " ms" : "—",                   color: hrvColor },
+    { id: "hr-rhr",      label: "Resting HR",  value: h.restingHeartRate !== null ? h.restingHeartRate + " bpm" : "—",   color: "#9fb3c8" },
+    { id: "hr-kj",       label: "Kilojoule",   value: kilojoule !== null ? kilojoule.toFixed(0) + " kJ" : "—",           color: "#9fb3c8" },
+    { id: "hr-state",    label: "Estado",      value: scoreState || "—",                                                   color: stateColor },
+    { id: "hr-mode",     label: "Modo",        value: h.operatingMode,                                                     color: "#ffd35c" },
   ];
-  return `<div id="health-readiness-panel" style="max-width:1280px;margin:0 auto 12px">
+
+  const badgeBg    = h.connected ? "rgba(0,255,153,.15)" : h.configured ? "rgba(255,211,92,.12)" : "rgba(120,160,210,.08)";
+  const badgeColor = h.connected ? "#00ff99" : h.configured ? "#ffd35c" : "#9fb3c8";
+  const badgeLabel = h.connected ? "● WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "SIN DATOS";
+
+  const pv = portfolioValue();
+  const idea = computeTradeIdea();
+  const jarvisAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
+    (idea.hasIdea ? `Idea paper: ${idea.type} en ${idea.symbol}. ` : "") +
+    `Modo: ${h.operatingMode}. ${h.suggestion}.`;
+
+  return `<div style="max-width:1280px;margin:0 auto 12px">
     <div class="panel" style="border:1px solid rgba(244,114,182,.18);background:rgba(244,114,182,.04);padding:16px 20px">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Cordelius Health Spotlight</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Readiness personal · no es consejo médico</div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health · Patrones personales</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">Sueño · Recovery · Energía · Hábitos · no consejo médico</div>
         </div>
-        <span id="health-whoop-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${h.configured ? "rgba(0,255,153,.15)" : "rgba(255,211,92,.12)"};color:${h.configured ? "#00ff99" : "#ffd35c"}">WHOOP ${h.configured ? "DETECTADO" : "PENDIENTE"}</span>
+        <span id="hr-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${badgeBg};color:${badgeColor}">${badgeLabel}</span>
+
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         ${metrics.map(m =>
-          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:90px">
+          `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:80px">
             <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
-            <div id="${esc(m.id)}" style="font-size:16px;font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
+
+            <div id="${m.id}" style="font-size:${m.id === "hr-state" ? "13px" : "16px"};font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
           </div>`
         ).join("")}
       </div>
-      <div id="health-advice" style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
-        ${esc(h.message || h.suggestion || "Esperando datos de salud.")}
+      <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
+        <b id="hr-mode-footer" style="color:#ffd35c">${esc(h.operatingMode)}</b> · <span id="hr-suggestion">${esc(h.suggestion)}</span>
+        <div style="margin-top:5px;font-size:12px;color:#9fb3c8"><span id="hr-advice">${esc(jarvisAdvice)}</span> <span style="opacity:.6">· No es consejo financiero.</span></div>
+
       </div>
       <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
     </div>
@@ -3011,35 +3626,176 @@ function renderHealthReadinessPanel() {
 }
 
 
-function renderHealthTrendPlaceholders() {
-  const trends = [
-    { label: "Recovery trend", color: "#f472b6", note: "histórico local pendiente" },
-    { label: "Sleep trend", color: "#818cf8", note: "histórico local pendiente" },
-    { label: "Strain trend", color: "#ffd35c", note: "histórico local pendiente" },
-    { label: "HRV trend", color: "#00ff99", note: "histórico local pendiente" },
-    { label: "Resting HR trend", color: "#3b9dff", note: "histórico local pendiente" },
-  ];
-  return `<div style="max-width:1280px;margin:0 auto 12px">
-    <div class="panel" style="border:1px solid rgba(244,114,182,.12);background:rgba(255,255,255,.025);padding:15px 18px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#f472b6">Health graphs</div>
-          <div class="muted" style="font-size:12px;margin-top:2px">Micrográficas listas para snapshots locales; no bloquean WHOOP live.</div>
+
+function renderHealthOSPanel() {
+  const h = computeHealthReadiness();
+
+  function clamp(n, min, max) {
+    n = Number(n);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function fmt(v, suffix) {
+    if (v === null || v === undefined || v === "") return "—";
+    if (typeof v === "number") {
+      const out = Math.abs(v) % 1 ? v.toFixed(1) : String(v);
+      return esc(out + (suffix || ""));
+    }
+    return esc(String(v) + (suffix || ""));
+  }
+
+  const recovery = clamp(h.recovery, 0, 100);
+  const sleep = clamp(h.sleep, 0, 100);
+  const strainRaw = Number(h.strain || 0);
+  const strainPct = clamp((strainRaw / 21) * 100, 0, 100);
+  const hrvScore = clamp((Number(h.hrv || 0) / 160) * 100, 0, 100);
+  const rhrScore = h.restingHeartRate ? clamp(100 - Math.max(0, Number(h.restingHeartRate) - 38) * 2, 0, 100) : 70;
+
+  const healthScore = Math.round(
+    recovery * 0.34 +
+    sleep * 0.24 +
+    hrvScore * 0.18 +
+    rhrScore * 0.12 +
+    (100 - strainPct) * 0.12
+  );
+
+  const status =
+    healthScore >= 85 ? "EXCELENTE" :
+    healthScore >= 70 ? "BUENO" :
+    healthScore >= 55 ? "MEDIO" :
+    healthScore >= 40 ? "BAJO" : "CRÍTICO";
+
+  const statusColor =
+    healthScore >= 70 ? "#00ff99" :
+    healthScore >= 55 ? "#ffd35c" :
+    "#ff4d6d";
+
+  const badgeLabel = h.connected ? "WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "WHOOP PENDIENTE";
+  const mode = h.operatingMode || "NORMAL";
+
+  function donut(label, value, raw, color) {
+    const v = clamp(value, 0, 100);
+    return `<div class="health-os-card health-os-donut-card">
+      <div class="health-os-donut" style="background:conic-gradient(${color} ${v}%, rgba(120,160,210,.13) 0)">
+        <div class="health-os-donut-inner">
+          <div class="health-os-donut-value">${esc(raw)}</div>
+          <div class="health-os-donut-label">${esc(label)}</div>
         </div>
-        <span style="font-size:11px;color:#9fb3c8;border:1px solid rgba(120,160,210,.14);border-radius:999px;padding:4px 10px">histórico: próximo</span>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-        ${trends.map(t => `<div style="border:1px solid rgba(120,160,210,.1);border-radius:14px;background:rgba(0,0,0,.18);padding:11px 12px">
-          <div style="font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${t.color}">${esc(t.label)}</div>
-          <div style="height:34px;margin:10px 0 6px;border-radius:10px;background:linear-gradient(90deg,${t.color}14,rgba(255,255,255,.04));position:relative;overflow:hidden">
-            <span style="position:absolute;left:8%;right:10%;top:16px;height:2px;background:${t.color};box-shadow:0 0 12px ${t.color};opacity:.7"></span>
+    </div>`;
+  }
+
+  const aiText = `Hoy tu sistema está en modo ${mode}. Recovery ${h.recovery ?? "—"}%, Sleep ${h.sleep ?? "—"}%, HRV ${h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—"} y Strain ${h.strain != null ? Number(h.strain).toFixed(1) : "—"}. Esto significa que tu cuerpo debe guiar el nivel de agresividad del día. Si la recuperación baja o el strain sube, conviene priorizar decisiones más lentas, menos impulsivas y con menor exposición. Para trading: evita sobreoperar, revenge trading y entradas grandes si estás cansado. Para estudio: enfócate en bloques profundos si la energía mental está alta; si no, usa tareas mecánicas. Para social: mantén planes que no drenen demasiado si el sistema nervioso está cargado. Prioridad: dormir bien, hidratarte, comer completo y registrar hábitos como sauna, cannabis, estrés o entrenamiento para detectar correlaciones.`;
+
+  return `<section id="health-os-shell" class="health-os-shell">
+    <style>
+      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.20),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
+      .health-os-hero{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
+      .health-os-title{font-size:44px;font-weight:950;letter-spacing:-.04em;background:linear-gradient(90deg,#f9a8d4,#3b9dff,#00ff99);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:6px 0}
+      .health-os-kicker{font-size:11px;font-weight:950;letter-spacing:.18em;text-transform:uppercase;color:#f472b6}
+      .health-os-sub{color:#9fb3c8;font-size:13px;line-height:1.6}
+      .health-os-badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;background:rgba(0,255,153,.12);border:1px solid rgba(0,255,153,.24);color:#00ff99;font-size:12px;font-weight:900}
+      .health-os-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
+      .health-os-card{border:1px solid rgba(120,160,210,.14);background:rgba(255,255,255,.045);border-radius:22px;padding:16px;box-shadow:inset 0 1px rgba(255,255,255,.04)}
+      .health-os-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px}
+      .health-os-value{font-size:30px;font-weight:950;color:#eaf6ff;line-height:1}
+      .health-os-small{font-size:12px;color:#9fb3c8;margin-top:7px;line-height:1.5}
+      .health-os-donut-row{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:14px;margin-bottom:14px}
+      .health-os-donut-card{display:flex;align-items:center;justify-content:center;min-height:230px}
+      .health-os-donut{width:178px;height:178px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 45px rgba(0,0,0,.35)}
+      .health-os-donut-inner{width:126px;height:126px;border-radius:50%;background:rgba(4,10,22,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.08)}
+      .health-os-donut-value{font-size:28px;font-weight:950;color:#eaf6ff}
+      .health-os-donut-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-top:4px}
+      .health-os-wide{grid-column:1/-1}
+      .health-os-ai{font-size:14px;color:#dbeafe;line-height:1.75}
+      .health-os-chip{display:inline-flex;border-radius:999px;padding:6px 11px;margin:4px;background:rgba(244,114,182,.08);border:1px solid rgba(244,114,182,.18);color:#f9a8d4;font-size:12px;font-weight:800}
+      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:24px}}
+    </style>
+
+    <div class="health-os-hero">
+      <div class="health-os-card">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <div class="health-os-kicker">Cordelius Health</div>
+            <div class="health-os-title">Biological Operating System</div>
+            <div class="health-os-sub">WHOOP-first · Health no depende del Journal · sistema educativo para energía, enfoque y riesgo de sobreoperar.</div>
           </div>
-          <div class="muted" style="font-size:11px">${esc(t.note)}</div>
-        </div>`).join("")}
+          <span id="health-os-whoop-badge" class="health-os-badge">● ${esc(badgeLabel)}</span>
+        </div>
       </div>
-      <div class="muted" style="font-size:11px;margin-top:10px">No es consejo médico. Usa esto solo como referencia personal.</div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Health Score</div>
+        <div id="health-os-score" class="health-os-value" style="color:${statusColor}">${healthScore}</div>
+        <div id="health-os-status" class="health-os-small" style="font-weight:900;color:${statusColor}">${status}</div>
+        <div class="health-os-small">Modo operativo: <b id="health-os-mode" style="color:#ffd35c">${esc(mode)}</b></div>
+      </div>
     </div>
-  </div>`;
+
+    <div class="health-os-grid">
+      <div class="health-os-card"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">${fmt(h.recovery, "%")}</div><div class="health-os-small">Capacidad de carga del día</div></div>
+      <div class="health-os-card"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">${fmt(h.sleep, "%")}</div><div class="health-os-small">Base de recuperación mental</div></div>
+      <div class="health-os-card"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">${fmt(h.hrv, " ms")}</div><div class="health-os-small">Sistema nervioso</div></div>
+      <div class="health-os-card"><div class="health-os-label">Resting HR</div><div id="health-os-rhr" class="health-os-value">${fmt(h.restingHeartRate, " bpm")}</div><div class="health-os-small">Carga fisiológica</div></div>
+      <div class="health-os-card"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">${fmt(h.strain, "")}</div><div class="health-os-small">Carga acumulada</div></div>
+      <div class="health-os-card"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">${esc(status)}</div><div class="health-os-small">Lectura Cordelius</div></div>
+    </div>
+
+    <div class="health-os-donut-row">
+      ${donut("Recovery", recovery, h.recovery != null ? h.recovery + "%" : "—", "#00ff99")}
+      ${donut("Sleep", sleep, h.sleep != null ? h.sleep + "%" : "—", "#3b9dff")}
+      ${donut("Strain", strainPct, h.strain != null ? Number(h.strain).toFixed(1) : "—", "#f472b6")}
+    </div>
+
+    <div class="health-os-grid">
+      <div class="health-os-card">
+        <div class="health-os-label">Energy Engine</div>
+        <div class="health-os-small">Physical Energy: <b id="health-os-energy-physical">${Math.round((recovery + sleep) / 2)}</b>/100</div>
+        <div class="health-os-small">Mental Energy: <b id="health-os-energy-mental">${Math.round((sleep + hrvScore) / 2)}</b>/100</div>
+        <div class="health-os-small">Focus Capacity: <b id="health-os-energy-focus">${Math.round((sleep + recovery + hrvScore) / 3)}</b>/100</div>
+        <div class="health-os-small">Deep Work: <b id="health-os-energy-deepwork">${Math.round((sleep + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
+        <div class="health-os-small">Trading Capacity: <b id="health-os-energy-trading">${Math.round((recovery + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Radar Health</div>
+        <div id="health-os-radar" class="health-os-small">
+          Recovery ${Math.round(recovery)} · Sleep ${Math.round(sleep)} · HRV ${Math.round(hrvScore)} · Nervous System ${Math.round(hrvScore)} · Energy ${Math.round((recovery + sleep)/2)} · Focus ${Math.round((sleep + hrvScore)/2)}
+        </div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Behavior Tracker</div>
+        <div id="health-os-behaviors">
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('sauna')">Sauna</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('cannabis')">Cannabis</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('training')">Training</button>
+          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('stress')">High Stress</button>
+        </div>
+        <div class="health-os-small">Opcional. Sin formularios grandes.</div>
+      </div>
+
+      <div class="health-os-card">
+        <div class="health-os-label">Correlation Engine</div>
+        <div id="health-os-correlations" class="health-os-small">Recolectando datos. Se activará con más snapshots diarios.</div>
+      </div>
+
+      <div class="health-os-card health-os-wide">
+        <div class="health-os-label">Jarvis Health AI</div>
+        <div id="health-os-ai" class="health-os-ai">${esc(aiText)}</div>
+      </div>
+
+      <div class="health-os-card health-os-wide">
+        <div class="health-os-label">Trading Integration</div>
+        <div id="health-os-trading-risk" class="health-os-small">
+          Recovery &lt; 50 → modo defensivo · Recovery &gt; 80 → modo normal · Strain alto → bajar agresividad · Overtrading alto → no operar impulsivo.
+          <br>Educativo. No es asesoría médica ni financiera.
+        </div>
+      </div>
+    </div>
+  </section>`;
+
 }
 
 function renderPortfolioSnapshot(pv, reg) {
@@ -3135,18 +3891,71 @@ function renderHomePortal(pv, reg) {
     { label: "HRV", value: h.hrv !== null ? h.hrv + " ms" : "—", sub: "recovery", color: "#00ff99", id: "home-hrv" },
     { label: "Journal", value: jd.count ? String(jd.count) : "—", sub: jd.topMood || "sin mood", color: "#818cf8" }
   ];
+
+  const greetHour = new Date().getHours();
+  const greet = greetHour < 12 ? "Buenos días" : greetHour < 19 ? "Buenas tardes" : "Buenas noches";
+  const days = ["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];
+  const dayName = days[new Date().getDay()];
+  const modeColor = {"ÓPTIMO":"#818cf8","NORMAL":"#00ff99","CONSERVADOR":"#ffd35c","BAJO":"#ffd35c","DEFENSIVO":"#ff4d6d"}[h.operatingMode] || "#9fb3c8";
   return `<div style="max-width:1280px;margin:0 auto">
-    <section class="panel" style="padding:22px;margin-bottom:16px;border:1px solid rgba(59,157,255,.18);background:linear-gradient(135deg,rgba(59,157,255,.08),rgba(0,255,153,.025),rgba(0,0,0,.12))">
-      <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
-        <div>
-          <div style="font-size:10px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Today Snapshot</div>
-          <div id="home-operating-mode" style="font-size:34px;font-weight:950;line-height:1;color:#eaf6ff">${esc(ctx.mode)}</div>
-          <div id="home-alfredo-line" style="color:#9fb3c8;font-size:14px;margin-top:8px;max-width:720px">${esc(ctx.oneLiner)}</div>
-        </div>
-        <div style="text-align:right;color:#9fb3c8;font-size:12px">
-          <div>${esc(nowMX())}</div>
-          <div style="margin-top:6px"><span class="status-dot"></span>Server OK · WHOOP ${h.configured ? "OK" : "—"} · Market Data ${FINNHUB_API_KEY ? "OK" : "LOCAL"} · Journal OK</div>
-        </div>
+    <div style="padding:28px 0 14px;display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:10px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#9fb3c8;margin-bottom:4px">CORDELIUS PERSONAL OS · ${esc(dayName.toUpperCase())}</div>
+        <div style="font-size:32px;font-weight:900;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${greet}, Pedro</div>
+        <div style="color:#9fb3c8;font-size:13px;margin-top:4px">${esc(nl.date)} · ${esc(nowMX())}</div>
+      </div>
+      <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+        <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border:1px solid rgba(0,255,153,.2)">Servidor ON</span>
+        <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:rgba(255,77,109,.08);color:#ff4d6d;border:1px solid rgba(255,77,109,.2)">Real Trading OFF</span>
+        <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:${modeColor}12;color:${modeColor};border:1px solid ${modeColor}25">${esc(h.operatingMode)}</span>
+      </div>
+    </div>
+
+    <!-- Quick stats strip -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px">
+      <div style="background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('trading')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Portafolio</div>
+        <div style="font-size:20px;font-weight:900;color:#eaf6ff">${esc(money(pv.totalValueMXN))}</div>
+        <div style="font-size:12px;color:${pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d"};margin-top:2px">${esc(pct(pv.totalGainPct))}</div>
+      </div>
+      <div style="background:rgba(244,114,182,.05);border:1px solid rgba(244,114,182,.14);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('health')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6;margin-bottom:4px">Health</div>
+        <div style="font-size:16px;font-weight:900;color:${modeColor}">${esc(h.operatingMode)}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">${h.configured ? (h.recovery !== null ? "R " + h.recovery + "% · " : "") + "WHOOP" : "Sin WHOOP"}</div>
+      </div>
+      <div style="background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.11);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('intelligence')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99;margin-bottom:4px">Intelligence</div>
+        <div style="font-size:20px;font-weight:900;color:#00ff99">${news.length}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">Intel: ${intelItems.length}</div>
+      </div>
+      <div style="background:rgba(167,139,250,.05);border:1px solid rgba(167,139,250,.13);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('autopilot')">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#a78bfa;margin-bottom:4px">Autopilot</div>
+        <div style="font-size:20px;font-weight:900;color:#a78bfa">ON</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">Paper · ${quiverData.configured ? "Quiver ON" : "Quiver —"}</div>
+      </div>
+    </div>
+
+    <!-- 5 Module cards -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:20px">
+      ${modules.map(m => `<div onclick="showMod('${m.id}')" style="cursor:pointer;background:var(--panel);border:1px solid ${m.color}28;border-radius:22px;padding:20px 22px;transition:.2s;position:relative;overflow:hidden" onmouseover="this.style.borderColor='${m.color}70'" onmouseout="this.style.borderColor='${m.color}28'">
+        <div style="position:absolute;top:0;right:0;width:80px;height:80px;background:radial-gradient(circle,${m.color}12,transparent 70%);border-radius:50%"></div>
+        <div style="font-size:24px;margin-bottom:10px;color:${m.color}">${m.emoji}</div>
+        <div style="font-size:13px;font-weight:900;color:${m.color};letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">${esc(m.label)}</div>
+        <div style="font-size:22px;font-weight:900;color:#eaf6ff;margin-bottom:6px;line-height:1.1">${esc(m.sub)}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-bottom:12px">${esc(m.desc)}</div>
+        <div style="display:inline-flex;align-items:center;gap:6px;border:1px solid ${m.color}40;border-radius:99px;padding:5px 12px;font-size:12px;font-weight:900;color:${m.badgeColor}">${esc(m.badge)} Entrar →</div>
+      </div>`).join("")}
+    </div>
+
+    <!-- Mini daily brief -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04);padding:16px 20px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Daily Brief</div>
+        <div style="font-size:15px;font-weight:700;color:#dbeafe;margin-bottom:10px">${esc(nl.greeting)}</div>
+        <ul style="margin:0;padding-left:16px;list-style:disc">
+          ${nl.lines.slice(0, 3).map(l => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(l)}</li>`).join("")}
+        </ul>
+
       </div>
     </section>
 
@@ -3171,7 +3980,9 @@ function renderHomePortal(pv, reg) {
 
 function renderJournalModule() {
   const jd = computeJournalData();
-  const moodColors = { positivo:"#00ff99", negativo:"#ff4d6d", neutral:"#ffd35c", reflexivo:"#818cf8", ansioso:"#f59e0b", motivado:"#3b9dff" };
+  const aj = computeAutoJournal();
+  const h = computeHealthReadiness();
+  const moodColors = { positivo:"#00ff99", negativo:"#ff4d6d", neutral:"#ffd35c", reflexivo:"#818cf8", ansioso:"#f59e0b", motivado:"#3b9dff", "low-strain":"#f472b6", caution:"#ff4d6d" };
   const moodOpts = ["positivo","neutral","negativo","reflexivo","motivado","ansioso"];
   const entriesHtml = jd.recent.length ? jd.recent.map(e => {
     const mc = moodColors[e.mood] || "#9fb3c8";
@@ -3184,14 +3995,17 @@ function renderJournalModule() {
       <div style="color:#dbeafe;font-size:14px;line-height:1.6">${esc((e.text||"").slice(0,300))}${(e.text||"").length > 300 ? "…" : ""}</div>
       ${e.tags && e.tags.length ? `<div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">${e.tags.map(t=>`<span style="font-size:11px;background:rgba(129,140,248,.12);color:#818cf8;border-radius:99px;padding:2px 9px">${esc(t)}</span>`).join("")}</div>` : ""}
     </div>`;
-  }).join("") : `<div class="muted" style="padding:20px 0;text-align:center">Sin entradas todavía. Escribe tu primera nota.</div>`;
+  }).join("") : `<div class="muted" style="padding:20px 0;text-align:center">Sin notas manuales todavía — el journal automático está activo arriba.</div>`;
+
+  const autoColor = moodColors[aj.moodEstimated] || "#ffd35c";
 
   return `<div style="max-width:1280px;margin:0 auto">
     <div style="padding:20px 0 14px">
       <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#818cf8;margin-bottom:4px">Cordelius Journal</div>
-      <div style="font-size:26px;font-weight:900;color:#eaf6ff">Diario personal</div>
-      <div class="muted" style="font-size:13px;margin-top:3px">Privado · ${jd.count} entradas · no enviado a terceros</div>
+      <div style="font-size:26px;font-weight:900;color:#eaf6ff">Journal automático</div>
+      <div class="muted" style="font-size:13px;margin-top:3px">Basado en WHOOP + snapshots locales · privado · no enviado a terceros</div>
     </div>
+
 
     <div id="journal-auto-preview" class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.035);padding:16px 18px;margin-bottom:16px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">
@@ -3247,15 +4061,156 @@ function renderJournalModule() {
             ).join("")}
           </div>
         </div>
+
       </div>
     </div>
 
-    <!-- Entries list -->
-    <div>
-      <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:12px">Entradas recientes</div>
-      ${entriesHtml}
+    <div class="panel" style="padding:14px 18px;margin-bottom:18px;border:1px solid rgba(129,140,248,.15);background:rgba(129,140,248,.04)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#818cf8;margin-bottom:6px">Nota Alfredo</div>
+      <div style="font-size:13px;color:#c8d8f0;line-height:1.6">${esc(aj.alfredoNote)}</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${["resumen de mi día","cómo me he sentido","resume mi diario"].map(q =>
+          `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+        ).join("")}
+      </div>
     </div>
-    <div class="muted" style="font-size:11px;margin-top:12px;text-align:center">Datos guardados en ${esc(JOURNAL_FILE)} · solo en este dispositivo · no se envía a terceros</div>
+
+    <!-- NOTA MANUAL OPCIONAL -->
+    <details style="margin-bottom:18px">
+      <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 18px;background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.15);border-radius:16px;user-select:none">
+        <span style="font-size:13px;font-weight:700;color:#818cf8">◎ Nota manual opcional</span>
+        <span class="muted" style="font-size:12px">${jd.count} entradas guardadas ▾</span>
+      </summary>
+      <div style="padding:16px 0">
+        <div class="panel" style="padding:18px 20px;border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04)">
+          <form method="POST" action="/api/journal">
+            <textarea name="text" rows="4" placeholder="¿Algo extra que quieras anotar hoy?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
+            <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+              <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+                ${moodOpts.map(m => `<option value="${m}">${m}</option>`).join("")}
+              </select>
+              <select name="energy" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+                <option value="">Energía</option>
+                ${[1,2,3,4,5].map(n => `<option value="${n}">${n}/5</option>`).join("")}
+              </select>
+              <input name="tags" placeholder="tags..." style="flex:1;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+            </div>
+            <button type="submit" class="btn" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.3);color:#818cf8;font-size:14px;padding:10px 20px">Guardar</button>
+          </form>
+        </div>
+        <div style="margin-top:14px">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:10px">Entradas recientes</div>
+          ${entriesHtml}
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:8px;text-align:center">Guardado en ${esc(JOURNAL_FILE)} · solo en este dispositivo</div>
+      </div>
+    </details>
+
+    <div class="muted" style="font-size:11px">Fuente: ${esc(aj.source)} · ${esc(aj.educationalNote)}</div>
+  </div>`;
+}
+
+function renderSignalCenter(pv, reg) {
+  const assets = pv.assets;
+  const cripto = assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
+  const criptoPct = pv.totalValueMXN > 0 ? (cripto / pv.totalValueMXN * 100) : 0;
+  const ranked = assets.slice().sort((a, b) => b.score - a.score);
+  const external = computeExternalMarketIntelligence();
+  const scan = computeDailyScan();
+
+  // Assign priority
+  const withPriority = assets.map(a => {
+    const isHighRisk = a.score < 35 || a.risk === "ALTO" || a.gainPct < -20;
+    const isCryptoConc = a.type === "crypto" && criptoPct > 50;
+    const priority = (isHighRisk || isCryptoConc) ? "ALTA" :
+      (a.score >= 35 && a.score <= 60) ? "MEDIA" : "BAJA";
+    const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length
+                 + quiverData.insider.filter(x => x.symbol === a.symbol).length;
+    const bullish = a.score >= 65 && a.ind.momentum >= 0;
+    const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
+    const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
+    const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
+      a.score < 30 ? "No promediar — revisar tesis" :
+      a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
+    const motivo = a.risk === "ALTO" ? "Riesgo alto" :
+      a.gainPct < -20 ? "Caída fuerte" :
+      a.score >= 65 ? "Score sólido" :
+      a.type === "crypto" ? "Cripto volatil" : "Score neutro";
+    return { ...a, priority, sigLabel, eduAction, motivo, qCount };
+  }).sort((a, b) => {
+    const p = { ALTA: 0, MEDIA: 1, BAJA: 2 };
+    return (p[a.priority] - p[b.priority]) || b.score - a.score;
+  });
+
+  const alertAsset = withPriority.find(a => a.priority === "ALTA") || withPriority[0];
+  const bestOpp = ranked[0];
+  const prioColor = { ALTA: "#ff4d6d", MEDIA: "#ffd35c", BAJA: "#00ff99" };
+
+  const hotExternal = external.hot ? external.hot.slice(0, 3).map(t => `${t.symbol} (${t.sector})`).join(", ") : "—";
+  const scanAlerts = scan.alerts ? scan.alerts.slice(0, 3) : [];
+
+  const rows = withPriority.map(a => `<tr>
+    <td><b>${esc(a.symbol)}</b>${a.qCount > 0 ? `<span style="color:#00ff99;font-size:10px;margin-left:4px">Q${a.qCount}</span>` : ""}</td>
+    <td class="muted" style="font-size:12px">${esc(a.source)}</td>
+    <td><b>${a.score}</b>/100</td>
+    <td><b class="${a.risk === "ALTO" ? "red" : a.risk === "BAJO" ? "green" : "yellow"}">${esc(a.risk)}</b></td>
+    <td style="font-size:12px;color:${a.sigLabel === "Bullish" ? "#00ff99" : a.sigLabel === "Risk/Vigilar" ? "#ff4d6d" : "#ffd35c"}">${esc(a.sigLabel)}</td>
+    <td class="muted" style="font-size:12px">${esc(a.motivo)}</td>
+    <td class="muted" style="font-size:11px">${esc(a.eduAction)}</td>
+    <td><span style="background:${prioColor[a.priority]}22;color:${prioColor[a.priority]};border-radius:99px;padding:3px 9px;font-size:11px;font-weight:900">${esc(a.priority)}</span></td>
+  </tr>`).join("");
+
+  return `<div style="max-width:1280px;margin:0 auto 8px">
+    <h2>Centro de Señales Alfredo</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div class="card" style="padding:12px 18px;flex:1;min-width:200px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ff4d6d;margin-bottom:4px">Vigilar primero</div>
+        <div style="font-size:18px;font-weight:900;color:#eaf6ff">${esc(alertAsset ? alertAsset.symbol : "—")}</div>
+        <div class="muted" style="font-size:11px">${alertAsset ? esc(alertAsset.motivo) + " · score " + alertAsset.score : "—"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:200px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#00ff99;margin-bottom:4px">Mejor oportunidad educativa</div>
+        <div style="font-size:18px;font-weight:900;color:#eaf6ff">${esc(bestOpp ? bestOpp.symbol : "—")}</div>
+        <div class="muted" style="font-size:11px">${bestOpp ? "Score " + bestOpp.score + " · " + esc(bestOpp.signal) : "—"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:180px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f59e0b;margin-bottom:4px">Concentración cripto</div>
+        <div style="font-size:18px;font-weight:900;color:${criptoPct > 45 ? "#ff4d6d" : "#ffd35c"}">${criptoPct.toFixed(1)}%</div>
+        <div class="muted" style="font-size:11px">${criptoPct > 50 ? "⚠ Concentración alta" : criptoPct > 35 ? "Revisar balance" : "Bajo control"}</div>
+      </div>
+      <div class="card" style="padding:12px 18px;flex:1;min-width:160px">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:${reg.color};margin-bottom:4px">Régimen</div>
+        <div style="font-size:18px;font-weight:900;color:${reg.color}">${esc(reg.label)}</div>
+        <div class="muted" style="font-size:11px">${pct(reg.avg)} promedio</div>
+      </div>
+    </div>
+    ${scanAlerts.length ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${scanAlerts.map(al => `<span style="background:rgba(255,77,109,.1);color:#ff4d6d;border:1px solid rgba(255,77,109,.25);border-radius:99px;padding:4px 12px;font-size:12px;font-weight:700">⚑ ${esc(al)}</span>`).join("")}</div>` : ""}
+    ${hotExternal !== "—" ? `<div style="margin-bottom:12px;font-size:12px;color:#9fb3c8">Externos calientes: <b style="color:#3b9dff">${esc(hotExternal)}</b></div>` : ""}
+    <div class="table-wrap panel" style="padding:0">
+      <table>
+        <thead><tr><th>Activo</th><th>Broker</th><th>Score</th><th>Riesgo</th><th>Señal</th><th>Motivo</th><th>Acción educativa</th><th>Prioridad</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:8px;text-align:right">Educativo · no es asesoría financiera · Q = señal Quiver</div>
+  </div>`;
+}
+
+function renderStockResearch() {
+  const watchChips = ["AAPL","NVDA","MSFT","META","GOOGL","PLTR","XRP","BTC","AMZN","TSLA"];
+  return `<div class="panel" style="max-width:1280px;margin:0 auto 12px;padding:20px 24px;border:1px solid rgba(59,157,255,.14)">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Stock Research · Análisis de tickers</div>
+    <div style="font-size:13px;color:#9fb3c8;margin-bottom:14px">Investiga cualquier ticker — perfil, señales Quiver, noticias y tesis educativa. Powered by Alfredo AI.</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <input id="research-ticker" type="text" placeholder="Ej: AAPL, NVDA, META…" autocomplete="off" autocapitalize="characters"
+        style="flex:1;min-width:160px;border:1px solid rgba(59,157,255,.3);border-radius:12px;padding:11px 16px;color:#fff;background:rgba(59,157,255,.05);font-size:15px;font-family:inherit"
+        onkeydown="if(event.key==='Enter')researchTicker()">
+      <button onclick="researchTicker()" class="btn" style="border-color:rgba(59,157,255,.4);color:#3b9dff;font-size:14px;padding:11px 22px">Investigar →</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+      ${watchChips.map(t => `<button onclick="document.getElementById('research-ticker').value='${t}';researchTicker()" style="border:1px solid rgba(120,160,210,.18);background:rgba(255,255,255,.04);color:#9fb3c8;border-radius:9px;padding:4px 11px;font-size:12px;cursor:pointer;font-weight:700;font-family:inherit">${esc(t)}</button>`).join("")}
+    </div>
+    <div id="research-result"></div>
   </div>`;
 }
 
@@ -3431,9 +4386,39 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
 @media(max-width:820px){.panel{border-radius:18px}.card{border-radius:16px}}
 #alfredo-panel{position:fixed;right:20px;bottom:96px;width:min(400px,calc(100vw - 40px));z-index:99;max-height:72vh;overflow-y:auto;border-radius:24px;display:none}
+.brain-float{position:fixed;right:20px;bottom:20px;width:72px;height:72px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:radial-gradient(circle,rgba(0,255,153,.12),rgba(59,157,255,.06));border:1px solid rgba(0,255,153,.3);box-shadow:0 0 28px rgba(0,255,153,.35),0 0 56px rgba(0,255,153,.12);z-index:30;cursor:pointer;animation:brainpulse 3.2s ease-in-out infinite;backdrop-filter:blur(14px)}
+.brain-float:hover{box-shadow:0 0 48px rgba(0,255,153,.55),0 0 80px rgba(59,157,255,.25);border-color:rgba(0,255,153,.6)}
+.brain-float-label{font-size:7px;font-weight:900;letter-spacing:.14em;color:rgba(0,255,153,.75);text-transform:uppercase;line-height:1}
+.brain-ring-o{transform-origin:19px 19px;animation:bspin 8s linear infinite}
+.brain-ring-m{transform-origin:19px 19px;animation:bspin 5s linear infinite reverse}
+@keyframes brainpulse{0%,100%{box-shadow:0 0 28px rgba(0,255,153,.35),0 0 56px rgba(0,255,153,.12)}50%{box-shadow:0 0 48px rgba(0,255,153,.55),0 0 80px rgba(0,255,153,.2)}}
+@keyframes bspin{to{transform:rotate(360deg)}}
+.range-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--muted);border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;transition:.18s;font-family:inherit}
+.range-btn:hover,.range-btn.rb-active{background:rgba(59,157,255,.16);border-color:rgba(59,157,255,.5);color:#3b9dff}
+.news-item{max-width:1280px;margin:8px auto;border:1px solid rgba(120,160,210,.1);border-radius:18px;background:var(--panel);backdrop-filter:blur(16px);overflow:hidden}
+.news-item summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:13px 16px;user-select:none}
+.news-item summary::-webkit-details-marker{display:none}
+.news-item[open]{border-color:rgba(59,157,255,.25)}
+.news-item .ni-caret{transition:.2s;flex:0 0 auto;opacity:.5;font-size:11px}
+.news-item[open] .ni-caret{transform:rotate(180deg)}
+#research-result{animation:fade .3s ease}
 </style></head><body>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
-<button class="float" onclick="toggleJarvis()" title="Jarvis AI">AI</button>
+
+<button class="brain-float" onclick="toggleJarvis()" title="Jarvis AI — Cordelius">
+  <svg width="38" height="38" viewBox="0 0 38 38" fill="none">
+    <circle cx="19" cy="19" r="17" stroke="rgba(0,255,153,.35)" stroke-width="1" stroke-dasharray="6 3" class="brain-ring-o"/>
+    <circle cx="19" cy="19" r="11" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-dasharray="4 4" class="brain-ring-m"/>
+    <circle cx="19" cy="19" r="6" fill="rgba(0,255,153,.15)" stroke="rgba(0,255,153,.8)" stroke-width="1.2"/>
+    <circle cx="19" cy="19" r="2.5" fill="#00ff99"/>
+    <line x1="19" y1="1" x2="19" y2="8" stroke="rgba(0,255,153,.5)" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="19" y1="30" x2="19" y2="37" stroke="rgba(0,255,153,.5)" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="1" y1="19" x2="8" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="30" y1="19" x2="37" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
+  </svg>
+  <div class="brain-float-label">Jarvis</div>
+</button>
+
 <div id="alfredo-panel" class="panel">
   <div style="padding:16px 20px 20px">
     <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">Jarvis AI · Educativo</div>
@@ -3452,7 +4437,9 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 <header>
   <div class="logo-wrap">
     <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
-    <div><h1>${esc(CORDA_APP_NAME)}</h1><div class="subtitle">${esc(CORDA_APP_SUBTITLE)}</div></div>
+
+    <div><h1 id="brand-title">Cordelius</h1><div id="module-subtitle" class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
+
   </div>
   <nav style="display:flex;flex-wrap:wrap;gap:6px">
     <button data-mod="home" class="nav-mod" onclick="showMod('home')">Home</button>
@@ -3489,11 +4476,32 @@ ${renderHomePortal(pv, reg)}
   <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
 
-<a id="chart"></a><h2>Chart zone — portafolio + TradingView</h2>
-<div class="panel">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}<div class="muted">Eje, max, min, area y variacion. Se guarda en ${esc(HISTORY_FILE)}.</div></div>
-<h2>Chart profesional BBVA — TradingView</h2>
-<div class="panel" style="max-width:1280px;margin:0 auto 10px;padding:10px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:12px">Activo principal:</span><b>BBVA</b><span class="muted" style="font-size:12px">Selector futuro: mantiene BBVA como default estable.</span></div>
-<div class="tv-embed"><iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&hidesidetoolbar=0&saveimage=0&studies=RSI@tv-basicstudies,MACD@tv-basicstudies" style="width:100%;height:100%;border:0"></iframe></div>
+
+<a id="chart"></a>
+<div style="max-width:1280px;margin:28px auto 8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+  <h2 style="margin:0;font-size:22px;background:linear-gradient(90deg,#fff,#9bd3ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Gráficas — historial del portafolio</h2>
+  <div style="display:flex;gap:6px">
+    <button class="range-btn rb-active" data-days="1" onclick="redrawPortChart(1)">1D</button>
+    <button class="range-btn" data-days="7" onclick="redrawPortChart(7)">7D</button>
+    <button class="range-btn" data-days="30" onclick="redrawPortChart(30)">30D</button>
+    <button class="range-btn" data-days="0" onclick="redrawPortChart(0)">Todo</button>
+  </div>
+</div>
+<div class="panel" style="max-width:1280px;margin:0 auto 8px">
+  <div id="port-chart-area">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}</div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;align-items:center">
+    <span class="muted" id="port-chart-info" style="font-size:12px">${portfolioHistory.length} snapshots</span>
+    <span class="muted" style="font-size:11px">Actualizado: ${esc(nowMX())}</span>
+    ${portfolioHistory.length >= 7 ? `<span style="font-size:11px;color:#00ff99">7D ✓</span>` : ""}
+    ${portfolioHistory.length >= 30 ? `<span style="font-size:11px;color:#00ff99">30D ✓</span>` : ""}
+  </div>
+</div>
+<script>window._portHistory=${JSON.stringify(portfolioHistory.slice(-600))};</script>
+<div class="panel" style="max-width:1280px;margin:0 auto 8px;padding:14px 18px">
+  <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Gráficas por activo</div>
+  <div style="font-size:13px;color:#9fb3c8">Abre cada activo del portafolio para ver minigrafica, precio, señales y enlace a TradingView.</div>
+</div>
+
 
 <a id="brain"></a><h2>Jarvis Score · Cordelius Brain</h2>${brainHtml()}
 
@@ -3530,40 +4538,15 @@ ${(function(){
   ).join("");
 })()}
 
-<h2>Ranking Jarvis — score · riesgo · señal educativa</h2>
-<div class="ranking">${ranked.map((a, i) => {
-  const qCount = quiverData.congressional.filter(x => x.symbol === a.symbol).length + quiverData.insider.filter(x => x.symbol === a.symbol).length;
-  const bullish = a.score >= 65 && a.ind.momentum >= 0;
-  const bearish = a.score < 35 || (a.gainPct < -15 && a.risk === "ALTO");
-  const sigLabel = bullish ? "Bullish" : bearish ? "Risk/Vigilar" : "Neutral";
-  const sigColor = bullish ? "#00ff99" : bearish ? "#ff4d6d" : "#ffd35c";
-  const eduAction = a.gainPct > 80 && a.score > 55 ? "Tomar ganancia parcial (hipotético)" :
-    a.score < 30 ? "No promediar — revisar tesis" :
-    a.signal.includes("BUY") ? "Vigilar entrada educativa" : "Mantener y monitorear";
-  return `<div class="rank" style="grid-template-columns:auto 1fr auto">
-    <div><b>${i + 1}. ${esc(a.symbol)}</b><div class="muted" style="font-size:12px">${esc(a.source)} · ${esc(a.risk)}</div>${qCount > 0 ? `<div style="color:#00ff99;font-size:11px">Q×${qCount}</div>` : ""}</div>
-    <div>
-      <div class="bar"><span style="width:${a.score}%"></span></div>
-      <div style="display:flex;gap:8px;margin-top:5px;flex-wrap:wrap">
-        <span style="color:${sigColor};font-size:12px;font-weight:700">${sigLabel}</span>
-        <span class="muted" style="font-size:12px">${esc(a.signal)}</span>
-      </div>
-      <div class="muted" style="font-size:11px;margin-top:3px">Compra ${a.currency === "USD" ? money(a.zones.buy, "USD") : money(a.zones.buy)} · ${esc(eduAction)}</div>
-    </div>
-    <div style="text-align:right"><b style="font-size:20px">${a.score}/100</b><div class="${a.gainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(a.gainPct)}</div></div>
-  </div>`;
-}).join("")}</div>
+
+${renderSignalCenter(pv, reg)}
+
 
 <a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
 <a id="bot"></a><h2>Trading AI — Paper Mode · Laboratorio ficticio</h2>
 ${renderTradingAIStatus()}
 ${renderPaperTradingPanel()}
-
-<a id="vigilar"></a><h2>Radar Externo — Stocks calientes por sector</h2>
-${renderExternalRadarBySector()}
-
-<a id="scan"></a><h2>Scan Diario — portafolio + Quiver + señales</h2>${renderDailyScanCard()}
 
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
@@ -3577,8 +4560,11 @@ ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
 <div id="mod-intelligence" class="mod">
+
 <h2>Cordelius Intelligence</h2>
 ${renderCordeliusIntelligenceFeedPreview()}
+${renderStockResearch()}
+
 ${renderDailyBrief()}
 ${renderMorningReport()}
 
@@ -3587,7 +4573,9 @@ ${renderQuiverIntelligencePanel()}
 
 <a id="intel"></a><h2>Cordelius Intelligence — Intel manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
 
-<a id="intelligence"></a><h2>Cordelius Intelligence — Radar político · Intel manual</h2>
+<details style="max-width:1280px;margin:0 auto 8px"><summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.12);border-radius:20px;user-select:none"><span style="font-size:14px;font-weight:900;color:#00ff99">◆ Radar político · Intel manual</span><span class="btn" style="font-size:12px;padding:5px 12px">Ver detalle ▾</span></summary>
+<div>
+<a id="intelligence"></a><h2 style="display:none">Cordelius Intelligence</h2>
 ${(function(){
   const intel = computeIntelligence();
   const trending = computeQuiverTrending();
@@ -3647,6 +4635,7 @@ ${(function(){
     + '<div class="muted" style="font-size:12px;margin-top:8px">' + esc(radar.educationalSummary) + '</div></div>';
 })()}
 
+</div></details>
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
 <div id="mod-alfredo" class="mod">
@@ -3665,7 +4654,105 @@ ${renderMorningReport()}
 </div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
 <div id="mod-autopilot" class="mod">
+
 <h2>Cordelius Autopilot</h2>
+
+<h2>Autopilot — Estado del sistema · Automatización</h2>
+
+<section id="autopilot-db-panel" style="margin:22px 0;padding:22px;border-radius:28px;background:radial-gradient(circle at 0% 0%,rgba(0,255,170,.18),transparent 34%),linear-gradient(135deg,rgba(5,11,24,.96),rgba(8,18,35,.88));border:1px solid rgba(0,255,170,.22);box-shadow:0 20px 70px rgba(0,0,0,.42)">
+  <div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px">
+    <div>
+      <div style="font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:#00ffaa;font-weight:900">Cordelius Database</div>
+      <h2 style="margin:6px 0 4px;font-size:32px;color:#f5f8ff">Operating Memory</h2>
+      <p style="margin:0;color:#aab6c8">Memoria real de Health, portfolio y decisiones. Cordelius ya está guardando progreso.</p>
+    </div>
+    <button id="adm-save-btn" style="padding:12px 16px;border-radius:16px;border:1px solid rgba(0,255,170,.35);background:rgba(0,255,170,.12);color:#00ffaa;font-weight:900">
+      Guardar snapshot
+    </button>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:14px">
+    <div class="adm-card"><b>Health Logs</b><strong id="adm-health">—</strong><span>Snapshots WHOOP</span></div>
+    <div class="adm-card"><b>Portfolio Logs</b><strong id="adm-portfolio">—</strong><span>Snapshots portafolio</span></div>
+    <div class="adm-card"><b>Trading Decisions</b><strong id="adm-decisions">—</strong><span>Decisiones guardadas</span></div>
+    <div class="adm-card"><b>XP</b><strong id="adm-xp">—</strong><span id="adm-level">Nivel —</span></div>
+    <div class="adm-card"><b>Streak</b><strong id="adm-streak">—</strong><span>Racha memoria</span></div>
+  </div>
+
+  <div style="margin-top:16px;padding:18px;border-radius:22px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);color:#dce7f7;line-height:1.55">
+    <b>Último estado WHOOP:</b>
+    <span id="adm-health-latest">Cargando...</span>
+    <br><br>
+    <b>Regla actual:</b>
+    <span id="adm-rule">Cargando...</span>
+  </div>
+</section>
+
+<style>
+  .adm-card{padding:18px;border-radius:22px;background:rgba(10,18,35,.72);border:1px solid rgba(0,255,170,.18);box-shadow:0 12px 34px rgba(0,0,0,.25)}
+  .adm-card b{display:block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#8aa0b8}
+  .adm-card strong{display:block;font-size:30px;font-weight:900;color:#00ffaa;margin-top:8px}
+  .adm-card span{display:block;font-size:12px;color:#aab6c8;margin-top:6px}
+</style>
+
+<script>
+(function(){
+  function setText(id, value){
+    var el = document.getElementById(id);
+    if (el) el.textContent = value == null ? "—" : String(value);
+  }
+
+  async function loadAutopilotMemoryPanel(){
+    try {
+      var r = await fetch("/api/autopilot/progress", { cache: "no-store" });
+      var d = await r.json();
+      if (!d || !d.ok) return;
+
+      var progress = d.progress || {};
+      var counts = d.counts || {};
+      var latest = d.latest || {};
+      var health = latest.health || {};
+      var decision = latest.tradingDecision || {};
+
+      setText("adm-health", counts.health || 0);
+      setText("adm-portfolio", counts.portfolio || 0);
+      setText("adm-decisions", counts.tradingDecisions || 0);
+      setText("adm-xp", progress.xp || 0);
+      setText("adm-level", "Nivel " + (progress.level || 1));
+      setText("adm-streak", (progress.streak || 0) + "d");
+
+      var healthText =
+        "Recovery " + (health.recovery ?? "—") +
+        " · Sleep " + (health.sleep ?? "—") +
+        " · HRV " + (health.hrv ? Number(health.hrv).toFixed(1) : "—") +
+        " · Strain " + (health.strain ? Number(health.strain).toFixed(1) : "—") +
+        " · Modo " + (health.operatingMode || "—");
+
+      setText("adm-health-latest", healthText);
+      setText("adm-rule", decision.rule || "Sin regla guardada todavía.");
+    } catch(e) {
+      console.error("Autopilot Memory Panel error", e);
+    }
+  }
+
+  var btn = document.getElementById("adm-save-btn");
+  if (btn) {
+    btn.addEventListener("click", async function(){
+      btn.textContent = "Guardando...";
+      await fetch("/api/autopilot/snapshot", { method: "POST" });
+      btn.textContent = "Guardado ✅";
+      await loadAutopilotMemoryPanel();
+      setTimeout(function(){ btn.textContent = "Guardar snapshot"; }, 1200);
+    });
+  }
+
+  window.loadAutopilotMemoryPanel = loadAutopilotMemoryPanel;
+  setTimeout(loadAutopilotMemoryPanel, 500);
+  setInterval(loadAutopilotMemoryPanel, 60000);
+})();
+</script>
+
+
 ${renderAutopilotPanel()}
 
 <h2>System</h2>
@@ -3679,6 +4766,7 @@ ${renderAutopilotPanel()}
 </div>
 </div>
 
+
 <div class="disclaimer">Cordelius es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
 </body>
 <script>
@@ -3689,6 +4777,7 @@ function showMod(name) {
   name = validModName(name) ? name : 'home';
   var mod = document.getElementById('mod-' + name);
   if (!mod) name = 'home';
+
   document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
   document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
   mod = document.getElementById('mod-' + name);
@@ -3696,6 +4785,7 @@ function showMod(name) {
   var btn = document.querySelector('[data-mod="' + name + '"]');
   if (btn) btn.classList.add('nav-active');
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
+
   if (window.location.hash !== '#' + name) {
     try { history.replaceState(null, '', '#' + name); } catch(e) { window.location.hash = name; }
   }
@@ -3934,6 +5024,7 @@ async function analyzeOpportunitySymbol() {
 }
 
 function toggleJarvis() {
+
   var p = document.getElementById('alfredo-panel');
   if (p) p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'block' : 'none';
 }
@@ -3943,10 +5034,81 @@ function setJarvisQ(q) {
   var p = document.getElementById('alfredo-panel');
   if (p) p.style.display = 'block';
 }
+// ---- Portfolio chart range selector ----
+function redrawPortChart(days) {
+  document.querySelectorAll('.range-btn').forEach(function(b) {
+    b.classList.remove('rb-active');
+    if (Number(b.dataset.days) === days) b.classList.add('rb-active');
+  });
+  var all = window._portHistory || [];
+  var cutoff = days === 0 ? 0 : Date.now() - days * 86400000;
+  var data = days === 0 ? all : all.filter(function(d) { return d.t >= cutoff; });
+  var area = document.getElementById('port-chart-area');
+  var info = document.getElementById('port-chart-info');
+  if (!area) return;
+  if (data.length < 2) {
+    area.innerHTML = '<div style="min-height:240px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px">Sin datos suficientes para este período (' + (days===0?'Todo':days+'D') + ')</div>';
+    if (info) info.textContent = '0 snapshots en rango';
+    return;
+  }
+  var vals = data.map(function(d) { return d.total; });
+  var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+  var rng = mx - mn || 1;
+  var pH = 280, pW = 940, padT = 28, padB = 40, padL = 72, plotH = pH - padT - padB;
+  var gid = 'pg' + Date.now();
+  var color = '#3b9dff';
+  var xy = data.map(function(d, i) {
+    return { x: padL + (i / Math.max(1, data.length - 1)) * pW, y: padT + (1 - ((d.total - mn) / rng)) * plotH, t: d.t, v: d.total };
+  });
+  var pts = xy.map(function(p) { return p.x.toFixed(1) + ',' + p.y.toFixed(1); }).join(' ');
+  var areaPts = padL + ',' + (pH - padB) + ' ' + pts + ' ' + (padL + pW) + ',' + (pH - padB);
+  var delta = vals[0] ? ((vals[vals.length-1] - vals[0]) / Math.abs(vals[0]) * 100) : 0;
+  function fv(v) { return v >= 10000 ? '$' + (v/1000).toFixed(1) + 'k' : v.toFixed(0); }
+  var yT = ''; for (var i = 0; i <= 4; i++) { var v = mn + (i/4)*rng; var y = padT + (1 - i/4)*plotH; yT += '<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(padL+pW)+'" y2="'+y.toFixed(1)+'" stroke="rgba(255,255,255,.07)"/>'; yT += '<text x="'+(padL-5)+'" y="'+(y+5).toFixed(1)+'" fill="#9fb3c8" font-size="15" text-anchor="end">'+fv(v)+'</text>'; }
+  var xStep = Math.ceil(data.length / 6); var xT = '';
+  data.forEach(function(d, i) { if (i % xStep !== 0 && i !== data.length-1) return; var p = xy[i]; var lbl = new Date(d.t).toLocaleDateString('es-MX',{month:'short',day:'numeric'}); xT += '<text x="'+p.x.toFixed(1)+'" y="'+(pH-6)+'" fill="#9fb3c8" font-size="13" text-anchor="middle">'+lbl+'</text>'; });
+  var svg = '<svg viewBox="0 0 '+(padL+pW+20)+' '+pH+'" style="width:100%;overflow:visible">'
+    + '<defs><linearGradient id="'+gid+'" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+color+'" stop-opacity=".32"/><stop offset="100%" stop-color="'+color+'" stop-opacity="0"/></linearGradient></defs>'
+    + '<line x1="'+padL+'" y1="'+(pH-padB)+'" x2="'+(padL+pW)+'" y2="'+(pH-padB)+'" stroke="rgba(255,255,255,.18)"/>'
+    + '<line x1="'+padL+'" y1="'+padT+'" x2="'+padL+'" y2="'+(pH-padB)+'" stroke="rgba(255,255,255,.18)"/>'
+    + yT + xT
+    + '<text x="'+(padL+pW/2)+'" y="22" fill="'+(delta>=0?'#00ff99':'#ff4d6d')+'" font-size="17" text-anchor="middle" font-weight="bold">'+(delta>=0?'+':'')+delta.toFixed(2)+'%</text>'
+    + '<polygon points="'+areaPts+'" fill="url(#'+gid+')"/>'
+    + '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '</svg>';
+  area.innerHTML = svg;
+  if (info) info.textContent = data.length + ' snapshots · ' + new Date(data[data.length-1].t).toLocaleString('es-MX');
+}
+
+// ---- Stock ticker research ----
+async function researchTicker() {
+  var input = document.getElementById('research-ticker');
+  var result = document.getElementById('research-result');
+  var ticker = input ? input.value.toUpperCase().replace(/[^A-Z0-9.]/g,'').slice(0,10) : '';
+  if (!ticker || !result) return;
+  result.innerHTML = '<div style="color:#9fb3c8;padding:10px 0;font-size:13px">Investigando <b style="color:#3b9dff">' + ticker + '</b>…</div>';
+  try {
+    var r = await fetch('/research', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'ticker='+encodeURIComponent(ticker) });
+    var d = await r.json();
+    if (d.ok) {
+      result.innerHTML = '<div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:18px 20px;margin-top:6px">'
+        + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;color:#3b9dff;margin-bottom:10px">ANÁLISIS · ' + d.ticker + '</div>'
+        + '<div style="font-size:14px;color:#dbeafe;line-height:1.75">'
+        + String(d.reply || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split(String.fromCharCode(10)).join('<br>').replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
+        + '</div></div>';
+    } else {
+      result.innerHTML = '<div style="color:#ff4d6d;font-size:13px;padding:8px 0">Error: ' + (d.error||'desconocido') + '</div>';
+    }
+  } catch(e) {
+    result.innerHTML = '<div style="color:#ff4d6d;font-size:13px;padding:8px 0">Error de conexión.</div>';
+  }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
   var hashMod = (window.location.hash || '').replace('#', '');
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
+
   var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'home');
   showMod(activeMod);
   loadJournalAuto();
@@ -3955,8 +5117,9 @@ document.addEventListener('DOMContentLoaded', function() {
   loadOpportunityEngine();
 });
 window.addEventListener('hashchange', function() {
-  var hashMod = (window.location.hash || '').replace('#', '');
+  var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
   showMod(validModName(hashMod) ? hashMod : 'home');
+
 });
 </script>
 </html>`;
@@ -4305,6 +5468,189 @@ const server = http.createServer(async (req, res) => {
       }
     }));
   }
+
+  if (path === "/whoop/auth") {
+    const clientId = process.env.WHOOP_CLIENT_ID || "";
+    const redirectUri = process.env.WHOOP_REDIRECT_URI || "";
+    if (!clientId || !redirectUri) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Faltan WHOOP_CLIENT_ID o WHOOP_REDIRECT_URI en .env");
+    }
+
+    const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const scope = "offline read:profile read:cycles read:recovery read:sleep read:workout";
+
+    const authUrl = "https://api.prod.whoop.com/oauth/oauth2/auth"
+      + "?response_type=code"
+      + "&client_id=" + encodeURIComponent(clientId)
+      + "&redirect_uri=" + encodeURIComponent(redirectUri)
+      + "&scope=" + encodeURIComponent(scope)
+      + "&state=" + encodeURIComponent(state);
+
+    res.writeHead(302, { Location: authUrl });
+    return res.end();
+  }
+
+  if (path === "/api/whoop/callback") {
+    const qs = new URL(req.url, "http://localhost").search || "";
+    res.writeHead(302, { Location: "/whoop/callback" + qs });
+    return res.end();
+  }
+
+  if (path === "/whoop/callback") {
+    const code = new URL(req.url, "http://localhost").searchParams.get("code");
+    const err = new URL(req.url, "http://localhost").searchParams.get("error");
+
+    if (err) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("WHOOP OAuth error: " + err);
+    }
+
+    if (!code) {
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Falta code en callback WHOOP.");
+    }
+
+    try {
+      const body = [
+        "grant_type=authorization_code",
+        "code=" + encodeURIComponent(code),
+        "client_id=" + encodeURIComponent(process.env.WHOOP_CLIENT_ID || ""),
+        "client_secret=" + encodeURIComponent(process.env.WHOOP_CLIENT_SECRET || ""),
+        "redirect_uri=" + encodeURIComponent(process.env.WHOOP_REDIRECT_URI || "")
+      ].join("&");
+
+      const tokenResult = await apiPost(WHOOP_TOKEN_URL, body);
+
+      if (!tokenResult || !tokenResult.access_token) {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        return res.end("WHOOP no regresó access_token.");
+      }
+
+      whoopTokens = {
+        ...tokenResult,
+        expires_at: Date.now() + (tokenResult.expires_in || 3600) * 1000
+      };
+
+      saveJSON(WHOOP_TOKEN_FILE, whoopTokens);
+
+      whoopCache.lastFetch = 0;
+      await refreshWhoopCache();
+
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(`<!doctype html>
+<html><head><meta charset="utf-8"><title>WHOOP conectado</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial;background:#02040a;color:#eaf6ff;padding:28px">
+<h1>WHOOP conectado ✅</h1>
+<p>Tokens guardados en el servidor. Ya puedes volver a Cordelius Health.</p>
+<p><a href="/#health" style="color:#00ff99">Abrir Health OS</a></p>
+</body></html>`);
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      return res.end("Error intercambiando code por token WHOOP: " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  if (path === "/api/whoop/status") {
+    const h = computeHealthReadiness();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      configured: WHOOP_CONFIGURED,
+      connected: h.connected,
+      tokensPresent: !!(whoopTokens && whoopTokens.access_token),
+      source: h.source,
+      reason: h.connected
+        ? "WHOOP connected and data available"
+        : WHOOP_CONFIGURED
+          ? (whoopTokens && whoopTokens.access_token ? "Token present — awaiting cache refresh" : "Env vars set but tokens missing — complete OAuth flow")
+          : "WHOOP env vars missing (WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET)",
+      vars: {
+        clientId: !!process.env.WHOOP_CLIENT_ID,
+        clientSecret: !!process.env.WHOOP_CLIENT_SECRET,
+        redirectUri: !!process.env.WHOOP_REDIRECT_URI
+      },
+      cacheAge: whoopCache.lastFetch ? Math.floor((Date.now() - whoopCache.lastFetch) / 1000) + "s" : null
+    }));
+  }
+  if (path === "/api/whoop/profile") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (!whoopCache.connected) return res.end(JSON.stringify({ ok: false, connected: false, reason: "WHOOP not connected" }));
+    return res.end(JSON.stringify({ ok: true, connected: true, profile: whoopCache.profile }));
+  }
+  if (path === "/api/whoop/cycle") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (!whoopCache.connected) return res.end(JSON.stringify({ ok: false, connected: false, reason: "WHOOP not connected" }));
+    return res.end(JSON.stringify({ ok: true, connected: true, cycle: whoopCache.cycle }));
+  }
+
+  // === Autopilot Database Memory API ===
+  if (path === "/api/autopilot/database" && req.method === "GET") {
+    try {
+      return sendAutopilotJSON(res, getAutopilotDatabaseState());
+    } catch (e) {
+      return sendAutopilotJSON(res, { ok: false, error: e.message }, 500);
+    }
+  }
+
+  if (path === "/api/autopilot/snapshot" && req.method === "POST") {
+    try {
+      return sendAutopilotJSON(res, saveAutopilotSnapshot());
+    } catch (e) {
+      return sendAutopilotJSON(res, { ok: false, error: e.message }, 500);
+    }
+  }
+
+  if (path === "/api/autopilot/progress" && req.method === "GET") {
+    try {
+      const state = getAutopilotDatabaseState();
+      return sendAutopilotJSON(res, {
+        ok: true,
+        progress: state.stores.progress,
+        counts: state.counts,
+        latest: state.latest,
+        tradingSummary: state.tradingSummary
+      });
+    } catch (e) {
+      return sendAutopilotJSON(res, { ok: false, error: e.message }, 500);
+    }
+  }
+
+if (path === "/api/whoop/today") {
+    const h = computeHealthReadiness();
+    const _cyc = whoopCache.cycle;
+    const _kj = _cyc && _cyc.score && _cyc.score.kilojoule != null ? _cyc.score.kilojoule : null;
+    const _ss = _cyc && _cyc.score && _cyc.score.state ? _cyc.score.state : null;
+    const _pv = portfolioValue();
+    const _idea = computeTradeIdea();
+    const _alfredo = `Portafolio ${money(_pv.totalValueMXN)} (${pct(_pv.totalGainPct)}). ` +
+      (_idea.hasIdea ? `Idea paper: ${_idea.type} en ${_idea.symbol}. ` : "") +
+      `Modo: ${h.operatingMode}. ${h.suggestion}. NO es consejo médico.`;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      connected: h.connected,
+      date: new Date().toLocaleDateString("es-MX"),
+      strain: h.strain,
+      averageHeartRate: h.averageHeartRate,
+      maxHeartRate: h.maxHeartRate,
+      kilojoule: _kj,
+      scoreState: _ss,
+      recovery: h.recovery,
+      sleep: h.sleep,
+      hrv: h.hrv,
+      restingHeartRate: h.restingHeartRate,
+      operatingMode: h.operatingMode,
+      mode: h.operatingMode,
+      suggestion: h.suggestion,
+      alfredoAdvice: _alfredo,
+      message: h.message
+    }));
+  }
+  if (path === "/api/journal/auto") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeAutoJournal()));
+  }
   if (path === "/api/health-readiness") {
     const h = computeHealthReadiness();
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -4336,6 +5682,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(computeJournalData()));
   }
+
   if (path === "/api/whoop/status") {
     const tokenFile = "whoop_tokens.json";
     let tokenInfo = { exists: false, savedAt: null, tokenType: null, hasAccessToken: false, hasRefreshToken: false };
@@ -4826,6 +6173,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+
   if (path === "/api/os-status") {
     const h = computeHealthReadiness();
     const jd = computeJournalData();
@@ -4850,6 +6198,39 @@ const server = http.createServer(async (req, res) => {
       }
     }));
   }
+  if (req.method === "POST" && path === "/research") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", async () => {
+      const ticker = ((new URLSearchParams(body).get("ticker") || "").toUpperCase().replace(/[^A-Z0-9.]/g, "")).slice(0, 10);
+      if (!ticker) { res.writeHead(400, {"Content-Type":"application/json"}); return res.end(JSON.stringify({ok:false,error:"ticker requerido"})); }
+      const pv = portfolioValue();
+      const portAsset = (pv.assets || []).find(a => a.symbol === ticker);
+      const cong = (quiverData.congress || []).filter(r => r.Ticker === ticker).slice(0, 3);
+      const ins = (quiverData.insiders || []).filter(r => r.Ticker === ticker).slice(0, 3);
+      const relatedNews = news.filter(n => n.impacted && n.impacted.includes(ticker)).slice(0, 3);
+      const context = [
+        `TICKER: ${ticker}`,
+        portAsset
+          ? `EN PORTAFOLIO: Sí — ${portAsset.units} unidades, valor ${money(portAsset.valueMXN)}, ganancia ${pct(portAsset.gainPct)}, score ${portAsset.score}/100, señal: ${portAsset.signal}`
+          : `EN PORTAFOLIO: No — ticker externo`,
+        `QUIVER Congreso: ${cong.length ? cong.map(r => `${r.Date||""} ${r.Representative||""} ${r.Transaction||""}`).join("; ") : "sin datos"}`,
+        `QUIVER Insiders: ${ins.length ? ins.map(r => `${r.Date||""} ${r.InsiderTitle||""} ${r.Transaction||""}`).join("; ") : "sin datos"}`,
+        `NOTICIAS: ${relatedNews.length ? relatedNews.map(n => n.headline).join("; ") : "sin noticias recientes"}`
+      ].join("\n");
+      const q = `Investiga el ticker ${ticker}. Dame: (1) breve descripción del negocio y sector, (2) señales Quiver si las hay, (3) noticias relevantes, (4) tesis educativa de inversión, (5) riesgos principales. Contexto:\n${context}\nMáximo 4 párrafos concisos. Recuerda: análisis educativo, no consejo financiero.`;
+      try {
+        const reply = await alfredoReply(q);
+        res.writeHead(200, {"Content-Type":"application/json"});
+        res.end(JSON.stringify({ok:true, ticker, reply}));
+      } catch(e) {
+        res.writeHead(500, {"Content-Type":"application/json"});
+        res.end(JSON.stringify({ok:false, error:e.message}));
+      }
+    });
+    return;
+  }
+
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
@@ -4888,6 +6269,17 @@ async function boot() {
         new Promise(resolve => setTimeout(resolve, 10000))
       ]);
     } catch (e) { console.log("fetchQuiverData boot omitido:", e.message); }
+
+    try {
+      await Promise.race([
+        refreshWhoopCache(),
+        new Promise(resolve => setTimeout(resolve, 10000))
+      ]);
+    } catch (e) { console.log("refreshWhoopCache boot omitido:", e.message); }
+
+    setInterval(async () => {
+      try { await Promise.race([refreshWhoopCache(), new Promise(r => setTimeout(r, 10000))]); } catch (e) {}
+    }, WHOOP_CACHE_MS);
 
     setInterval(async () => {
       try {
