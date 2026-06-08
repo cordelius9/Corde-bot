@@ -42,17 +42,40 @@ reports/*.json
 reports/*.log
 reports/*.txt
 
-# Temporales
+# Temporales / parches locales
 *.tmp
 tmp/
+*.patch
 
 # Secrets / local env
 .env
+.env.*
+*.env
+*.local
+*.secret
+*.token
+*API_KEY*
+
+# WHOOP / health runtime files
 whoop_tokens.json
 whoop_today_cache.json
 health_profile.json
 health_daily_snapshots.json
 health_behaviors.json
+health_behavior_log.json
+
+# Journals / local memories
+cordelius_journal.json
+corda_journal.json
+
+# Cordelius runtime database
+data/
+data/*.json
+data/secrets/
+data/*.token
+data/*tokens*.json
+data/*secret*.json
+data/*.secrets.json
 
 # Logs
 server.log
@@ -63,32 +86,12 @@ start-with-env.js
 
 # Backups / temp
 dashboard.backup*.js
+dashboard.backup.health-ui-fix-*.js
+dashboard.backup.health-os-direct-*.js
 .gitignore.backup*
-
-# Cordelius runtime database
-data/
-data/*.json
-*.tmp
-
-# Local runtime / secrets
-.env
-whoop_tokens.json
-whoop_today_cache.json
-server.log
-cloudflared.log
-start-with-env.js
-dashboard.backup*.js
-
-# Local runtime / secrets
-.env
-whoop_tokens.json
-whoop_today_cache.json
-health_profile.json
-start-with-env.js
-
-# Local backups
-dashboard.backup*.js
 *.backup*
-cloudflared.log
-server.log
-health_behavior_log.json
+*backup*.js
+
+# Platform dirs
+.railway/
+.render/

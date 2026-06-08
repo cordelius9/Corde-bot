@@ -20,15 +20,63 @@ const CHAT_FILE = "alfredo_chat_history.json";
 const SETTINGS_FILE = "cordelius_settings.json";
 const INTEL_FILE = "cordelius_intel.json";
 const JOURNAL_FILE = "cordelius_journal.json";
+
+const HEALTH_SNAPSHOT_FILE = "data/health_snapshots.json";
+const HEALTH_BEHAVIOR_FILE = "data/health_behaviors.json";
+const PORTFOLIO_SNAPSHOT_FILE = "data/portfolio_snapshots.json";
+const TRADING_DECISION_FILE = "data/trading_decisions.json";
+const AUTOPILOT_MEMORY_FILE = "data/autopilot_memory.json";
+const CORDELIUS_PROGRESS_FILE = "data/cordelius_progress.json";
+const OPPORTUNITY_ENGINE_FILE = "data/opportunity_engine.json";
+const OPPORTUNITY_HISTORY_FILE = "data/opportunity_history.json";
+const STOCK_RESEARCH_CACHE_FILE = "data/stock_research_cache.json";
+const RESEARCH_QUEUE_FILE = "data/research_queue.json";
+
 const WHOOP_TOKEN_FILE = "whoop_tokens.json";
 const WHOOP_CACHE_MS = 5 * 60 * 1000;
 
+
+function ensureDataDir() {
+  try { fs.mkdirSync("data", { recursive: true }); } catch (e) {}
+}
+function ensureParentDir(file) {
+  const dir = String(file || "").split("/").slice(0, -1).join("/");
+  if (dir) { try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {} }
+}
 function loadJSON(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
 }
 function saveJSON(file, data) {
-  try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch (e) {}
+  try {
+    ensureParentDir(file);
+    const tmp = file + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, file);
+  } catch (e) {}
 }
+function appendSnapshot(file, entry, limit = 500) {
+  const current = loadJSON(file, []);
+  const rows = Array.isArray(current) ? current : [];
+  rows.push(entry);
+  const next = rows.slice(-limit);
+  saveJSON(file, next);
+  return next;
+}
+
+function lastArrayItems(arr, n = 5) {
+  return Array.isArray(arr) ? arr.slice(-n).reverse() : [];
+}
+function uniqueStrings(values) {
+  return [...new Set((values || []).map(v => String(v || "").trim().toUpperCase()).filter(Boolean))];
+}
+function normalizeTickerSymbol(symbol) {
+  return String(symbol || "").toUpperCase().replace(/[^A-Z0-9.]/g, "").slice(0, 12);
+}
+function deterministicTickerScore(symbol, salt = 0) {
+  const seed = seedFor(normalizeTickerSymbol(symbol) || "MARKET") + salt;
+  return Math.max(1, Math.min(99, Math.round(45 + ((seed % 37) - 12) + ((seed % 11) * 1.5))));
+}
+ensureDataDir();
 function esc(s = "") {
   return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
 }
@@ -43,8 +91,12 @@ function nowMX() { return new Date().toLocaleString("es-MX"); }
 
 let settings = loadJSON(SETTINGS_FILE, {
   thinkingEnabled: true, autoRefreshSeconds: 60, themeMode: "neural",
-  appName: "Cordelius", assistantName: "Alfredo AI"
+
+  appName: "Cordelius", assistantName: "Jarvis"
+
 });
+const CORDA_APP_NAME = "Cordelius";
+const CORDA_APP_SUBTITLE = "Personal intelligence OS";
 
 let quotes = {};
 let news = [];
@@ -619,6 +671,23 @@ function computeDailyScan() {
   summaryLines.push("Regimen: " + reg.label + ". " + reg.detail);
   summaryLines.push("EDUCATIVO: no es asesoria financiera.");
   const educationalSummary = summaryLines.join(" ");
+  const intelPositiveCount = intelItems.filter(x => x.mood === "POSITIVO").length;
+  const intelNegativeCount = intelItems.filter(x => x.mood === "NEGATIVO").length;
+  const affectedTickers = uniqueStrings(intelItems.flatMap(x => x.affected || []));
+  const hotTickers = uniqueStrings([
+    ...topQuiverTickers.map(x => x.symbol),
+    ...riskAlerts.flatMap(x => x.tickers || []),
+    ...educationalActions.map(x => x.symbol),
+    ...affectedTickers
+  ]).slice(0, 15);
+  const manualMarketTheme = {
+    title: "Cordelius Intelligence Manual",
+    positiveCount: intelPositiveCount,
+    negativeCount: intelNegativeCount,
+    affectedTickers,
+    hotTickers,
+    note: intelItems.length ? "Tema de mercado derivado de intel manual local." : "Sin intel manual; pendiente de proveedor/noticias."
+  };
 
   return {
     ok: true, ts: Date.now(), date: new Date().toLocaleDateString("es-MX"),
@@ -626,15 +695,26 @@ function computeDailyScan() {
     riskAlerts: riskAlerts.slice(0, 10),
     educationalActions: educationalActions.slice(0, 6),
     educationalSummary,
+    affectedTickers,
+    hotTickers,
+    intelPositiveCount,
+    intelNegativeCount,
+    positiveCount: intelPositiveCount,
+    negativeCount: intelNegativeCount,
+    manualMarketTheme,
     rawMatchesLimited: allQuiverMatches.slice(0, 20),
+
     intel: {
       count: intelItems.length,
-      positive: intelPositive,
-      negative: intelNegative,
-      affectedTickers: intelAffected,
-      hotTickers: intelHotTickers,
+      positive: intelPositiveCount,
+      negative: intelNegativeCount,
+      positiveCount: intelPositiveCount,
+      negativeCount: intelNegativeCount,
+      affectedTickers,
+      hotTickers,
       recent: intelItems.slice(0, 5).map(x => ({ mood: x.mood, affected: x.affected, tags: x.tags, time: x.time, snippet: String(x.text || "").slice(0, 180) }))
     }
+
   };
 }
 
@@ -827,6 +907,8 @@ function computeDailyNewsletter() {
   if (qi.configured && qi.congressional && qi.congressional.total > 0) lines.push(`Quiver: ${qi.congressional.buys} compras / ${qi.congressional.sales} ventas del congreso.`);
   else if (!qi.configured) lines.push("Quiver: pendiente de API key.");
   if (intelItems.length > 0) lines.push(`Intel manual: ${intelItems.length} items · ${intelItems.filter(x=>x.mood==="POSITIVO").length}+ / ${intelItems.filter(x=>x.mood==="NEGATIVO").length}−.`);
+  const opportunityState = getOpportunityState();
+  if (opportunityState.topOpportunities && opportunityState.topOpportunities.length) lines.push(`Opportunity Engine: investigar ${opportunityState.topOpportunities.slice(0,3).map(x => x.symbol + " " + x.score + "/100").join(", ")} · educativo.`);
   lines.push(`Régimen: ${reg.label}. ${reg.detail}`);
   lines.push("EDUCATIVO — no es asesoría financiera.");
   return {
@@ -961,6 +1043,307 @@ function computeMarketRadar() {
     quiverTrending: hotTickers.filter(t => t.quiverSignals > 0).slice(0, 10),
     portfolioOverlap,
     educationalSummary: summaryLines.join(" ")
+  };
+}
+
+
+function getResearchCache() {
+  const cache = loadJSON(STOCK_RESEARCH_CACHE_FILE, {});
+  return cache && typeof cache === "object" && !Array.isArray(cache) ? cache : {};
+}
+function cacheStockResearch(research) {
+  if (!research || !research.symbol) return research;
+  const cache = getResearchCache();
+  cache[research.symbol] = { ...research, cachedAt: Date.now() };
+  saveJSON(STOCK_RESEARCH_CACHE_FILE, cache);
+  return cache[research.symbol];
+}
+function getResearchQueue() {
+  return uniqueStrings(loadJSON(RESEARCH_QUEUE_FILE, []));
+}
+function saveResearchQueue(queue) {
+  const next = uniqueStrings(queue).slice(0, 50);
+  saveJSON(RESEARCH_QUEUE_FILE, next);
+  return next;
+}
+function addResearchQueueSymbol(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  if (!sym) return getResearchQueue();
+  return saveResearchQueue([...getResearchQueue(), sym]);
+}
+function removeResearchQueueSymbol(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  return saveResearchQueue(getResearchQueue().filter(x => x !== sym));
+}
+function stockPseudoAsset(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  const portfolioAsset = PORTFOLIO.find(a => a.symbol === sym);
+  if (portfolioAsset) return portfolioAsset;
+  const seed = seedFor(sym || "MARKET");
+  const day = ((seed % 21) - 10) / 5;
+  const price = 40 + (seed % 420);
+  quotes[sym] = quotes[sym] || { price, value: price, day, ok: true, source: "watchlist/research" };
+  return { source: "Watchlist", category: "Opportunity", symbol: sym, display: sym, name: sym, units: 1, currency: "USD", valueManual: price, costManual: price * (0.92 + ((seed % 17) / 100)), brokerGainPct: ((seed % 39) - 14), logo: sym.slice(0, 2), color: "#3b9dff", liveTicker: sym, type: sym === "QQQ" || sym === "SPY" ? "etf" : "stock" };
+}
+function buildTickerOpportunity(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  const asset = stockPseudoAsset(sym);
+  const ind = indicators(asset);
+  const radar = computeMarketRadar();
+  const radarHit = (radar.watchlist || []).find(t => t.symbol === sym) || {};
+  const quiver = Number(radarHit.quiverSignals || 0);
+  const inPortfolio = PORTFOLIO.some(a => a.symbol === sym);
+  const baseScore = inPortfolio ? assetScore(asset) : deterministicTickerScore(sym, 7);
+  const momentumScore = Math.max(0, Math.min(100, 50 + Number(ind.momentum || 0) * 7));
+  const rsiScore = Math.max(0, Math.min(100, 100 - Math.abs(Number(ind.rsi || 50) - 52) * 1.6));
+  const quiverScore = Math.min(25, quiver * 5);
+  const opportunityScore = Math.max(1, Math.min(99, Math.round(baseScore * 0.52 + momentumScore * 0.22 + rsiScore * 0.16 + quiverScore + (MARKET_WATCHLIST.includes(sym) ? 3 : 0))));
+  const riskScore = Math.max(1, Math.min(99, Math.round((assetRisk(asset) === "ALTO" ? 70 : assetRisk(asset) === "MEDIO/ALTO" ? 58 : 42) + Math.max(0, Number(ind.rsi || 50) - 70) + Math.max(0, -Number(ind.momentum || 0) * 6))));
+  const reason = [
+    inPortfolio ? "ya está en portafolio" : "candidato externo",
+    `trend ${ind.trend}`,
+    `RSI ${ind.rsi}`,
+    quiver ? `Quiver x${quiver}` : "sin señal Quiver reciente"
+  ].join(" · ");
+  return {
+    symbol: sym,
+    score: opportunityScore,
+    riskScore,
+    inPortfolio,
+    signal: opportunityScore >= 72 ? "INVESTIGAR PRIORIDAD" : opportunityScore >= 60 ? "WATCHLIST" : "OBSERVAR",
+    reason,
+    indicators: ind,
+    quiverSignals: quiver,
+    educationalNote: "Contexto educativo; no es recomendación de compra/venta."
+  };
+}
+function buildOpportunityEngine() {
+  const scan = computeDailyScan();
+  const radar = computeMarketRadar();
+  const symbols = uniqueStrings([
+    ...MARKET_WATCHLIST,
+    ...PORTFOLIO.map(a => a.symbol),
+    ...((radar.hotTickers || []).map(t => t.symbol)),
+    ...((scan.hotTickers || []).map(t => t.symbol)),
+    ...getResearchQueue()
+  ]);
+  const candidates = symbols.map(buildTickerOpportunity).sort((a, b) => b.score - a.score);
+  const risks = candidates.slice().sort((a, b) => b.riskScore - a.riskScore).slice(0, 10);
+  const queue = getResearchQueue();
+  const state = {
+    ok: true,
+    ts: Date.now(),
+    generatedAt: nowMX(),
+    topOpportunities: candidates.slice(0, 10),
+    topRisks: risks,
+    researchQueue: queue,
+    watchlistCandidates: candidates.filter(x => !x.inPortfolio).slice(0, 12),
+    affectedTickers: scan.affectedTickers || scan.impactedTickers || [],
+    hotTickers: (radar.hotTickers || []).slice(0, 10),
+    disclaimer: "Educational only. No financial advice. No trading execution."
+  };
+  saveJSON(OPPORTUNITY_ENGINE_FILE, state);
+  appendSnapshot(OPPORTUNITY_HISTORY_FILE, { ts: state.ts, topOpportunities: state.topOpportunities.slice(0, 5), topRisks: state.topRisks.slice(0, 5), queueSize: queue.length }, 250);
+  return state;
+}
+function getOpportunityState() {
+  const state = loadJSON(OPPORTUNITY_ENGINE_FILE, null);
+  if (state && state.ok && state.ts && Date.now() - state.ts < 6 * 60 * 60 * 1000) return state;
+  return buildOpportunityEngine();
+}
+function researchStock(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  if (!sym) return { ok: false, error: "missing_symbol", educationalNote: "Envía un ticker como NVDA o TSLA." };
+  const cached = getResearchCache()[sym];
+  if (cached && cached.cachedAt && Date.now() - cached.cachedAt < 12 * 60 * 60 * 1000) return { ...cached, cacheHit: true };
+  const opp = buildTickerOpportunity(sym);
+  const asset = stockPseudoAsset(sym);
+  const relatedNews = news.filter(n => String(n.related || n.symbol || "").toUpperCase().includes(sym) || String(n.headline || n.summary || "").toUpperCase().includes(sym)).slice(0, 5);
+  const intel = intelItems.filter(i => (i.affected || []).includes(sym) || String(i.text || "").toUpperCase().includes(sym)).slice(0, 5);
+  const quiver = computeQuiverTrending();
+  const quiverHits = (quiver.topTickers || []).filter(t => t.symbol === sym).slice(0, 3);
+  const thesis = opp.score >= 72 ? "Prioridad de investigación: momentum/score fuertes; validar valuación, noticias y riesgo antes de cualquier decisión." : opp.score >= 58 ? "Candidato de watchlist: revisar catalizadores y timing; no perseguir movimiento." : "Observación: señal incompleta; esperar más datos o contexto.";
+  const risks = [];
+  if (opp.riskScore >= 65) risks.push("Riesgo elevado por volatilidad, RSI o concentración temática.");
+  if (!relatedNews.length) risks.push("Sin proveedor/noticias recientes en cache local; validar fuera de Cordelius.");
+  if (!quiverHits.length) risks.push("Sin confirmación Quiver reciente en cache local.");
+  const research = {
+    ok: true,
+    symbol: sym,
+    ts: Date.now(),
+    generatedAt: nowMX(),
+    score: opp.score,
+    riskScore: opp.riskScore,
+    signal: opp.signal,
+    thesis,
+    indicators: opp.indicators,
+    priceContext: { source: (quotes[sym] && quotes[sym].source) || "local", price: quotes[sym] ? quotes[sym].price : null, day: quotes[sym] ? quotes[sym].day : null },
+    relatedNews: relatedNews.map(n => ({ source: n.source || "news", headline: n.headline || n.summary || "Noticia", date: n.datetime ? new Date(Number(n.datetime) * 1000).toISOString().slice(0, 10) : null, url: n.url || null })),
+    manualIntel: intel.map(i => ({ mood: i.mood, affected: i.affected || [], text: String(i.text || "").slice(0, 220), time: i.time || null })),
+    quiver: quiverHits,
+    risks,
+    nextResearchSteps: ["Revisar reporte trimestral y guía", "Comparar valuación contra peers", "Validar catalizadores con fecha", "Definir hipótesis paper-trading solamente"],
+    educationalNote: "Investigación educativa. No es recomendación financiera ni orden de compra/venta."
+  };
+  return cacheStockResearch(research);
+}
+function runResearchQueue() {
+  const queue = getResearchQueue();
+  const results = queue.map(sym => researchStock(sym));
+  return { ok: true, ts: Date.now(), count: results.length, queue, results, educationalNote: "Research queue ejecutada en modo educativo; sin trading real." };
+}
+function buildJarvisContext() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const opp = getOpportunityState();
+  return {
+    ok: true,
+    ts: Date.now(),
+    health: { operatingMode: h.operatingMode, recovery: h.recovery, sleep: h.sleep, strain: h.strain },
+    portfolio: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct, assets: pv.assets.length },
+    opportunities: opp.topOpportunities.slice(0, 5),
+    risks: opp.topRisks.slice(0, 5),
+    researchQueue: getResearchQueue(),
+    recentResearch: Object.values(getResearchCache()).sort((a, b) => (b.cachedAt || b.ts || 0) - (a.cachedAt || a.ts || 0)).slice(0, 5),
+    disclaimer: "Jarvis solo entrega contexto educativo. No ejecuta trades."
+  };
+}
+function buildMemorySummary() {
+  const ctx = buildJarvisContext();
+  const top = ctx.opportunities[0];
+  const queue = ctx.researchQueue;
+  return {
+    ok: true,
+    ts: Date.now(),
+    summary: top ? `Oportunidad principal para investigar: ${top.symbol} (${top.score}/100). Queue: ${queue.length ? queue.join(", ") : "vacía"}.` : "Sin oportunidades nuevas todavía.",
+    opportunity: top || null,
+    queue,
+    context: ctx,
+    educationalNote: "Memoria local educativa; no asesoría financiera."
+  };
+}
+
+
+function buildDecisionRecords() {
+  const stored = loadJSON(TRADING_DECISION_FILE, []);
+  const rows = Array.isArray(stored) ? stored.slice(-80) : [];
+  const botRows = Array.isArray(bot.history) ? bot.history.slice(-40).map(x => ({ ...x, source: "paper_bot" })) : [];
+  const currentIdea = computeTradeIdea();
+  return [
+    ...rows,
+    ...botRows,
+    { timestamp: nowMX(), ts: Date.now(), source: "current_trade_idea", tradeIdea: currentIdea, operatingMode: computeHealthReadiness().operatingMode }
+  ].slice(-120);
+}
+function buildDecisionPatterns() {
+  const decisions = buildDecisionRecords();
+  const symbols = {};
+  decisions.forEach(d => {
+    const sym = (d.symbol || (d.tradeIdea && d.tradeIdea.symbol) || "PORTFOLIO").toString().toUpperCase();
+    symbols[sym] = (symbols[sym] || 0) + 1;
+  });
+  const topSymbols = Object.entries(symbols).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([symbol, count]) => ({ symbol, count }));
+  const ideaTypes = {};
+  decisions.forEach(d => {
+    const t = (d.type || (d.tradeIdea && d.tradeIdea.type) || "OBSERVE").toString().toUpperCase();
+    ideaTypes[t] = (ideaTypes[t] || 0) + 1;
+  });
+  return { ok: true, ts: Date.now(), count: decisions.length, topSymbols, ideaTypes, educationalNote: "Patrones educativos; no automatizan trading." };
+}
+function buildDecisionPlaybook() {
+  const h = computeHealthReadiness();
+  const opp = getOpportunityState();
+  return {
+    ok: true,
+    ts: Date.now(),
+    rules: [
+      "Nunca ejecutar compra/venta desde Cordelius; paper/research only.",
+      "Si WHOOP/Health OS está en DEFENSIVO, reducir impulsividad y tamaño de hipótesis paper.",
+      "Toda oportunidad necesita tesis, riesgo, catalizador y fecha antes de simular.",
+      "Si research cache no tiene noticias/proveedor, validar fuera de Cordelius.",
+      "Usar Opportunity Engine como lista de investigación, no como señal financiera."
+    ],
+    currentMode: h.operatingMode,
+    topOpportunity: (opp.topOpportunities || [])[0] || null,
+    educationalNote: "Playbook personal educativo. No es asesoría financiera."
+  };
+}
+function buildProjectStatus() {
+  const opp = getOpportunityState();
+  const h = computeHealthReadiness();
+  return {
+    ok: true,
+    ts: Date.now(),
+    app: CORDA_APP_NAME,
+    phase: "Cordelius OS unified · Phase 5B reconciled",
+    modules: {
+      healthOS: true,
+      whoop: WHOOP_CONFIGURED,
+      marketBrain: true,
+      dailyIntelligence: true,
+      executiveLayer: true,
+      projectMemory: true,
+      decisionIntelligence: true,
+      opportunityEngine: !!opp.ok,
+      telegramJarvis: true
+    },
+    branding: { homeTitle: "Cordelius", assistant: "Jarvis", legacyAlias: "Alfredo" },
+    healthMode: h.operatingMode,
+    topOpportunity: (opp.topOpportunities || [])[0] || null,
+    educationalNote: "Estado del proyecto local; no contiene secretos."
+  };
+}
+function buildProjectMemory() {
+  const memory = loadJSON("data/project_memory.json", []);
+  const rows = Array.isArray(memory) ? memory : [];
+  const latestBuild = {
+    ts: Date.now(),
+    time: nowMX(),
+    title: "Phase 5B Opportunity Engine reconciled",
+    summary: "Jarvis/Executive/Project Memory preserved with Opportunity Engine APIs and UI.",
+    modules: ["Health OS", "Market Brain", "Executive Layer", "Decision Intelligence", "Opportunity Engine", "Telegram Jarvis"]
+  };
+  const combined = rows.length ? rows.slice(-20) : [latestBuild];
+  return { ok: true, ts: Date.now(), buildLog: combined, latest: combined[combined.length - 1] || latestBuild, status: buildProjectStatus(), educationalNote: "Memoria de proyecto local." };
+}
+function buildExecutiveScore() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const opp = getOpportunityState();
+  const top = (opp.topOpportunities || [])[0];
+  const healthScore = h.recovery != null ? Number(h.recovery) : 60;
+  const portfolioScore = Math.max(0, Math.min(100, 50 + Number(pv.totalGainPct || 0)));
+  const opportunityScore = top ? Number(top.score || 0) : 50;
+  const riskPenalty = top ? Math.max(0, Number(top.riskScore || 0) - 55) : 0;
+  const score = Math.max(1, Math.min(99, Math.round(healthScore * 0.25 + portfolioScore * 0.30 + opportunityScore * 0.30 + 15 - riskPenalty * 0.2)));
+  return { ok: true, ts: Date.now(), score, components: { healthScore, portfolioScore, opportunityScore, riskPenalty }, operatingMode: h.operatingMode, educationalNote: "Score ejecutivo educativo; no es señal financiera." };
+}
+function buildExecutiveBriefing() {
+  const pv = portfolioValue();
+  const h = computeHealthReadiness();
+  const reg = marketRegime();
+  const daily = computeDailyScan();
+  const opp = getOpportunityState();
+  const memory = buildMemorySummary();
+  const score = buildExecutiveScore();
+  const top = (opp.topOpportunities || [])[0];
+  return {
+    ok: true,
+    ts: Date.now(),
+    title: "Cordelius Executive Briefing",
+    assistant: "Jarvis",
+    score,
+    portfolio: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct, assets: pv.assets.length },
+    health: { operatingMode: h.operatingMode, recovery: h.recovery, sleep: h.sleep, strain: h.strain },
+    market: { regime: reg.label, detail: reg.detail, dailyIntelligence: { affectedTickers: daily.affectedTickers, hotTickers: daily.hotTickers, positiveCount: daily.intelPositiveCount, negativeCount: daily.intelNegativeCount } },
+    opportunityEngine: { topOpportunity: top || null, topOpportunities: (opp.topOpportunities || []).slice(0, 5), topRisks: (opp.topRisks || []).slice(0, 5), researchQueue: opp.researchQueue || [] },
+    memory,
+    nextActions: [
+      top ? `Investigar ${top.symbol} (${top.score}/100), solo educativo.` : "Recolectar más datos para oportunidades.",
+      "Revisar Health OS antes de cualquier simulación.",
+      "Actualizar Project Memory / Decision Intelligence después de decisiones importantes."
+    ],
+    disclaimer: "Educativo. No es asesoría financiera ni médica. No ejecuta trades."
   };
 }
 
@@ -1124,7 +1507,7 @@ function botTick() {
     if (sellNow) {
       const value = pos.units * priceMXN;
       bot.cash += value; bot.totalRealizedPnl += pnl; bot.tradesCount++;
-      bot.history.unshift({ type: "SELL", symbol: sym, units: pos.units, priceMXN, value, pnl, reason: priceMXN <= pos.sl ? "Stop loss simulado" : priceMXN >= pos.tp ? "Take profit simulado" : "Senal Alfredo", time: nowMX() });
+      bot.history.unshift({ type: "SELL", symbol: sym, units: pos.units, priceMXN, value, pnl, reason: priceMXN <= pos.sl ? "Stop loss simulado" : priceMXN >= pos.tp ? "Take profit simulado" : "Senal Jarvis", time: nowMX() });
       delete bot.positions[sym];
       addThought(`VENTA simulada en ${sym}: ${pnl >= 0 ? "asegurando ganancia" : "cortando riesgo"} (${money(pnl)}).`, pnl >= 0 ? "sell" : "risk");
     }
@@ -1189,7 +1572,9 @@ async function askClaude(question, localReply, pv, reg, botEq, botPnl) {
   };
 
   const prompt = `
-Eres Alfredo AI dentro de Cordelius OS. Responde en español mexicano, claro, directo y útil.
+
+Eres Jarvis AI dentro de Cordelius. Responde en español mexicano, claro, directo y útil.
+
 No eres asesor financiero. Da análisis educativo, no órdenes definitivas.
 Usa SIEMPRE los costos originales y valores reales del portafolio cuando hables de rendimiento.
 
@@ -1230,7 +1615,7 @@ REGLAS DE RESPUESTA:
     model: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
     max_tokens: 900,
     temperature: 0.35,
-    system: "Eres Alfredo AI, copiloto educativo de trading y portafolio. No das asesoría financiera; ayudas a entender riesgo, costos, exposición y escenarios.",
+    system: "Eres Jarvis AI, copiloto educativo de trading y portafolio. No das asesoría financiera; ayudas a entender riesgo, costos, exposición y escenarios.",
     messages: [{ role: "user", content: prompt }]
   });
 
@@ -1336,6 +1721,29 @@ EDUCATIVO — no es asesoría financiera.`;
   } else if (q.includes("comprar") || q.includes("compro")) {
     const ideas = ranked.filter(a => a.signal.includes("BUY") || a.signal.includes("MOMENTUM")).slice(0, 4);
     reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia y tamano pequeno.` : "No veo compra clara. Mercado " + reg.label + ": mejor paciencia.";
+  } else if (q.includes("research queue") || q.includes("cola de research") || q.includes("cola de investigación") || q.includes("que hay en research queue") || q.includes("qué hay en research queue")) {
+    const queue = getResearchQueue();
+    const memory = buildMemorySummary();
+    reply = queue.length
+      ? `Research Queue: ${queue.join(", ")}. ${memory.summary} Puedes pedir "Analiza NVDA" o ejecutar el queue desde Autopilot. EDUCATIVO — no es señal de trading.`
+      : `Research Queue vacía. ${memory.summary} Puedo sugerir una acción para investigar con el Opportunity Engine. EDUCATIVO.`;
+  } else if (q.includes("qué acción debería investigar") || q.includes("que accion deberia investigar") || q.includes("acción debería investigar") || q.includes("accion deberia investigar") || q.includes("oportunidad nueva") || q.includes("oportunidad viste")) {
+    const opp = getOpportunityState();
+    const top = (opp.topOpportunities || [])[0];
+    reply = top
+      ? `Opportunity Engine: investigaría primero ${top.symbol} (${top.score}/100). Motivo: ${top.reason}. Riesgo: ${top.riskScore}/100. No es compra/venta; solo prioridad de investigación educativa.`
+      : "No veo una oportunidad nueva con datos suficientes. Mantengo watchlist en observación educativa.";
+  } else if (q.includes("analiza ") || q.includes("analizar ") || q.includes("research ")) {
+    const symbols = uniqueStrings([...(q.match(/\b[A-Z]{2,5}\b/g) || []), ...(question.match(/\b[A-Z]{2,5}\b/g) || [])]);
+    const sym = symbols.find(x => MARKET_WATCHLIST.includes(x) || PORTFOLIO.some(a => a.symbol === x)) || symbols[0];
+    if (sym) {
+      const r = researchStock(sym);
+      reply = r.ok ? `Research ${r.symbol}: score ${r.score}/100 · riesgo ${r.riskScore}/100 · ${r.signal}. Tesis: ${r.thesis} Riesgos: ${(r.risks || []).slice(0,2).join(" ") || "sin riesgos destacados en cache"}. EDUCATIVO — no es recomendación financiera.` : `No pude analizar ${sym}. ${r.educationalNote || "Ticker inválido."}`;
+    } else {
+      const opp = getOpportunityState();
+      const top = (opp.topOpportunities || [])[0];
+      reply = top ? `¿Quieres que analice ${top.symbol}? Es la primera oportunidad del engine (${top.score}/100).` : "Dime un ticker, por ejemplo: Analiza NVDA.";
+    }
   } else if (q.includes("vigilar") || q.includes("analiza") || q.includes("que harias") || q.includes("hoy")) {
     const scan = computeDailyScan();
     const alerts = scan.riskAlerts.slice(0, 3).map(a => a.message).join("; ");
@@ -1473,7 +1881,7 @@ EDUCATIVO — no es asesoría financiera.`;
   chatHistory.unshift({ question, reply, time: nowMX() });
   chatHistory = chatHistory.slice(0, 60);
   saveJSON(CHAT_FILE, chatHistory);
-  addThought(`Alfredo respondio: "${question.slice(0, 50)}..."`, "ai");
+  addThought(`Jarvis respondio: "${question.slice(0, 50)}..."`, "ai");
   saveJSON(BOT_FILE, bot);
   return reply;
 }
@@ -1527,7 +1935,10 @@ function brainHtml() {
       <span class="btn" style="font-size:12px;padding:5px 12px">Expandir ▾</span>
     </summary>
     <div class="brain-left">
+
+      <div class="brain-title">Cerebro Jarvis AI</div>
       <div class="brain-sub" style="margin:8px 16px 4px">Red neuronal viva: datos → análisis → señales → decisiones</div>
+
       <div class="brain" style="min-height:380px">
         ${nodes.map((n, i) => `<span class="brain-node" style="${positions[i]};${n.color ? "color:"+n.color+";border-color:"+n.color+"44" : ""}">${esc(n.label)}<i class="pulse" style="animation-delay:${n.delay}s"></i></span>`).join("")}
         <svg viewBox="0 0 700 380" class="brain-lines" preserveAspectRatio="none">
@@ -2054,6 +2465,7 @@ function renderNews() {
     const c = n.classification;
     const impacted = n.impacted && n.impacted.length ? n.impacted : ["Mercado"];
     const dateStr = n.datetime ? new Date(n.datetime * 1000).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+
     const impactColor = c.impactColor || "#3b9dff";
     const img = n.image ? `<img style="width:100%;max-height:180px;object-fit:cover;border-radius:12px;margin-bottom:12px" src="${esc(n.image)}" alt="">` : "";
     return `<details class="news-item"${openByDefault ? " open" : ""}>
@@ -2069,10 +2481,11 @@ function renderNews() {
         <div class="chips"><span>${esc(c.type)}</span><span style="background:${impactColor}22;border-color:${impactColor}55;color:${impactColor}">${esc(c.impact)} · ${c.confidence}%</span><span>${esc(c.region)}</span></div>
         <p style="color:#cbd5e1;font-size:14px;margin:8px 0;line-height:1.6">${esc((n.summary || "").slice(0, 300))}</p>
         <div class="impact"><b>Activos:</b>${impacted.map(x => `<span style="${portfolioSymbols.has(x) ? "background:rgba(0,255,153,.12);border-color:rgba(0,255,153,.3);color:#00ff99" : ""}">${esc(x)}</span>`).join("")}</div>
-        <div class="why">Lectura Alfredo: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
+        <div class="why">Lectura Jarvis: puede mover sentimiento, liquidez o sector. No ejecutar sin análisis propio.</div>
         <a target="_blank" href="${esc(n.url || "#")}" style="font-size:13px;color:#3b9dff">Leer fuente ↗</a>
       </div>
     </details>`;
+
   }
   const portfolioNews = news.filter(n => n.impacted && n.impacted.some(t => portfolioSymbols.has(t)));
   const externalNews = news.filter(n => !portfolioNews.includes(n));
@@ -2334,6 +2747,27 @@ function computeTradeIdea() {
   return { hasIdea: false, type: "NO_TRADE", symbol: null, action: "SIN SEÑAL", reason: "Sin señales destacadas ahora", score: null, risk: null, confidence: "N/A", source: null, missingData: "N/A", timestamp: nowMX() };
 }
 
+function computeTradingSummary() {
+  const pv = portfolioValue();
+  const ranked = pv.assets.slice().sort((a, b) => b.gainPct - a.gainPct);
+  const mxn = pv.assets.filter(a => a.currency === "MXN").reduce((sum, a) => sum + a.valueMXN, 0);
+  const usd = pv.assets.filter(a => a.currency === "USD").reduce((sum, a) => sum + a.valueMXN, 0);
+  const crypto = pv.assets.filter(a => a.currency === "CRYPTO" || a.type === "crypto").reduce((sum, a) => sum + a.valueMXN, 0);
+  return {
+    ok: true,
+    ts: Date.now(),
+    app: "Cordelius Trading",
+    equityTotalMXN: pv.totalValueMXN,
+    pnlTotalMXN: pv.totalGainMXN,
+    pnlTotalPct: pv.totalGainPct,
+    exposureByCurrency: { MXN: mxn, USD: usd, CRYPTO: crypto },
+    topWinner: ranked[0] || null,
+    topLoser: ranked[ranked.length - 1] || null,
+    riskMode: marketRegime().label,
+    educationalNote: "Contexto educativo; paper trading only. No es recomendación financiera."
+  };
+}
+
 function computeOperatingMode(recovery) {
   if (recovery === null || recovery === undefined) return "NORMAL";
   if (recovery < 33) return "CONSERVADOR";
@@ -2351,10 +2785,7 @@ const AUTOPILOT_DATA_DIR = AUTOPILOT_PATH.join(__dirname, "data");
 const HEALTH_SNAPSHOTS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "health_snapshots.json");
 const PORTFOLIO_SNAPSHOTS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "portfolio_snapshots.json");
 const TRADING_DECISIONS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "trading_decisions.json");
-const AUTOPILOT_MEMORY_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "autopilot_memory.json");
-const CORDELIUS_PROGRESS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_progress.json");
-
-function ensureDataDir() {
+function ensureAutopilotDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
     AUTOPILOT_FS.mkdirSync(AUTOPILOT_DATA_DIR, { recursive: true });
   }
@@ -2362,7 +2793,7 @@ function ensureDataDir() {
 
 function readJSONSafe(file, fallback) {
   try {
-    ensureDataDir();
+    ensureAutopilotDataDir();
     if (!AUTOPILOT_FS.existsSync(file)) {
       writeJSONAtomic(file, fallback);
       return fallback;
@@ -2375,7 +2806,7 @@ function readJSONSafe(file, fallback) {
 }
 
 function writeJSONAtomic(file, data) {
-  ensureDataDir();
+  ensureAutopilotDataDir();
   const tmp = file + ".tmp";
   const body = JSON.stringify(data, null, 2);
   try {
@@ -2387,7 +2818,7 @@ function writeJSONAtomic(file, data) {
   }
 }
 
-function appendSnapshot(arr, item, maxLen, file) {
+function appendAutopilotSnapshot(arr, item, maxLen, file) {
   const next = Array.isArray(arr) ? arr.slice() : [];
   next.unshift(item);
   const trimmed = next.slice(0, maxLen || 200);
@@ -2395,7 +2826,7 @@ function appendSnapshot(arr, item, maxLen, file) {
   return trimmed;
 }
 
-function computeTradingSummary() {
+function computeTradingSummaryWithHealth() {
   const pv = portfolioValue();
   const h = computeHealthReadiness ? computeHealthReadiness() : {};
   const assets = Array.isArray(pv.assets) ? pv.assets : [];
@@ -2468,7 +2899,7 @@ function getAutopilotDatabaseState() {
     health = {};
   }
 
-  const tradingSummary = computeTradingSummary();
+  const tradingSummary = computeTradingSummaryWithHealth();
 
   return {
     ok: true,
@@ -2505,7 +2936,7 @@ function saveAutopilotSnapshot() {
     health = {};
   }
 
-  const tradingSummary = computeTradingSummary();
+  const tradingSummary = computeTradingSummaryWithHealth();
 
   const healthSnapshots = readJSONSafe(HEALTH_SNAPSHOTS_FILE, []);
   const portfolioSnapshots = readJSONSafe(PORTFOLIO_SNAPSHOTS_FILE, []);
@@ -2546,9 +2977,9 @@ function saveAutopilotSnapshot() {
         : "Operar normal/moderado con confirmación."
   };
 
-  const nextHealth = appendSnapshot(healthSnapshots, healthEntry, 200, HEALTH_SNAPSHOTS_FILE);
-  const nextPortfolio = appendSnapshot(portfolioSnapshots, portfolioEntry, 200, PORTFOLIO_SNAPSHOTS_FILE);
-  const nextDecisions = appendSnapshot(tradingDecisions, decisionEntry, 200, TRADING_DECISIONS_FILE);
+  const nextHealth = appendAutopilotSnapshot(healthSnapshots, healthEntry, 200, HEALTH_SNAPSHOTS_FILE);
+  const nextPortfolio = appendAutopilotSnapshot(portfolioSnapshots, portfolioEntry, 200, PORTFOLIO_SNAPSHOTS_FILE);
+  const nextDecisions = appendAutopilotSnapshot(tradingDecisions, decisionEntry, 200, TRADING_DECISIONS_FILE);
 
   const nextProgress = {
     ...progress,
@@ -2728,6 +3159,83 @@ function computeAutoJournal() {
   };
 }
 
+
+function healthValue(value, fallback = null) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+function clamp(n, min = 0, max = 100) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.max(min, Math.min(max, x));
+}
+function computeReadinessStatus(score) {
+  if (score >= 85) return "EXCELENTE";
+  if (score >= 70) return "BUENO";
+  if (score >= 55) return "MEDIO";
+  if (score >= 40) return "BAJO";
+  return "CRÍTICO";
+}
+function computeHealthScores(whoop = {}) {
+  const recovery = healthValue(whoop.recovery, 50);
+  const sleep = healthValue(whoop.sleep, 50);
+  const strain = healthValue(whoop.strain, 0);
+  const hrv = healthValue(whoop.hrv, 70);
+  const rhr = healthValue(whoop.restingHeartRate, 58);
+  const recoveryComponent = clamp(recovery);
+  const sleepComponent = clamp(sleep);
+  const hrvComponent = clamp((hrv / 160) * 100);
+  const nervousSystem = clamp((hrvComponent * 0.65) + ((70 - Math.min(rhr, 70)) / 30 * 35));
+  const strainPenalty = clamp(strain * 4, 0, 45);
+  const healthScore = clamp((recoveryComponent * 0.34) + (sleepComponent * 0.28) + (hrvComponent * 0.2) + (nervousSystem * 0.18) - strainPenalty * 0.35);
+  const energy = clamp((sleepComponent * 0.4) + (recoveryComponent * 0.35) + Math.max(0, 100 - strain * 5) * 0.25);
+  const focus = clamp((healthScore * 0.45) + (nervousSystem * 0.35) + (sleepComponent * 0.2));
+  const mentalClarity = clamp((focus * 0.65) + (recoveryComponent * 0.2) + (sleepComponent * 0.15));
+  const overtradingRisk = clamp((100 - healthScore) * 0.55 + Math.max(0, strain - 8) * 8 + Math.max(0, 60 - recovery) * 0.35);
+  const stressLoad = clamp((100 - nervousSystem) * 0.45 + strain * 4 + Math.max(0, 60 - sleep) * 0.25);
+  const recoveryPriority = clamp((100 - recoveryComponent) * 0.55 + strain * 4 + Math.max(0, 60 - sleepComponent) * 0.2);
+  const deepWork = clamp((focus * 0.7) + (energy * 0.3) - (overtradingRisk > 70 ? 12 : 0));
+  const tradingCapacity = clamp((healthScore * 0.55) + (focus * 0.25) + (energy * 0.2) - (overtradingRisk > 65 ? 18 : 0));
+  return {
+    healthScore: Math.round(healthScore), readiness: Math.round((recoveryComponent + sleepComponent + hrvComponent) / 3), status: computeReadinessStatus(healthScore),
+    mentalClarity: Math.round(mentalClarity), energy: Math.round(energy), nervousSystem: Math.round(nervousSystem), overtradingRisk: Math.round(overtradingRisk), stressLoad: Math.round(stressLoad), recoveryPriority: Math.round(recoveryPriority),
+    physicalEnergy: Math.round(energy), mentalEnergy: Math.round(mentalClarity), focusCapacity: Math.round(focus), deepWorkCapacity: Math.round(deepWork), tradingCapacity: Math.round(tradingCapacity),
+    radar: { recovery: Math.round(recoveryComponent), sleep: Math.round(sleepComponent), hrv: Math.round(hrvComponent), nervousSystem: Math.round(nervousSystem), energy: Math.round(energy), focus: Math.round(focus) }
+  };
+}
+function todayKey() { return new Date().toISOString().slice(0, 10); }
+function healthSnapshotRecord(whoop = {}) {
+  const scores = computeHealthScores(whoop);
+  return { date: todayKey(), ts: Date.now(), recovery: whoop.recovery ?? null, sleep: whoop.sleep ?? null, strain: whoop.strain ?? null, hrv: whoop.hrv ?? null, restingHeartRate: whoop.restingHeartRate ?? null, averageHeartRate: whoop.averageHeartRate ?? null, maxHeartRate: whoop.maxHeartRate ?? null, operatingMode: whoop.operatingMode || whoop.mode || "NORMAL", connected: !!whoop.connected, scores };
+}
+function upsertHealthSnapshot(record) {
+  const history = loadJSON(HEALTH_SNAPSHOT_FILE, []);
+  const filtered = Array.isArray(history) ? history.filter(x => x && x.date !== record.date) : [];
+  filtered.push(record); filtered.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const next = filtered.slice(-120); saveJSON(HEALTH_SNAPSHOT_FILE, next); return next;
+}
+function loadHealthBehaviors() { const data = loadJSON(HEALTH_BEHAVIOR_FILE, {}); return data && typeof data === "object" && !Array.isArray(data) ? data : {}; }
+function saveHealthBehaviors(data) { saveJSON(HEALTH_BEHAVIOR_FILE, data || {}); }
+function getTodayHealthBehaviors() { const all = loadHealthBehaviors(); return all[todayKey()] || {}; }
+function computeHealthCorrelations(history, behaviorsByDate) {
+  const rows = Array.isArray(history) ? history.filter(x => x && x.date) : [];
+  const notReady = rows.length < 3;
+  const metric = (behavior, field) => {
+    const withBehavior = rows.filter(x => behaviorsByDate[x.date] && behaviorsByDate[x.date][behavior] && typeof x[field] === "number").map(x => x[field]);
+    const withoutBehavior = rows.filter(x => !(behaviorsByDate[x.date] && behaviorsByDate[x.date][behavior]) && typeof x[field] === "number").map(x => x[field]);
+    const avg = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+    const a = avg(withBehavior), b = avg(withoutBehavior);
+    return a === null || b === null ? null : Number((a - b).toFixed(1));
+  };
+  return { ready: !notReady, message: notReady ? "Recolectando datos. Se activará con 3+ días de snapshots." : "Correlaciones educativas activas con snapshots locales.", items: [
+    { label: "Sauna vs Recovery", value: notReady ? null : metric("sauna", "recovery") }, { label: "Cannabis vs Sleep", value: notReady ? null : metric("cannabis", "sleep") }, { label: "Cannabis vs HRV", value: notReady ? null : metric("cannabis", "hrv") }, { label: "Stress vs Recovery", value: notReady ? null : metric("stress", "recovery") }, { label: "Training vs Sleep", value: notReady ? null : metric("training", "sleep") }
+  ] };
+}
+function buildHealthInsight(whoop, scores) {
+  const recovery = whoop.recovery ?? "—", sleep = whoop.sleep ?? "—", strain = whoop.strain ?? "—", hrv = whoop.hrv ?? "—";
+  const social = Math.round(clamp((scores.energy * 0.45) + (scores.mentalClarity * 0.35) + (100 - scores.stressLoad) * 0.2));
+  return `Hoy tu lectura WHOOP-first marca recovery ${recovery}%, sleep ${sleep}%, HRV ${hrv} ms y strain ${strain}. El Health Score está en ${scores.healthScore}/100 (${scores.status}) con modo ${whoop.operatingMode || whoop.mode || "NORMAL"}. Esto sugiere energía física ${scores.physicalEnergy}/100, claridad mental ${scores.mentalClarity}/100 y sistema nervioso ${scores.nervousSystem}/100. Qué hacer: prioriza decisiones simples, bloques de trabajo claros y recuperación si el score baja. Qué evitar: sobreoperar, perseguir movimientos, estudiar sin pausas o cargar más estrés si el overtrading risk está alto (${scores.overtradingRisk}/100). Capacidad educativa de trading: ${scores.tradingCapacity}/100; capacidad de estudio profundo: ${scores.deepWorkCapacity}/100; capacidad social estimada: ${social}/100. Riesgo de burnout: ${scores.stressLoad >= 70 || scores.recoveryPriority >= 70 ? "elevado" : "controlado"}. Educativo. No es asesoría médica ni financiera.`;
+}
+
 function saveJournalEntry(entry) {
   journalEntries.unshift(entry);
   journalEntries = journalEntries.slice(0, 300);
@@ -2827,6 +3335,140 @@ function renderMorningReport() {
   </div>`;
 }
 
+function lastItems(file, limit = 5) {
+  const rows = loadJSON(file, []);
+  return Array.isArray(rows) ? rows.slice(-limit).reverse() : [];
+}
+function summarizeAutopilotProgress(days) {
+  const cutoff = Date.now() - days * 86400000;
+  const health = loadJSON(HEALTH_SNAPSHOT_FILE, []).filter(x => x && (x.ts || Date.parse(x.date || 0)) >= cutoff);
+  const portfolio = loadJSON(PORTFOLIO_SNAPSHOT_FILE, []).filter(x => x && (x.ts || Date.parse(x.date || 0)) >= cutoff);
+  const decisions = loadJSON(TRADING_DECISION_FILE, []).filter(x => x && (x.ts || Date.parse(x.date || 0)) >= cutoff);
+  const avg = (arr, field) => {
+    const nums = arr.map(x => x && x[field]).filter(v => typeof v === "number" && Number.isFinite(v));
+    return nums.length ? Number((nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(2)) : null;
+  };
+  const firstPortfolio = portfolio.length ? portfolio[0] : null;
+  const lastPortfolio = portfolio.length ? portfolio[portfolio.length - 1] : null;
+  const firstEquity = firstPortfolio && typeof firstPortfolio.equityTotalMXN === "number" ? firstPortfolio.equityTotalMXN : null;
+  const lastEquity = lastPortfolio && typeof lastPortfolio.equityTotalMXN === "number" ? lastPortfolio.equityTotalMXN : null;
+  return {
+    days,
+    enoughData: health.length >= 3 || portfolio.length >= 3 || decisions.length >= 3,
+    counts: { health: health.length, portfolio: portfolio.length, decisions: decisions.length },
+    health: {
+      avgRecovery: avg(health, "recovery"),
+      avgSleep: avg(health, "sleep"),
+      avgStrain: avg(health, "strain"),
+      avgHrv: avg(health, "hrv")
+    },
+    portfolio: {
+      firstEquityMXN: firstEquity,
+      lastEquityMXN: lastEquity,
+      equityDeltaMXN: firstEquity !== null && lastEquity !== null ? Number((lastEquity - firstEquity).toFixed(2)) : null
+    },
+    learningStatus: health.length + portfolio.length + decisions.length >= 3 ? "learning" : "collecting"
+  };
+}
+function computeAutopilotProgress() {
+  const progress = { ok:true, ts:Date.now(), sevenDays:summarizeAutopilotProgress(7), thirtyDays:summarizeAutopilotProgress(30) };
+  saveJSON(CORDELIUS_PROGRESS_FILE, progress);
+  return progress;
+}
+function buildAutopilotDatabaseSummary() {
+  const health = loadJSON(HEALTH_SNAPSHOT_FILE, []);
+  const portfolio = loadJSON(PORTFOLIO_SNAPSHOT_FILE, []);
+  const decisions = loadJSON(TRADING_DECISION_FILE, []);
+  const memory = loadJSON(AUTOPILOT_MEMORY_FILE, []);
+  const progress = loadJSON(CORDELIUS_PROGRESS_FILE, null) || computeAutopilotProgress();
+  const last = memory.length ? memory[memory.length - 1] : null;
+  const latestHealthSnapshot = health.length ? health[health.length - 1] : null;
+  const latestPortfolioSnapshot = portfolio.length ? portfolio[portfolio.length - 1] : null;
+  const latestTradingDecision = decisions.length ? decisions[decisions.length - 1] : null;
+  const latestAutopilotMemory = last || null;
+  return {
+    ok: true,
+    ts: Date.now(),
+    lastUpdated: last ? last.timestamp : null,
+    counts: { health: health.length, portfolio: portfolio.length, decisions: decisions.length, memory: memory.length },
+    latestHealthSnapshot,
+    latestPortfolioSnapshot,
+    latestTradingDecision,
+    latestAutopilotMemory,
+    latest: {
+      health: lastItems(HEALTH_SNAPSHOT_FILE, 5),
+      portfolio: lastItems(PORTFOLIO_SNAPSHOT_FILE, 5),
+      decisions: lastItems(TRADING_DECISION_FILE, 5),
+      memory: lastItems(AUTOPILOT_MEMORY_FILE, 3)
+    },
+    progress,
+    educationalNote: "Cordelius empieza a aprender de tu salud, portafolio y decisiones. Contexto educativo, no señal financiera ni médica."
+  };
+}
+function localJson(pathname) {
+  return new Promise(resolve => {
+    http.get("http://127.0.0.1:" + PORT + pathname, rr => {
+      let raw = "";
+      rr.on("data", c => raw += c);
+      rr.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({ ok:false, parseError:true }); } });
+    }).on("error", e => resolve({ ok:false, error:e.message }));
+  });
+}
+async function createAutopilotSnapshot() {
+  const whoop = await localJson("/api/whoop/today");
+  const healthReadiness = computeHealthReadiness();
+  const portfolio = portfolioValue();
+  const tradeIdea = computeTradeIdea();
+  const tradingSummary = computeTradingSummary();
+  const operatingMode = (whoop && (whoop.operatingMode || whoop.mode)) || healthReadiness.operatingMode || "NORMAL";
+  const timestamp = new Date().toISOString();
+  const alfredoAdvice = (whoop && (whoop.alfredoAdvice || whoop.suggestion || whoop.message)) || healthReadiness.message || "Cordelius guardó snapshot local.";
+  const snapshot = { ok:true, timestamp, ts:Date.now(), whoop, healthReadiness, portfolio, tradeIdea, tradingSummary, operatingMode, alfredoAdvice };
+  appendSnapshot(HEALTH_SNAPSHOT_FILE, { timestamp, ts:snapshot.ts, ...(whoop || {}), healthReadiness, operatingMode }, 500);
+  appendSnapshot(PORTFOLIO_SNAPSHOT_FILE, { timestamp, ts:snapshot.ts, equityTotalMXN: portfolio.totalValueMXN, pnlTotalMXN: portfolio.totalGainMXN, pnlTotalPct: portfolio.totalGainPct, assetCount: portfolio.assets.length, topAssets: portfolio.assets.slice().sort((a,b)=>b.valueMXN-a.valueMXN).slice(0,8) }, 500);
+  appendSnapshot(TRADING_DECISION_FILE, { timestamp, ts:snapshot.ts, tradeIdea, operatingMode, alfredoAdvice }, 500);
+  appendSnapshot(AUTOPILOT_MEMORY_FILE, snapshot, 500);
+  snapshot.progress = computeAutopilotProgress();
+  return snapshot;
+}
+function renderAutopilotDatabasePanel() {
+  return `<div class="panel" style="border:1px solid rgba(0,255,153,.16);background:rgba(0,255,153,.035);margin-top:14px">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <div><div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99">Cordelius Database</div><div class="muted" style="font-size:12px;margin-top:4px">Operating Memory · snapshots locales ignorados por Git</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="saveAutopilotSnapshot()">Guardar snapshot ahora</button><button class="btn" onclick="renderAutopilotProgress()">Ver progreso</button></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:12px">
+      <div class="card" style="padding:12px"><div class="label">Health logs</div><div id="autopilot-db-health" class="big">—</div></div>
+      <div class="card" style="padding:12px"><div class="label">Portfolio logs</div><div id="autopilot-db-portfolio" class="big">—</div></div>
+      <div class="card" style="padding:12px"><div class="label">Trading decisions</div><div id="autopilot-db-trading" class="big">—</div></div>
+      <div class="card" style="padding:12px"><div class="label">Last snapshot</div><div id="autopilot-db-last" style="font-size:13px;font-weight:900;color:#dbeafe">—</div></div>
+      <div class="card" style="padding:12px"><div class="label">Learning status</div><div id="autopilot-db-learning" style="font-size:18px;font-weight:950;color:#00ff99">—</div></div>
+    </div>
+    <div id="autopilot-db-progress" class="muted" style="font-size:13px;line-height:1.6">Cordelius empieza a aprender de tu salud, portafolio y decisiones.</div>
+  </div>`;
+}
+
+function renderOpportunityEnginePanel() {
+  const state = getOpportunityState();
+  const oppRows = (state.topOpportunities || []).slice(0, 3).map(x => `<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">${esc(x.symbol)}</b> <span style="color:#00ff99;font-weight:900">${x.score}/100</span><div class="muted" style="font-size:11px">${esc(x.signal)} · ${esc(x.reason)}</div></div>`).join("") || `<div class="muted">Sin oportunidades todavía.</div>`;
+  const riskRows = (state.topRisks || []).slice(0, 3).map(x => `<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">${esc(x.symbol)}</b> <span style="color:#ff4d6d;font-weight:900">riesgo ${x.riskScore}/100</span><div class="muted" style="font-size:11px">${esc(x.reason)}</div></div>`).join("") || `<div class="muted">Sin riesgos nuevos.</div>`;
+  const queue = getResearchQueue();
+  const queueHtml = queue.length ? queue.slice(0, 8).map(s => `<span style="display:inline-flex;border:1px solid rgba(59,157,255,.24);border-radius:999px;padding:4px 9px;margin:2px;color:#9bd3ff;font-size:11px;font-weight:900">${esc(s)}</span>`).join("") : `<span class="muted">Queue vacía</span>`;
+  const watchHtml = (state.watchlistCandidates || []).slice(0, 6).map(x => `<span style="display:inline-flex;border:1px solid rgba(0,255,153,.18);border-radius:999px;padding:4px 9px;margin:2px;color:#00ff99;font-size:11px;font-weight:900">${esc(x.symbol)} ${x.score}</span>`).join("") || `<span class="muted">Sin candidatos</span>`;
+  return `<div class="panel" style="border:1px solid rgba(59,157,255,.16);background:rgba(59,157,255,.035);margin-top:14px">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <div><div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff">Cordelius Opportunity Engine</div><div class="muted" style="font-size:12px;margin-top:4px">Discovery + stock research educativo · sin ejecución ni órdenes.</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><input id="opportunity-research-symbol" placeholder="NVDA" style="max-width:110px;border:1px solid rgba(120,160,210,.18);background:rgba(0,0,0,.24);color:#eaf6ff;border-radius:12px;padding:10px;font-weight:900;text-transform:uppercase"><button class="btn" onclick="analyzeOpportunitySymbol()">Analyze Stock</button><button class="btn" onclick="runOpportunityEngine()">Run Opportunities</button></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px">
+      <div class="card" style="padding:14px"><div class="label">Top 3 Opportunities</div><div id="opportunity-top-list">${oppRows}</div></div>
+      <div class="card" style="padding:14px"><div class="label">Top 3 Risks</div><div id="opportunity-risk-list">${riskRows}</div></div>
+      <div class="card" style="padding:14px"><div class="label">Research Queue</div><div id="opportunity-queue-list" style="margin-top:8px">${queueHtml}</div><div class="label" style="margin-top:12px">Watchlist Candidates</div><div id="opportunity-watchlist-list" style="margin-top:8px">${watchHtml}</div></div>
+    </div>
+    <div id="opportunity-research-result" class="muted" style="font-size:13px;line-height:1.55;margin-top:12px">${esc(state.disclaimer || "Educational only. No financial advice.")}</div>
+  </div>`;
+}
+
 function renderAutopilotPanel() {
   const statusCards = [
     { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
@@ -2847,6 +3489,8 @@ function renderAutopilotPanel() {
           <div class="muted" style="font-size:10px;margin-top:2px">${c.sub}</div>
         </div>`).join("")}
       </div>
+      ${renderAutopilotDatabasePanel()}
+      ${renderOpportunityEnginePanel()}
       <div style="border-top:1px solid rgba(120,160,210,.08);padding-top:10px">
         <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -2929,6 +3573,7 @@ function renderHealthReadinessPanel() {
 
   // id attr for each metric so JS can update live
   const metrics = [
+
     { id: "hr-recovery", label: "Recovery",   value: h.recovery !== null ? h.recovery + "%" : "—",                       color: recColor },
     { id: "hr-sleep",    label: "Sleep",       value: h.sleep !== null ? h.sleep + "%" : "—",                             color: slpColor },
     { id: "hr-strain",   label: "Strain",      value: h.strain !== null ? h.strain.toFixed(1) : "—",                      color: strColor },
@@ -2947,7 +3592,7 @@ function renderHealthReadinessPanel() {
 
   const pv = portfolioValue();
   const idea = computeTradeIdea();
-  const alfredoAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
+  const jarvisAdvice = `Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). ` +
     (idea.hasIdea ? `Idea paper: ${idea.type} en ${idea.symbol}. ` : "") +
     `Modo: ${h.operatingMode}. ${h.suggestion}.`;
 
@@ -2959,23 +3604,27 @@ function renderHealthReadinessPanel() {
           <div class="muted" style="font-size:12px;margin-top:2px">Sueño · Recovery · Energía · Hábitos · no consejo médico</div>
         </div>
         <span id="hr-badge" style="border-radius:99px;padding:4px 13px;font-size:12px;font-weight:900;background:${badgeBg};color:${badgeColor}">${badgeLabel}</span>
+
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
         ${metrics.map(m =>
           `<div style="background:rgba(0,0,0,.2);border:1px solid rgba(120,160,210,.12);border-radius:10px;padding:8px 12px;min-width:80px">
             <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9fb3c8;margin-bottom:3px">${esc(m.label)}</div>
+
             <div id="${m.id}" style="font-size:${m.id === "hr-state" ? "13px" : "16px"};font-weight:900;color:${esc(m.color)}">${esc(m.value)}</div>
           </div>`
         ).join("")}
       </div>
       <div style="padding:10px 14px;background:rgba(244,114,182,.06);border:1px solid rgba(244,114,182,.12);border-radius:10px;font-size:13px;color:#f9a8d4">
         <b id="hr-mode-footer" style="color:#ffd35c">${esc(h.operatingMode)}</b> · <span id="hr-suggestion">${esc(h.suggestion)}</span>
-        <div style="margin-top:5px;font-size:12px;color:#9fb3c8"><span id="hr-advice">${esc(alfredoAdvice)}</span> <span style="opacity:.6">· No es consejo financiero.</span></div>
+        <div style="margin-top:5px;font-size:12px;color:#9fb3c8"><span id="hr-advice">${esc(jarvisAdvice)}</span> <span style="opacity:.6">· No es consejo financiero.</span></div>
+
       </div>
       <div class="muted" style="font-size:11px;margin-top:8px">${esc(h.educationalNote)}</div>
     </div>
   </div>`;
 }
+
 
 
 function renderHealthOSPanel() {
@@ -3133,7 +3782,7 @@ function renderHealthOSPanel() {
       </div>
 
       <div class="health-os-card health-os-wide">
-        <div class="health-os-label">Alfredo Health AI</div>
+        <div class="health-os-label">Jarvis Health AI</div>
         <div id="health-os-ai" class="health-os-ai">${esc(aiText)}</div>
       </div>
 
@@ -3146,6 +3795,7 @@ function renderHealthOSPanel() {
       </div>
     </div>
   </section>`;
+
 }
 
 function renderPortfolioSnapshot(pv, reg) {
@@ -3170,12 +3820,15 @@ function renderExecutiveHub(pv, reg) {
   const h = computeHealthReadiness();
   const idea = computeTradeIdea();
   const nl = computeDailyNewsletter();
+  const opp = getOpportunityState();
+  const topOpp = (opp.topOpportunities || [])[0];
   const modules = [
     { label: "PORTAFOLIO",    value: money(pv.totalValueMXN), sub: pct(pv.totalGainPct), color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d", href: "#portfolio" },
     { label: "MERCADO",       value: esc(reg.label),           sub: pct(reg.avg),         color: reg.color,  href: "#vigilar" },
     { label: "PAPER TRADE",   value: idea.hasIdea ? esc(idea.type) : "SIN SEÑAL", sub: idea.hasIdea ? esc(idea.symbol || "") : "", color: idea.hasIdea ? "#00ff99" : "#9fb3c8", href: "#bot" },
     { label: "HEALTH",        value: h.configured ? "WHOOP ON" : "SIN DATOS",    sub: esc(h.operatingMode), color: h.configured ? "#00ff99" : "#9fb3c8", href: "#health" },
     { label: "QUIVER",        value: quiverData.configured ? "LIVE" : "PENDIENTE", sub: quiverData.configured ? "Datos institucionales" : "Agrega API key", color: quiverData.configured ? "#00ff99" : "#ffd35c", href: "#quiver" },
+    { label: "OPPORTUNITY",   value: topOpp ? esc(topOpp.symbol) : "WATCH", sub: topOpp ? topOpp.score + "/100" : "research", color: topOpp ? "#3b9dff" : "#9fb3c8", href: "#autopilot" },
   ];
   return `<div style="max-width:1280px;margin:0 auto 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
     ${modules.map(m => `<a href="${m.href}" style="text-decoration:none">
@@ -3188,18 +3841,57 @@ function renderExecutiveHub(pv, reg) {
   </div>`;
 }
 
+function alfredoDailyContext(h, pv, reg) {
+  const mode = h.operatingMode || "NORMAL";
+  const recovery = h.recovery;
+  const sleep = h.sleep;
+  const strain = h.strain;
+  const bbva = (pv.assets || []).find(a => a.symbol === "BBVA");
+  let oneLiner = "Cordelius listo: revisa salud, portafolio y contexto antes de decidir.";
+  let question = "¿Quieres que Jarvis conecte salud, BBVA y noticias antes de revisar el día?";
+  if (strain !== null && strain >= 10) {
+    oneLiner = "Veo strain alto: modo defensivo y decisiones más simples.";
+    question = "Veo strain alto; ¿quieres que hoy Jarvis limite el paper trading a observación?";
+  } else if (recovery !== null && recovery >= 75 && sleep !== null && sleep >= 80) {
+    oneLiner = "Buen estado físico: analiza con calma, sin forzar acciones.";
+    question = "Buen recovery y sleep; ¿quieres revisar ideas educativas sin ejecutar nada?";
+  } else if (bbva) {
+    oneLiner = "BBVA sigue como ancla del panel; conviene revisar score y contexto.";
+    question = "BBVA está en tu radar; ¿quieres revisar noticias antes de decidir?";
+  } else if (reg && reg.label) {
+    question = `Mercado en ${reg.label}; ¿quieres ver el resumen de riesgo antes de entrar a trading?`;
+  }
+  const nextActions = [
+    { mod: "trading", label: "Revisar Cordelius Trading" },
+    { mod: "journal", label: "Registrar nota rápida" },
+    { mod: "health", label: "Ver Cordelius Health" }
+  ];
+  return { mode, oneLiner, question, nextActions };
+}
+
 function renderHomePortal(pv, reg) {
   const h = computeHealthReadiness();
   const jd = computeJournalData();
-  const idea = computeTradeIdea();
-  const nl = computeDailyNewsletter();
+  const ctx = alfredoDailyContext(h, pv, reg);
+  const bbva = (pv.assets || []).find(a => a.symbol === "BBVA");
   const modules = [
-    { id: "trading",      label: "Cordelius Trading",       emoji: "◈", color: "#3b9dff", sub: `${money(pv.totalValueMXN)} · ${pct(pv.totalGainPct)}`, badge: pv.totalGainPct >= 0 ? "↑" : "↓", badgeColor: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d", desc: "Portafolio · Paper Trade · Quiver · Market Radar" },
-    { id: "health",       label: "Cordelius Health",        emoji: "◉", color: "#f472b6", sub: `WHOOP ${h.configured ? "ON" : "pendiente"} · ${h.operatingMode}`, badge: h.configured ? "ON" : "—", badgeColor: h.configured ? "#00ff99" : "#9fb3c8", desc: "Recovery · Sleep · Strain · HRV · Readiness" },
-    { id: "journal",      label: "Cordelius Journal",       emoji: "◎", color: "#818cf8", sub: `${jd.count} entradas · ${jd.topMood ? "mood: " + jd.topMood : "sin entradas"}`, badge: jd.count > 0 ? String(jd.count) : "+", badgeColor: "#818cf8", desc: "Diario personal · Mood · Ideas · Reflexiones" },
-    { id: "intelligence", label: "Cordelius Intelligence",  emoji: "◆", color: "#00ff99", sub: `${news.length} noticias · Intel: ${intelItems.length}`, badge: news.length > 0 ? String(news.length) : "—", badgeColor: "#3b9dff", desc: "Noticias · Quiver · Congreso · Sectores · Radar" },
-    { id: "autopilot",    label: "Cordelius Autopilot",     emoji: "◇", color: "#ffd35c", sub: `Servidor ON · Paper Mode · ${quiverData.configured ? "Quiver ON" : "Quiver —"}`, badge: "ON", badgeColor: "#00ff99", desc: "Scripts · Cloud · Estado sistema · Automatización" },
+    { id: "trading", label: "Cordelius Trading", emoji: "◈", color: "#3b9dff", sub: `${money(pv.totalValueMXN)} · ${pct(pv.totalGainPct)}`, desc: "Portafolio · BBVA · riesgo · paper" },
+    { id: "health", label: "Cordelius Health", emoji: "◉", color: "#f472b6", sub: `${h.operatingMode || "NORMAL"} · WHOOP ${h.configured ? "OK" : "—"}`, desc: "Recovery · Sleep · Strain · HRV" },
+    { id: "journal", label: "Cordelius Journal", emoji: "◎", color: "#818cf8", sub: `${jd.count} entradas`, desc: "Diario · memoria · correlaciones" },
+    { id: "intelligence", label: "Cordelius Intelligence", emoji: "◆", color: "#00ff99", sub: `${news.length} noticias · ${intelItems.length} intel`, desc: "Noticias · Quiver · contexto" },
+    { id: "alfredo", label: "Jarvis", emoji: "AI", color: "#ffd35c", sub: "Jarvis personal", desc: "Preguntas · acciones · memoria" }
   ];
+  const cards = [
+    { label: "Portfolio", value: money(pv.totalValueMXN), sub: pct(pv.totalGainPct), color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d" },
+    { label: "Daily P&L", value: money(pv.totalGainMXN), sub: "global", color: pv.totalGainMXN >= 0 ? "#00ff99" : "#ff4d6d" },
+    { label: "BBVA", value: bbva ? `${bbva.score}/100` : "—", sub: bbva ? pct(bbva.gainPct) : "sin dato", color: "#3b9dff" },
+    { label: "Recovery", value: h.recovery !== null ? h.recovery + "%" : "—", sub: "WHOOP", color: "#f472b6", id: "home-recovery" },
+    { label: "Sleep", value: h.sleep !== null ? h.sleep + "%" : "—", sub: "WHOOP", color: "#f472b6", id: "home-sleep" },
+    { label: "Strain", value: h.strain !== null ? String(h.strain) : "—", sub: "today", color: "#ffd35c", id: "home-strain" },
+    { label: "HRV", value: h.hrv !== null ? h.hrv + " ms" : "—", sub: "recovery", color: "#00ff99", id: "home-hrv" },
+    { label: "Journal", value: jd.count ? String(jd.count) : "—", sub: jd.topMood || "sin mood", color: "#818cf8" }
+  ];
+
   const greetHour = new Date().getHours();
   const greet = greetHour < 12 ? "Buenos días" : greetHour < 19 ? "Buenas tardes" : "Buenas noches";
   const days = ["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];
@@ -3263,22 +3955,24 @@ function renderHomePortal(pv, reg) {
         <ul style="margin:0;padding-left:16px;list-style:disc">
           ${nl.lines.slice(0, 3).map(l => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(l)}</li>`).join("")}
         </ul>
+
       </div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div class="panel" style="padding:12px 16px;flex:1">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">Trade Idea</div>
-          ${idea.hasIdea
-            ? `<div style="font-size:15px;font-weight:900;color:#ffd35c">${esc(idea.type)}</div><div style="font-size:13px;color:#9fb3c8">${esc(idea.symbol)} · ${esc(idea.reason.slice(0,50))}</div>`
-            : `<div style="font-size:14px;color:#9fb3c8">Sin señal activa</div>`}
+    </section>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:16px">
+      ${cards.map(c => `<div class="card" style="padding:14px 15px;border-color:${c.color}24;background:rgba(255,255,255,.035)"><div class="label">${esc(c.label)}</div><div ${c.id ? `id="${esc(c.id)}"` : ""} class="big" style="font-size:21px;color:${c.color}">${esc(c.value)}</div><div class="muted" style="font-size:11px">${esc(c.sub)}</div></div>`).join("")}
+    </div>
+
+    <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,.8fr);gap:12px;margin-bottom:16px">
+      <div class="panel" style="padding:16px 18px;border-color:rgba(255,211,92,.16);background:rgba(255,211,92,.035)">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Jarvis asks</div>
+        <div id="home-alfredo-question" style="font-size:17px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          ${ctx.nextActions.map(a => `<button class="btn" onclick="showMod('${a.mod}')" style="font-size:12px;padding:7px 12px">${esc(a.label)}</button>`).join("")}
         </div>
-        <div class="panel" style="padding:12px 16px;flex:1">
-          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px">Estado</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <span style="font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border-radius:99px;padding:3px 9px">Servidor ON</span>
-            <span style="font-size:11px;font-weight:900;background:rgba(255,77,109,.1);color:#ff4d6d;border-radius:99px;padding:3px 9px">Real Trading OFF</span>
-            <span style="font-size:11px;font-weight:900;background:rgba(0,255,153,.1);color:#00ff99;border-radius:99px;padding:3px 9px">Paper ON</span>
-          </div>
-        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+        ${modules.map(m => `<div onclick="showMod('${m.id}')" class="panel" style="cursor:pointer;padding:15px;border-color:${m.color}28;background:rgba(255,255,255,.03)"><div style="color:${m.color};font-size:18px;font-weight:950">${esc(m.emoji)}</div><div style="font-size:13px;font-weight:900;margin-top:7px">${esc(m.label)}</div><div class="muted" style="font-size:11px;margin-top:4px">${esc(m.sub)}</div></div>`).join("")}
       </div>
     </div>
   </div>`;
@@ -3312,27 +4006,62 @@ function renderJournalModule() {
       <div class="muted" style="font-size:13px;margin-top:3px">Basado en WHOOP + snapshots locales · privado · no enviado a terceros</div>
     </div>
 
-    <!-- AUTO JOURNAL — protagonista -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:18px">
-      <div class="panel" style="padding:16px 20px;border:1px solid ${autoColor}30;background:${autoColor}08">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:${autoColor};margin-bottom:6px">Mood estimado</div>
-        <div style="font-size:26px;font-weight:900;color:${autoColor}">${esc(aj.moodEstimated)}</div>
-        <div class="muted" style="font-size:11px">${esc(aj.date)}</div>
+
+    <div id="journal-auto-preview" class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.035);padding:16px 18px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        <div>
+          <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8">Auto Journal · /api/journal/auto</div>
+          <div class="muted" style="font-size:12px;margin-top:2px">Bitácora diaria generada con WHOOP, mercado y Jarvis.</div>
+        </div>
+        <span id="journal-auto-source" style="font-size:11px;color:#9fb3c8;border:1px solid rgba(129,140,248,.2);border-radius:999px;padding:4px 10px">cargando</span>
       </div>
-      <div class="panel" style="padding:16px 20px">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#f472b6;margin-bottom:6px">WHOOP · Strain</div>
-        <div style="font-size:26px;font-weight:900;color:#eaf6ff">${aj.strain !== null ? aj.strain.toFixed(1) : "—"}</div>
-        <div class="muted" style="font-size:11px">Avg HR: ${aj.averageHeartRate !== null ? aj.averageHeartRate + " bpm" : "—"} · Max: ${aj.maxHeartRate !== null ? aj.maxHeartRate + " bpm" : "—"}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-bottom:12px">
+        <div class="card" style="padding:12px"><div class="label">Mood</div><div id="journal-auto-mood" class="big" style="font-size:20px;color:#818cf8">—</div></div>
+        <div class="card" style="padding:12px"><div class="label">Body state</div><div id="journal-auto-body" class="big" style="font-size:20px;color:#f472b6">—</div></div>
+        <div class="card" style="padding:12px"><div class="label">Trading mode</div><div id="journal-auto-trading-mode" class="big" style="font-size:20px;color:#ffd35c">—</div></div>
+        <div class="card" style="padding:12px"><div class="label">WHOOP summary</div><div id="journal-auto-whoop" class="big" style="font-size:20px;color:#00ff99">—</div></div>
       </div>
-      <div class="panel" style="padding:16px 20px">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Recovery</div>
-        <div style="font-size:26px;font-weight:900;color:${aj.recovery !== null ? (aj.recovery >= 67 ? "#00ff99" : aj.recovery >= 34 ? "#ffd35c" : "#ff4d6d") : "#9fb3c8"}">${aj.recovery !== null ? aj.recovery + "%" : "—"}</div>
-        <div class="muted" style="font-size:11px">HRV: ${aj.hrv !== null ? aj.hrv.toFixed(1) + " ms" : "—"} · RHR: ${aj.restingHeartRate !== null ? aj.restingHeartRate + " bpm" : "—"}</div>
+      <div id="journal-auto-note" style="border:1px solid rgba(129,140,248,.12);border-radius:12px;background:rgba(0,0,0,.18);padding:10px 12px;color:#dbeafe;font-size:13px">Cargando bitácora automática...</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
+      <!-- Write form -->
+      <div class="panel" style="border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04);padding:18px 20px">
+        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Nueva entrada</div>
+        <form method="POST" action="/api/journal">
+          <textarea name="text" rows="5" placeholder="¿Cómo te sientes hoy? ¿Qué pasó? ¿Qué aprendiste?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
+          <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+            <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+              ${moodOpts.map(m => `<option value="${m}">${m}</option>`).join("")}
+            </select>
+            <select name="energy" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+              <option value="">Energía</option>
+              ${[1,2,3,4,5].map(n => `<option value="${n}">${n}/5</option>`).join("")}
+            </select>
+            <input name="tags" placeholder="tags: trading, salud..." style="flex:1;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
+          </div>
+          <button type="submit" class="btn" style="background:rgba(129,140,248,.15);border-color:rgba(129,140,248,.3);color:#818cf8;font-size:14px;padding:10px 20px;width:100%">Guardar entrada</button>
+        </form>
       </div>
-      <div class="panel" style="padding:16px 20px">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Modo trading</div>
-        <div style="font-size:14px;font-weight:900;color:#ffd35c;line-height:1.3">${esc(aj.tradingModeSuggestion.split("—")[0])}</div>
-        <div class="muted" style="font-size:11px">${esc((aj.tradingModeSuggestion.split("—")[1] || "").trim())}</div>
+
+      <!-- Stats -->
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="panel" style="padding:14px 18px">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Resumen</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:#818cf8">${jd.count}</div><div class="muted" style="font-size:11px">entradas</div></div>
+            <div style="text-align:center"><div style="font-size:26px;font-weight:900;color:${moodColors[jd.topMood]||"#9fb3c8"}">${jd.topMood||"—"}</div><div class="muted" style="font-size:11px">mood frecuente</div></div>
+          </div>
+        </div>
+        <div class="panel" style="padding:14px 18px;flex:1">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Pregunta a Jarvis</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${["resume mi diario","cómo me he sentido","qué patrones ves"].map(q =>
+              `<button onclick="setJarvisQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;text-align:left;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+            ).join("")}
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -3485,6 +4214,67 @@ function renderStockResearch() {
   </div>`;
 }
 
+
+function renderCordeliusIntelligenceFeedPreview() {
+  const now = Date.now();
+  const liveNews = news.slice(0, 4).map(n => {
+    const publishedMs = n.datetime ? Number(n.datetime) * 1000 : now;
+    return {
+      ticker: (n.related || n.symbol || "MARKET").toString().toUpperCase(),
+      source: n.source || "news",
+      publishedDate: new Date(publishedMs).toISOString().slice(0, 10),
+      type: "news",
+      sentiment: "uncertain",
+      summary: (n.summary || n.headline || "Noticia sin resumen").toString().slice(0, 130),
+      delayBadge: Math.max(0, Math.round((now - publishedMs) / 86400000)) <= 7 ? "1-7d" : "stale"
+    };
+  });
+  const manual = intelItems.slice(0, 2).map(i => ({
+    ticker: (i.symbols && i.symbols[0]) || "CONTEXT",
+    source: "manual",
+    publishedDate: (i.date || nowMX()).toString().slice(0, 10),
+    type: "health/context",
+    sentiment: "uncertain",
+    summary: i.summary || i.text || "Contexto manual pendiente de resumen.",
+    delayBadge: "local"
+  }));
+  const items = liveNews.concat(manual).slice(0, 5);
+  const rows = items.length ? items.map(x => `<div style="display:grid;grid-template-columns:86px 92px 1fr 70px;gap:8px;align-items:center;border-top:1px solid rgba(120,160,210,.08);padding:9px 0">
+      <div style="font-weight:900;color:#eaf6ff;font-size:12px">${esc(x.ticker)}</div>
+      <div class="muted" style="font-size:11px">${esc(x.publishedDate)}</div>
+      <div style="min-width:0"><div style="font-size:12px;color:#dbeafe;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(x.summary)}</div><div class="muted" style="font-size:10px">${esc(x.source)} · ${esc(x.type)} · ${esc(x.sentiment)}</div></div>
+      <div style="text-align:right"><span style="border:1px solid rgba(0,255,153,.2);border-radius:999px;padding:3px 7px;color:#00ff99;font-size:10px">${esc(x.delayBadge)}</span></div>
+    </div>`).join("") : `<div class="muted" style="padding:14px 0">Pendiente de proveedor de noticias. No se inventan noticias reales.</div>`;
+  return `<div class="panel" style="max-width:1280px;margin:0 auto 14px;border:1px solid rgba(0,255,153,.14);background:rgba(0,255,153,.035);padding:16px 18px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <div>
+        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99">Cordelius Intelligence Feed</div>
+        <div class="muted" style="font-size:12px;margin-top:2px">Mercado · insiders · noticias · salud/contexto, siempre con fecha visible.</div>
+      </div>
+      <span style="font-size:11px;color:#9fb3c8;border:1px solid rgba(0,255,153,.18);border-radius:999px;padding:4px 10px">educativo · no señal</span>
+    </div>
+    <div id="intelligence-feed-list">${rows}</div>
+    <div class="muted" style="font-size:11px;margin-top:10px">Si no hay proveedor activo, se muestran placeholders honestos y contexto local.</div>
+  </div>`;
+}
+
+
+function renderHealthOSPanel() {
+  const h = computeHealthReadiness();
+  return `<section class="health-os-shell">
+    <style>
+      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.2),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
+      .health-os-hero{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:18px;margin-bottom:18px}.health-os-card{border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.055);backdrop-filter:blur(16px);border-radius:26px;padding:18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+      .health-os-title{font-size:42px;font-weight:950;letter-spacing:-.05em;line-height:.95;margin:0;color:#fff}.health-os-sub{color:#f9a8d4;font-size:13px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px}.health-os-badge{display:inline-flex;border:1px solid rgba(0,255,153,.25);background:rgba(0,255,153,.09);color:#00ff99;border-radius:999px;padding:5px 11px;font-size:11px;font-weight:950;letter-spacing:.08em}
+      .health-os-metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px;margin-top:18px}.health-os-metric{border:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.18);border-radius:18px;padding:13px}.health-os-label{font-size:10px;text-transform:uppercase;letter-spacing:.13em;color:#9fb3c8;font-weight:900}.health-os-value{font-size:26px;font-weight:950;color:#fff;margin-top:4px}.health-os-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.health-os-span-4{grid-column:span 4}.health-os-span-6{grid-column:span 6}.health-os-span-8{grid-column:span 8}.health-os-span-12{grid-column:span 12}.health-os-donut-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.health-os-donut{min-height:220px;display:grid;place-items:center;text-align:center}.health-os-ai{font-size:15px;line-height:1.75;color:#eaf6ff}.health-os-chip{border:1px solid rgba(244,114,182,.24);background:rgba(244,114,182,.08);color:#f9a8d4;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:900;cursor:pointer}.health-os-chip.active{background:rgba(0,255,153,.13);border-color:rgba(0,255,153,.35);color:#00ff99}.health-os-mini-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}.health-os-risk{border-left:3px solid #ffd35c;padding-left:12px;color:#dbeafe;line-height:1.55}.health-os-disclaimer{color:#9fb3c8;font-size:12px;text-align:center;margin-top:16px}.health-os-history-row{display:grid;grid-template-columns:110px 1fr 80px;gap:8px;align-items:center;margin:9px 0}.health-os-trend{height:42px;border-radius:12px;background:rgba(0,0,0,.18);overflow:hidden}
+      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-grid{display:block}.health-os-card{margin-bottom:12px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:22px}}
+    </style>
+    <div class="health-os-hero"><div class="health-os-card"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><div class="health-os-sub">Cordelius Health</div><h2 class="health-os-title">WHOOP-first readiness</h2><div class="muted" style="margin-top:10px">Última actualización: <span id="health-os-updated">—</span></div></div><span id="health-os-whoop-badge" class="health-os-badge">WHOOP LIVE</span></div><div class="health-os-metric-grid"><div class="health-os-metric"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">RHR</div><div id="health-os-rhr" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Modo</div><div id="health-os-mode" class="health-os-value">${esc(h.operatingMode || "NORMAL")}</div></div></div></div><div class="health-os-card" id="health-os-score-card"><div class="health-os-label">Health Score</div><div id="health-os-score" style="font-size:64px;font-weight:950;color:#f472b6;line-height:1">—</div><div id="health-os-status" style="font-size:18px;font-weight:950;color:#fff">—</div><div class="muted" style="margin-top:10px">Estado: EXCELENTE / BUENO / MEDIO / BAJO / CRÍTICO</div></div></div>
+    <div class="health-os-grid"><div class="health-os-card health-os-span-8"><div class="health-os-sub">Main Grid</div><div class="health-os-donut-row"><div id="health-os-donut-recovery" class="health-os-donut"></div><div id="health-os-donut-sleep" class="health-os-donut"></div><div id="health-os-donut-strain" class="health-os-donut"></div></div></div><div class="health-os-card health-os-span-4"><div class="health-os-sub">Radar</div><div id="health-os-radar"></div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Health Intelligence Scores</div><div id="health-os-score-list" class="health-os-mini-grid"></div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Energy Engine</div><div class="health-os-mini-grid"><div><div class="health-os-label">Physical Energy</div><div id="health-os-energy-physical" class="health-os-value">—</div></div><div><div class="health-os-label">Mental Energy</div><div id="health-os-energy-mental" class="health-os-value">—</div></div><div><div class="health-os-label">Focus Capacity</div><div id="health-os-energy-focus" class="health-os-value">—</div></div><div><div class="health-os-label">Deep Work</div><div id="health-os-energy-deepwork" class="health-os-value">—</div></div><div><div class="health-os-label">Trading Capacity</div><div id="health-os-energy-trading" class="health-os-value">—</div></div></div></div><div class="health-os-card health-os-span-12"><div class="health-os-sub">Jarvis Health AI</div><div id="health-os-ai" class="health-os-ai">Cargando lectura health OS...</div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">WHOOP History</div><div id="health-os-history">Cargando tendencias...</div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Correlation Engine</div><div id="health-os-correlations">Recolectando datos. Se activará con 3+ días de snapshots.</div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Behavior Tracker</div><div id="health-os-behaviors" style="display:flex;gap:8px;flex-wrap:wrap"></div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Trading Integration</div><div id="health-os-trading-risk" class="health-os-risk">Recovery &lt; 50 ⇒ DEFENSIVE / reducir riesgo educativo. Recovery &gt; 80 ⇒ NORMAL. Strain alto ⇒ bajar agresividad. Overtrading Risk alto ⇒ no operar impulsivo.</div></div></div>
+    <div class="health-os-disclaimer">Educativo. No es asesoría médica ni financiera.</div>
+  </section>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -3494,14 +4284,14 @@ function render() {
   const botEq = botValue(), botPnl = botEq - bot.initialCapital;
   const grouped = {};
   for (const a of assets) { const key = `${a.source} · ${a.category}`; grouped[key] = grouped[key] || []; grouped[key].push(a); }
-  const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Alfredo AI:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
+  const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Jarvis AI:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
   const botTables = renderBotTables();
-  const topTV = TV_SYMBOL[best.symbol] || "NASDAQ:MSFT";
+  const topTV = TV_SYMBOL.BBVA || "BMV:BBVA";
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="${settings.autoRefreshSeconds}">
-<title>${esc(settings.appName)}</title>
+<title>${esc(CORDA_APP_NAME)}</title>
 <style>
 :root{--bg:#02040a;--panel:rgba(7,16,30,.72);--line:rgba(120,160,210,.16);--muted:#9fb3c8;--green:#00ff99;--red:#ff4d6d;--blue:#3b9dff;--gold:#ffd35c;--text:#eaf6ff}
 *{box-sizing:border-box}
@@ -3593,6 +4383,8 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .mod{display:none}.mod.active-mod{display:block}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
+.status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
+@media(max-width:820px){.panel{border-radius:18px}.card{border-radius:16px}}
 #alfredo-panel{position:fixed;right:20px;bottom:96px;width:min(400px,calc(100vw - 40px));z-index:99;max-height:72vh;overflow-y:auto;border-radius:24px;display:none}
 .brain-float{position:fixed;right:20px;bottom:20px;width:72px;height:72px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:radial-gradient(circle,rgba(0,255,153,.12),rgba(59,157,255,.06));border:1px solid rgba(0,255,153,.3);box-shadow:0 0 28px rgba(0,255,153,.35),0 0 56px rgba(0,255,153,.12);z-index:30;cursor:pointer;animation:brainpulse 3.2s ease-in-out infinite;backdrop-filter:blur(14px)}
 .brain-float:hover{box-shadow:0 0 48px rgba(0,255,153,.55),0 0 80px rgba(59,157,255,.25);border-color:rgba(0,255,153,.6)}
@@ -3612,7 +4404,8 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 #research-result{animation:fade .3s ease}
 </style></head><body>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
-<button class="brain-float" onclick="toggleAlfredo()" title="Alfredo AI — Cordelius">
+
+<button class="brain-float" onclick="toggleJarvis()" title="Jarvis AI — Cordelius">
   <svg width="38" height="38" viewBox="0 0 38 38" fill="none">
     <circle cx="19" cy="19" r="17" stroke="rgba(0,255,153,.35)" stroke-width="1" stroke-dasharray="6 3" class="brain-ring-o"/>
     <circle cx="19" cy="19" r="11" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-dasharray="4 4" class="brain-ring-m"/>
@@ -3623,17 +4416,18 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
     <line x1="1" y1="19" x2="8" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
     <line x1="30" y1="19" x2="37" y2="19" stroke="rgba(59,157,255,.5)" stroke-width="1.2" stroke-linecap="round"/>
   </svg>
-  <div class="brain-float-label">Alfredo</div>
+  <div class="brain-float-label">Jarvis</div>
 </button>
+
 <div id="alfredo-panel" class="panel">
   <div style="padding:16px 20px 20px">
-    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">Alfredo AI · Educativo</div>
+    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">Jarvis AI · Educativo</div>
     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
       ${["Qué vigilar hoy","Morning report","Modo operativo","Resumen de mi día","Qué módulo revisar","Resume mi diario"].map(q =>
-        `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
+        `<button onclick="setJarvisQ('${q}')" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
       ).join("")}
     </div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Jarvis..." autocomplete="off"><button class="btn">Preguntar</button></form>
     <div style="max-height:300px;overflow-y:auto;margin-top:12px">
       ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
     </div>
@@ -3643,15 +4437,17 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 <header>
   <div class="logo-wrap">
     <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
+
     <div><h1 id="brand-title">Cordelius</h1><div id="module-subtitle" class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
+
   </div>
   <nav style="display:flex;flex-wrap:wrap;gap:6px">
-    <button data-mod="home" class="nav-mod" onclick="showMod('home')">Inicio</button>
-    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">◈ Trading</button>
-    <button data-mod="health" class="nav-mod" onclick="showMod('health')">◉ Health</button>
-    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">◎ Journal</button>
-    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">◆ Intelligence</button>
-    <button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">◇ Autopilot</button>
+    <button data-mod="home" class="nav-mod" onclick="showMod('home')">Home</button>
+    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">Cordelius Trading</button>
+    <button data-mod="health" class="nav-mod" onclick="showMod('health')">Cordelius Health</button>
+    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">Cordelius Journal</button>
+    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">Cordelius Intelligence</button>
+    <button data-mod="alfredo" class="nav-mod" onclick="showMod('alfredo')">Jarvis</button><button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">Cordelius Autopilot</button>
   </nav>
 </header>
 
@@ -3659,7 +4455,10 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <a class="switch" href="/toggle-thinking"><span class="dot"></span>Thinking Mode: <b>${settings.thinkingEnabled ? "ON" : "OFF"}</b></a>
   <span class="switch">Refresh: <b>${settings.autoRefreshSeconds}s</b></span>
   <span class="switch">Finnhub: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
-  <span class="switch">Claude: <b class="${ANTHROPIC_API_KEY ? "green" : "yellow"}">${ANTHROPIC_API_KEY ? "OK" : "SIN KEY"}</b></span>
+  <span class="switch"><span class="status-dot"></span>Server OK</span>
+  <span class="switch">WHOOP: <b class="${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "OK" : "PENDIENTE"}</b></span>
+  <span class="switch">Market Data: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
+  <span class="switch">Journal: <b class="green">OK</b></span>
 </div>
 
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
@@ -3669,12 +4468,14 @@ ${renderHomePortal(pv, reg)}
 
 <!-- ── MOD: TRADING ──────────────────────────────────────── -->
 <div id="mod-trading" class="mod">
+<h2>Cordelius Trading</h2>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
   <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
   <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
   <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
+
 
 <a id="chart"></a>
 <div style="max-width:1280px;margin:28px auto 8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
@@ -3701,14 +4502,15 @@ ${renderHomePortal(pv, reg)}
   <div style="font-size:13px;color:#9fb3c8">Abre cada activo del portafolio para ver minigrafica, precio, señales y enlace a TradingView.</div>
 </div>
 
-<a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
-<a id="alfredo"></a><h2>Alfredo AI — asistente educativo</h2>
+<a id="brain"></a><h2>Jarvis Score · Cordelius Brain</h2>${brainHtml()}
+
+<a id="alfredo-inline"></a><h2>Jarvis — Copiloto educativo</h2>
 <div class="panel" style="padding:0"><details class="chat-details">
   <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:rgba(59,157,255,.07);border-radius:24px;user-select:none">
     <span style="display:flex;align-items:center;gap:12px">
       <span style="width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,#3b9dff,#00ff99);display:grid;place-items:center;font-size:18px;font-weight:900">AI</span>
-      <span><b>Alfredo AI</b> <span class="muted" style="font-size:13px">· preguntas sobre tu portafolio · educativo</span></span>
+      <span><b>Jarvis AI</b> <span class="muted" style="font-size:13px">· preguntas sobre tu portafolio · educativo</span></span>
     </span>
     <span class="btn" style="font-size:13px;padding:6px 14px">Abrir chat ▾</span>
   </summary>
@@ -3718,7 +4520,7 @@ ${renderHomePortal(pv, reg)}
         `<button onclick="document.querySelector('[name=q]').value='${q}'" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
       ).join("")}
     </div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Jarvis..." autocomplete="off"><button class="btn">Preguntar</button></form>
     <div style="max-height:480px;overflow-y:auto;margin-top:12px">
       ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
     </div>
@@ -3736,7 +4538,9 @@ ${(function(){
   ).join("");
 })()}
 
+
 ${renderSignalCenter(pv, reg)}
+
 
 <a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
 
@@ -3751,18 +4555,23 @@ ${renderHealthOSPanel()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
 <div id="mod-journal" class="mod">
+<h2>Cordelius Journal</h2>
 ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
 <div id="mod-intelligence" class="mod">
+
+<h2>Cordelius Intelligence</h2>
+${renderCordeliusIntelligenceFeedPreview()}
 ${renderStockResearch()}
+
 ${renderDailyBrief()}
 ${renderMorningReport()}
 
 <a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos · Políticos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
 ${renderQuiverIntelligencePanel()}
 
-<a id="intel"></a><h2>Cordelius Intelligence — Grok / X manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
+<a id="intel"></a><h2>Cordelius Intelligence — Intel manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
 
 <details style="max-width:1280px;margin:0 auto 8px"><summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.12);border-radius:20px;user-select:none"><span style="font-size:14px;font-weight:900;color:#00ff99">◆ Radar político · Intel manual</span><span class="btn" style="font-size:12px;padding:5px 12px">Ver detalle ▾</span></summary>
 <div>
@@ -3828,8 +4637,26 @@ ${(function(){
 
 </div></details>
 </div>
+<!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
+<div id="mod-alfredo" class="mod">
+<h2>Jarvis — Personal OS</h2>
+<div class="panel" style="max-width:960px;margin:0 auto 12px;padding:18px 20px;border-color:rgba(255,211,92,.18);background:rgba(255,211,92,.04)">
+  <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Context Engine</div>
+  <div id="alfredo-context-line" style="font-size:18px;font-weight:800;color:#fff;margin-bottom:8px">Conecto salud, trading, journal e inteligencia sin inventar datos.</div>
+  <div id="alfredo-context-question" class="muted" style="font-size:14px">¿Qué módulo quieres revisar primero?</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+    <button class="btn" onclick="showMod('trading')">Cordelius Trading</button>
+    <button class="btn" onclick="showMod('health')">Cordelius Health</button>
+    <button class="btn" onclick="showMod('journal')">Cordelius Journal</button>
+  </div>
+</div>
+${renderMorningReport()}
+</div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
 <div id="mod-autopilot" class="mod">
+
+<h2>Cordelius Autopilot</h2>
+
 <h2>Autopilot — Estado del sistema · Automatización</h2>
 
 <section id="autopilot-db-panel" style="margin:22px 0;padding:22px;border-radius:28px;background:radial-gradient(circle at 0% 0%,rgba(0,255,170,.18),transparent 34%),linear-gradient(135deg,rgba(5,11,24,.96),rgba(8,18,35,.88));border:1px solid rgba(0,255,170,.22);box-shadow:0 20px 70px rgba(0,0,0,.42)">
@@ -3925,12 +4752,13 @@ ${(function(){
 })();
 </script>
 
+
 ${renderAutopilotPanel()}
 
-<h2>Sistema</h2>
+<h2>System</h2>
 <div class="grid">
-  <div class="card"><div class="label">App</div><div class="big green">${esc(settings.appName)}</div></div>
-  <div class="card"><div class="label">Alfredo AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
+  <div class="card"><div class="label">App</div><div class="big green">${esc(CORDA_APP_NAME)}</div></div>
+  <div class="card"><div class="label">Jarvis AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
   <div class="card"><div class="label">Finnhub</div><div class="big ${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</div></div>
   <div class="card"><div class="label">Quiver</div><div class="big ${QUIVER_API_KEY ? "green" : "yellow"}">${QUIVER_API_KEY ? "OK" : "PENDIENTE"}</div></div>
   <div class="card"><div class="label">WHOOP</div><div class="big ${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "ON" : "PENDIENTE"}</div></div>
@@ -3938,241 +4766,269 @@ ${renderAutopilotPanel()}
 </div>
 </div>
 
-<div class="disclaimer">Cordelius OS es educativo. No es asesoria financiera. El bot de trading es 100% ficticio (paper trading) y no se conecta a ningun exchange real. WHOOP pendiente de conexion. Alpaca PAPER ONLY.</div>
 
-
-
-
-
-
-
-
-
-<script id="health-os-live-loader-final">
-(function(){
-  function set(id, v) {
-    var el = document.getElementById(id);
-    if (el) el.textContent = (v === null || v === undefined || v === "") ? "—" : String(v);
-  }
-
-  function n(v) {
-    var x = Number(v);
-    return Number.isFinite(x) ? x : null;
-  }
-
-  async function loadHealthOSFinal() {
-    try {
-      var r = await fetch("/api/whoop/today", { cache: "no-store" });
-      if (!r.ok) return;
-      var d = await r.json();
-
-      var recovery = n(d.recovery);
-      var sleep = n(d.sleep);
-      var strain = n(d.strain);
-      var hrv = n(d.hrv);
-      var rhr = n(d.restingHeartRate);
-
-      set("health-os-recovery", recovery != null ? recovery + "%" : "—");
-      set("health-os-sleep", sleep != null ? sleep + "%" : "—");
-      set("health-os-strain", strain != null ? strain.toFixed(1) : "—");
-      set("health-os-hrv", hrv != null ? hrv.toFixed(1) + " ms" : "—");
-      set("health-os-rhr", rhr != null ? Math.round(rhr) + " bpm" : "—");
-
-      var rec = recovery || 0;
-      var slp = sleep || 0;
-      var hrvScore = hrv != null ? Math.max(0, Math.min(100, hrv / 160 * 100)) : 0;
-      var rhrScore = rhr != null ? Math.max(0, Math.min(100, 100 - Math.max(0, rhr - 38) * 2)) : 70;
-      var strainPct = strain != null ? Math.max(0, Math.min(100, strain / 21 * 100)) : 0;
-
-      var score = Math.round(rec * .34 + slp * .24 + hrvScore * .18 + rhrScore * .12 + (100 - strainPct) * .12);
-      var status = score >= 85 ? "EXCELENTE" : score >= 70 ? "BUENO" : score >= 55 ? "MEDIO" : score >= 40 ? "BAJO" : "CRÍTICO";
-
-      set("health-os-score", score);
-      set("health-os-status", status);
-      set("health-os-readiness", status);
-      set("health-os-mode", d.operatingMode || d.mode || "NORMAL");
-
-      set("health-os-energy-physical", Math.round((rec + slp) / 2));
-      set("health-os-energy-mental", Math.round((slp + hrvScore) / 2));
-      set("health-os-energy-focus", Math.round((slp + rec + hrvScore) / 3));
-      set("health-os-energy-deepwork", Math.round((slp + hrvScore + (100 - strainPct)) / 3));
-      set("health-os-energy-trading", Math.round((rec + hrvScore + (100 - strainPct)) / 3));
-
-      var badge = document.getElementById("health-os-whoop-badge");
-      if (badge) badge.textContent = d.connected ? "● WHOOP LIVE" : "WHOOP PENDIENTE";
-
-      var ai = document.getElementById("health-os-ai");
-      if (ai && d.alfredoAdvice) ai.textContent = d.alfredoAdvice;
-
-      console.log("Health OS final loaded", d);
-    } catch(e) {
-      console.error("Health OS final loader failed", e);
-    }
-  }
-
-  window.loadHealthOS = loadHealthOSFinal;
-  window.loadHealthOSFinal = loadHealthOSFinal;
-
-  document.addEventListener("DOMContentLoaded", function(){
-    setTimeout(loadHealthOSFinal, 300);
-    setTimeout(loadHealthOSFinal, 1300);
-  });
-
-  setTimeout(loadHealthOSFinal, 300);
-  setTimeout(loadHealthOSFinal, 1300);
-  setInterval(loadHealthOSFinal, 60000);
-})();
-</script>
-
+<div class="disclaimer">Cordelius es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
 </body>
 <script>
-
-function getCordeliusModuleTitle(mod) {
-  const titles = {
-    home: "Cordelius",
-    trading: "Cordelius Trading",
-    health: "Cordelius Health",
-    journal: "Cordelius Journal",
-    autopilot: "Cordelius Autopilot",
-    intelligence: "Cordelius Intelligence",
-    alfredo: "Cordelius Alfredo",
-    research: "Cordelius Research",
-    settings: "Cordelius Settings"
-  };
-  return titles[mod] || "Cordelius";
+function validModName(name) {
+  return ['home','trading','health','journal','intelligence','alfredo','autopilot'].indexOf(name) !== -1;
 }
-
-function updateCordeliusBranding(mod) {
-  const title = getCordeliusModuleTitle(mod);
-  document.title = title;
-
-  const targets = [
-    "app-title",
-    "brand-title",
-    "cordelius-title",
-    "main-title",
-    "module-title"
-  ];
-
-  targets.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = title;
-  });
-
-  const subtitle = document.getElementById("module-subtitle");
-  if (subtitle) {
-    subtitle.textContent = mod === "home"
-      ? "Personal OS · Trading · Health · Journal"
-      : "Módulo activo dentro de Cordelius";
-  }
-}
-
-
 function showMod(name) {
-  name = String(name || 'home').split('?')[0].replace('#','') || 'home';
-  updateCordeliusBranding(name);
+  name = validModName(name) ? name : 'home';
+  var mod = document.getElementById('mod-' + name);
+  if (!mod) name = 'home';
 
   document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
   document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
-  var mod = document.getElementById('mod-' + name);
+  mod = document.getElementById('mod-' + name);
   if (mod) mod.classList.add('active-mod');
   var btn = document.querySelector('[data-mod="' + name + '"]');
   if (btn) btn.classList.add('nav-active');
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
-  if (name === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
-}
 
-function healthOSSet(id, value) {
+  if (window.location.hash !== '#' + name) {
+    try { history.replaceState(null, '', '#' + name); } catch(e) { window.location.hash = name; }
+  }
+  if (name === 'health') loadHealthOS();
+  if (name === 'journal') loadJournalAuto();
+  if (name === 'intelligence') loadIntelligenceFeed();
+  if (name === 'alfredo') loadJarvisContext();
+  if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); }
+}
+function healthSet(id, value) {
   var el = document.getElementById(id);
   if (el) el.textContent = value == null || value === '' ? '—' : String(value);
 }
-
-function healthOSFmt(n, d) {
-  if (n === null || n === undefined || Number.isNaN(Number(n))) return '—';
-  return Number(n).toFixed(d == null ? 0 : d);
+function healthMetric(value, suffix) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number' && !Number.isFinite(value)) return '—';
+  var text = typeof value === 'number' && Math.round(value * 10) !== value * 10 ? value.toFixed(1) : String(value);
+  return suffix ? text + suffix : text;
 }
+function applyWhoopToday(d) {
+  if (!d || typeof d !== 'object') return;
+  healthSet('health-recovery', healthMetric(d.recovery, '%'));
+  healthSet('health-sleep', healthMetric(d.sleep, '%'));
+  healthSet('health-strain', healthMetric(d.strain, ''));
+  healthSet('health-avg-hr', healthMetric(d.averageHeartRate, ' bpm'));
+  healthSet('health-max-hr', healthMetric(d.maxHeartRate, ' bpm'));
+  healthSet('health-hrv', healthMetric(d.hrv, ' ms'));
+  healthSet('health-resting-hr', healthMetric(d.restingHeartRate, ' bpm'));
+  healthSet('health-operating-mode', d.operatingMode || d.mode || 'NORMAL');
+  healthSet('home-recovery', healthMetric(d.recovery, '%'));
+  healthSet('home-sleep', healthMetric(d.sleep, '%'));
+  healthSet('home-strain', healthMetric(d.strain, ''));
+  healthSet('home-hrv', healthMetric(d.hrv, ' ms'));
+  healthSet('home-operating-mode', d.operatingMode || d.mode || 'NORMAL');
 
-async function toggleHealthBehavior(key) {
+  var homeLine = document.getElementById('home-alfredo-line');
+  if (homeLine) homeLine.textContent = d.alfredoAdvice || d.suggestion || 'Cordelius listo: revisa salud, portafolio y contexto antes de decidir.';
+  var homeQuestion = document.getElementById('home-alfredo-question');
+  if (homeQuestion) {
+    if (d.strain != null && d.strain >= 10) homeQuestion.textContent = 'Veo strain alto; ¿quieres que Jarvis limite el paper trading a observación?';
+    else if (d.recovery != null && d.sleep != null && d.recovery >= 75 && d.sleep >= 80) homeQuestion.textContent = 'Buen recovery y sleep; ¿quieres revisar ideas educativas sin ejecutar nada?';
+    else homeQuestion.textContent = '¿Quieres que Jarvis conecte salud, BBVA y noticias antes de revisar el día?';
+  }
+  var contextLine = document.getElementById('alfredo-context-line');
+  if (contextLine) contextLine.textContent = d.alfredoAdvice || 'Jarvis no tiene datos WHOOP completos todavía.';
+  var contextQuestion = document.getElementById('alfredo-context-question');
+  if (contextQuestion) contextQuestion.textContent = homeQuestion ? homeQuestion.textContent : '¿Qué módulo quieres revisar primero?';
+
+  var badge = document.getElementById('health-whoop-badge');
+  if (badge) {
+    var connected = d.connected === true;
+    badge.textContent = connected ? 'WHOOP DETECTADO' : 'WHOOP PENDIENTE';
+    badge.style.background = connected ? 'rgba(0,255,153,.15)' : 'rgba(255,211,92,.12)';
+    badge.style.color = connected ? '#00ff99' : '#ffd35c';
+  }
+
+  var advice = document.getElementById('health-advice');
+  if (advice) {
+    advice.textContent = d.alfredoAdvice || d.suggestion || d.message || 'Esperando datos de WHOOP.';
+  }
+}
+async function loadWhoopToday() {
+  var panel = document.getElementById('health-readiness-panel');
+  if (!panel || panel.dataset.loading === '1') return;
+  panel.dataset.loading = '1';
   try {
-    await fetch('/api/health/behavior', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ behavior:key })
-    });
-    await loadHealthOS();
-  } catch(e) {
-    console.warn('toggleHealthBehavior failed', e);
+    var response = await fetch('/api/whoop/today', { cache: 'no-store' });
+    if (!response.ok) throw new Error('WHOOP HTTP ' + response.status);
+    applyWhoopToday(await response.json());
+  } catch (e) {
+    var advice = document.getElementById('health-advice');
+    if (advice) advice.textContent = 'No se pudo refrescar WHOOP en el panel. Revisa /api/whoop/today.';
+  } finally {
+    panel.dataset.loading = '0';
   }
 }
 
-async function loadHealthOS() {
-  if (!document.getElementById('health-os-shell')) return;
-
+function applyJournalAuto(d) {
+  if (!d || typeof d !== 'object') return;
+  healthSet('journal-auto-source', d.source || 'WHOOP + Cordelius');
+  healthSet('journal-auto-mood', d.moodEstimated || d.mood || '—');
+  healthSet('journal-auto-body', d.bodyState || '—');
+  healthSet('journal-auto-trading-mode', d.tradingModeSuggestion || d.operatingMode || '—');
+  var recovery = d.recovery != null ? d.recovery + '%' : '—';
+  var sleep = d.sleep != null ? d.sleep + '%' : '—';
+  var strain = d.strain != null ? d.strain : '—';
+  healthSet('journal-auto-whoop', 'R ' + recovery + ' · S ' + sleep + ' · Strain ' + strain);
+  healthSet('journal-auto-note', d.alfredoNote || d.alfredoAdvice || d.summary || 'Bitácora automática lista.');
+}
+async function loadJournalAuto() {
+  if (!document.getElementById('journal-auto-preview')) return;
   try {
-    var insights = {};
-    var whoop = {};
+    var response = await fetch('/api/journal/auto', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Journal HTTP ' + response.status);
+    applyJournalAuto(await response.json());
+  } catch (e) {
+    healthSet('journal-auto-note', 'No se pudo cargar /api/journal/auto en la UI.');
+  }
+}
+function applyJarvisContext(d) {
+  if (!d || typeof d !== 'object') return;
+  healthSet('alfredo-context-line', d.alfredoOneLiner || d.oneLiner || 'Jarvis listo.');
+  healthSet('alfredo-context-question', d.alfredoQuestion || d.question || '¿Qué módulo quieres revisar primero?');
+}
+async function loadJarvisContext() {
+  if (!document.getElementById('alfredo-context-line')) return;
+  try {
+    var response = await fetch('/api/alfredo/context', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Jarvis HTTP ' + response.status);
+    applyJarvisContext(await response.json());
+  } catch (e) {}
+}
+function clientEsc(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+    return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch];
+  });
+}
+function applyIntelligenceFeed(d) {
+  var list = document.getElementById('intelligence-feed-list');
+  if (!list || !d || !Array.isArray(d.items)) return;
+  if (!d.items.length) {
+    list.innerHTML = '<div class="muted" style="padding:14px 0">Pendiente de proveedor de noticias. No se inventan noticias reales.</div>';
+    return;
+  }
+  list.innerHTML = d.items.slice(0, 5).map(function(x) {
+    var date = x.publishedDate || x.eventDate || 'sin fecha';
+    var badge = x.delayBadge || (x.delayDays == null ? 'unknown' : x.delayDays <= 0 ? 'LIVE' : x.delayDays <= 7 ? '1-7d' : x.delayDays <= 30 ? '8-30d' : 'stale');
+    return '<div style="display:grid;grid-template-columns:86px 92px 1fr 70px;gap:8px;align-items:center;border-top:1px solid rgba(120,160,210,.08);padding:9px 0">'
+      + '<div style="font-weight:900;color:#eaf6ff;font-size:12px">' + clientEsc(x.ticker || 'MARKET') + '</div>'
+      + '<div class="muted" style="font-size:11px">' + clientEsc(date) + '</div>'
+      + '<div style="min-width:0"><div style="font-size:12px;color:#dbeafe;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + clientEsc(x.summary || 'Contexto pendiente') + '</div><div class="muted" style="font-size:10px">' + clientEsc(x.source || 'source') + ' · ' + clientEsc(x.type || 'news') + ' · ' + clientEsc(x.sentiment || 'uncertain') + '</div></div>'
+      + '<div style="text-align:right"><span style="border:1px solid rgba(0,255,153,.2);border-radius:999px;padding:3px 7px;color:#00ff99;font-size:10px">' + clientEsc(badge) + '</span></div>'
+      + '</div>';
+  }).join('');
+}
+async function loadIntelligenceFeed() {
+  if (!document.getElementById('intelligence-feed-list')) return;
+  try {
+    var response = await fetch('/api/intelligence/feed', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Intel HTTP ' + response.status);
+    applyIntelligenceFeed(await response.json());
+  } catch (e) {}
+}
 
-    try {
-      var ir = await fetch('/api/health/insights', { cache:'no-store' });
-      if (ir.ok) insights = await ir.json();
-    } catch(e) {}
+function escapeHtml(value) { return clientEsc(value); }
+function fmtPct(value) { return value === null || value === undefined || value === '' ? '—' : Math.round(Number(value)) + '%'; }
+function fmtNum(value, suffix) { return value === null || value === undefined || value === '' || Number.isNaN(Number(value)) ? '—' : (Math.round(Number(value) * 10) / 10) + (suffix || ''); }
+function scoreColor(value) { var n = Number(value || 0); return n >= 80 ? '#00ff99' : n >= 65 ? '#9be15d' : n >= 50 ? '#ffd35c' : n >= 35 ? '#fb7185' : '#ff4d6d'; }
+function renderDonut(label, value, suffix) { var n = Math.max(0, Math.min(100, Number(value || 0))); var color = scoreColor(n); return '<div><div style="width:168px;height:168px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(' + color + ' ' + (n * 3.6) + 'deg, rgba(255,255,255,.08) 0deg);box-shadow:0 0 38px ' + color + '22"><div style="width:118px;height:118px;border-radius:50%;display:grid;place-items:center;background:#06101f;border:1px solid rgba(255,255,255,.08)"><div><div style="font-size:34px;font-weight:950;color:' + color + '">' + (value == null ? '—' : Math.round(Number(value))) + (suffix || '') + '</div><div class="health-os-label">' + escapeHtml(label) + '</div></div></div></div></div>'; }
+function renderRadarSvg(data) { var labels = ['recovery','sleep','hrv','nervousSystem','energy','focus']; var names = ['Recovery','Sleep','HRV','Nervous','Energy','Focus']; var cx = 150, cy = 135, r = 96; var pts = labels.map(function(k, i) { var a = -Math.PI / 2 + i * Math.PI * 2 / labels.length; var v = Math.max(0, Math.min(100, Number((data || {})[k] || 0))) / 100; return [cx + Math.cos(a) * r * v, cy + Math.sin(a) * r * v]; }); var grid = [25,50,75,100].map(function(p) { var rr = r * p / 100; return '<polygon points="' + labels.map(function(_, i) { var a = -Math.PI / 2 + i * Math.PI * 2 / labels.length; return (cx + Math.cos(a) * rr) + ',' + (cy + Math.sin(a) * rr); }).join(' ') + '" fill="none" stroke="rgba(255,255,255,.08)"/>'; }).join(''); var axes = labels.map(function(_, i) { var a = -Math.PI / 2 + i * Math.PI * 2 / labels.length; return '<line x1="'+cx+'" y1="'+cy+'" x2="'+(cx+Math.cos(a)*r)+'" y2="'+(cy+Math.sin(a)*r)+'" stroke="rgba(255,255,255,.08)"/><text x="'+(cx+Math.cos(a)*(r+28))+'" y="'+(cy+Math.sin(a)*(r+28))+'" fill="#9fb3c8" font-size="11" text-anchor="middle">'+names[i]+'</text>'; }).join(''); return '<svg viewBox="0 0 300 280" width="100%" height="280">' + grid + axes + '<polygon points="' + pts.map(function(p){return p[0]+','+p[1];}).join(' ') + '" fill="rgba(244,114,182,.24)" stroke="#f472b6" stroke-width="3"/></svg>'; }
+function renderSparklineSvg(values, color) { var nums = (values || []).filter(function(v){ return typeof v === 'number' && Number.isFinite(v); }); if (nums.length < 2) return '<div class="muted" style="padding:12px">Recolectando datos.</div>'; var min = Math.min.apply(null, nums), max = Math.max.apply(null, nums), span = max - min || 1; var pts = nums.map(function(v, i){ return (i * 180 / (nums.length - 1)) + ',' + (34 - ((v - min) / span * 28)); }).join(' '); return '<svg viewBox="0 0 180 42" width="100%" height="42"><polyline points="'+pts+'" fill="none" stroke="'+(color||'#00ff99')+'" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'; }
+function renderHealthScoreCard(label, value) { return '<div class="health-os-metric"><div class="health-os-label">'+escapeHtml(label)+'</div><div class="health-os-value" style="color:'+scoreColor(value)+'">'+fmtNum(value, '')+'</div></div>'; }
+function renderBehaviorChips(behaviors) { var items = [['sauna','Sauna'],['cannabis','Cannabis'],['training','Training'],['stress','High Stress'],['lateCaffeine','Late Caffeine'],['alcohol','Alcohol']]; return items.map(function(x){ var on = behaviors && behaviors[x[0]]; return '<button class="health-os-chip '+(on?'active':'')+'" data-health-behavior="'+escapeHtml(x[0])+'" onclick="toggleHealthBehavior(this.dataset.healthBehavior)">'+escapeHtml(x[1])+'</button>'; }).join(''); }
+async function toggleHealthBehavior(key) { try { var response = await fetch('/api/health/behavior', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ behavior:key }) }); if (response.ok) await loadHealthOS(); } catch(e) {} }
+function applyHealthOS(snapshot, insights, behaviors) { var latest = (snapshot && snapshot.latest) || {}; var scores = latest.scores || (snapshot && snapshot.scores) || {}; healthSet('health-os-updated', latest.ts ? new Date(latest.ts).toLocaleString('es-MX') : new Date().toLocaleString('es-MX')); healthSet('health-os-recovery', fmtPct(latest.recovery)); healthSet('health-os-sleep', fmtPct(latest.sleep)); healthSet('health-os-strain', fmtNum(latest.strain, '')); healthSet('health-os-hrv', fmtNum(latest.hrv, ' ms')); healthSet('health-os-rhr', fmtNum(latest.restingHeartRate, ' bpm')); healthSet('health-os-readiness', fmtPct(scores.readiness)); healthSet('health-os-score', fmtNum(scores.healthScore, '')); healthSet('health-os-status', scores.status || '—'); healthSet('health-os-mode', latest.operatingMode || 'NORMAL'); var badge = document.getElementById('health-os-whoop-badge'); if (badge) badge.textContent = latest.connected ? 'WHOOP LIVE' : 'WHOOP FALLBACK'; var scoreEl = document.getElementById('health-os-score'); if (scoreEl) scoreEl.style.color = scoreColor(scores.healthScore); var d1 = document.getElementById('health-os-donut-recovery'); if (d1) d1.innerHTML = renderDonut('Recovery', latest.recovery, '%'); var d2 = document.getElementById('health-os-donut-sleep'); if (d2) d2.innerHTML = renderDonut('Sleep', latest.sleep, '%'); var d3 = document.getElementById('health-os-donut-strain'); if (d3) d3.innerHTML = renderDonut('Strain', Math.min(100, Number(latest.strain || 0) * 5), ''); var radar = document.getElementById('health-os-radar'); if (radar) radar.innerHTML = renderRadarSvg(scores.radar || {}); var scoreList = document.getElementById('health-os-score-list'); if (scoreList) scoreList.innerHTML = [['Mental Clarity', scores.mentalClarity], ['Energy', scores.energy], ['Nervous System', scores.nervousSystem], ['Overtrading Risk', 100 - (scores.overtradingRisk || 0)], ['Stress Load', 100 - (scores.stressLoad || 0)], ['Recovery Priority', 100 - (scores.recoveryPriority || 0)]].map(function(x){ return renderHealthScoreCard(x[0], x[1]); }).join(''); healthSet('health-os-energy-physical', fmtNum(scores.physicalEnergy, '')); healthSet('health-os-energy-mental', fmtNum(scores.mentalEnergy, '')); healthSet('health-os-energy-focus', fmtNum(scores.focusCapacity, '')); healthSet('health-os-energy-deepwork', fmtNum(scores.deepWorkCapacity, '')); healthSet('health-os-energy-trading', fmtNum(scores.tradingCapacity, '')); healthSet('health-os-ai', (insights && insights.alfredoHealthAI) || (snapshot && snapshot.alfredoHealthAI) || 'Sin insight todavía.'); var history = document.getElementById('health-os-history'); if (history) { var h = (snapshot && snapshot.history) || []; var row = function(label, field, color) { var vals = h.map(function(x){ return x[field]; }); var last = vals.filter(function(v){return typeof v === 'number';}).slice(-1)[0]; return '<div class="health-os-history-row"><b>'+label+'</b><div class="health-os-trend">'+renderSparklineSvg(vals.slice(-30), color)+'</div><span>'+fmtNum(last, field === 'strain' ? '' : (field === 'hrv' ? ' ms' : '%'))+'</span></div>'; }; history.innerHTML = row('Recovery 7d / 30d','recovery','#f472b6') + row('Sleep 7d / 30d','sleep','#818cf8') + row('HRV 7d / 30d','hrv','#00ff99') + row('Strain 7d / 30d','strain','#ffd35c'); } var corr = document.getElementById('health-os-correlations'); if (corr) { var c = (snapshot && snapshot.correlations) || {}; corr.innerHTML = c.ready ? (c.items || []).map(function(i){ return '<div class="health-os-risk"><b>'+escapeHtml(i.label)+'</b><br><span class="muted">Delta: '+(i.value == null ? 'insuficiente' : i.value)+'</span></div>'; }).join('') : '<div class="muted">Recolectando datos. Se activará con 3+ días de snapshots.</div>'; } var beh = document.getElementById('health-os-behaviors'); if (beh) beh.innerHTML = renderBehaviorChips((behaviors && behaviors.behaviors) || {}); var risk = document.getElementById('health-os-trading-risk'); if (risk) risk.innerHTML = 'Recovery &lt; 50 ⇒ DEFENSIVE / reducir riesgo educativo.<br>Recovery &gt; 80 ⇒ NORMAL.<br>Strain alto ⇒ bajar agresividad.<br>Overtrading Risk actual: <b style="color:'+scoreColor(100 - (scores.overtradingRisk || 0))+'">'+fmtNum(scores.overtradingRisk, '')+'</b>. No operar impulsivo.'; }
+async function loadHealthOS() { if (!document.getElementById('health-os-score')) return; try { var responses = await Promise.all([fetch('/api/health/snapshot', { cache:'no-store' }), fetch('/api/health/insights', { cache:'no-store' }), fetch('/api/health/behaviors/today', { cache:'no-store' })]); var snapshot = responses[0].ok ? await responses[0].json() : null; var insights = responses[1].ok ? await responses[1].json() : null; var behaviors = responses[2].ok ? await responses[2].json() : null; if (!snapshot || !snapshot.ok) { var fallback = await fetch('/api/whoop/today', { cache:'no-store' }); var whoop = fallback.ok ? await fallback.json() : {}; snapshot = { ok:true, latest: whoop, scores: {}, history: [] }; } applyHealthOS(snapshot, insights, behaviors); } catch(e) { healthSet('health-os-ai', 'No se pudo cargar Health OS. Revisa /api/health/snapshot.'); } }
 
-    try {
-      var wr = await fetch('/api/whoop/today', { cache:'no-store' });
-      if (wr.ok) whoop = await wr.json();
-    } catch(e) {}
-
-    var m = insights.metrics || {};
-    var recovery = m.recovery ?? whoop.recovery;
-    var sleep = m.sleep ?? whoop.sleep;
-    var strain = m.strain ?? whoop.strain;
-    var hrv = m.hrv_ms ?? whoop.hrv;
-    var rhr = m.resting_hr_bpm ?? whoop.restingHeartRate;
-
-    healthOSSet('health-os-recovery', recovery != null ? recovery + '%' : '—');
-    healthOSSet('health-os-sleep', sleep != null ? sleep + '%' : '—');
-    healthOSSet('health-os-strain', strain != null ? healthOSFmt(strain, 1) : '—');
-    healthOSSet('health-os-hrv', hrv != null ? healthOSFmt(hrv, 1) + ' ms' : '—');
-    healthOSSet('health-os-rhr', rhr != null ? rhr + ' bpm' : '—');
-
-    var rec = Number(recovery || 0);
-    var slp = Number(sleep || 0);
-    var hrvScore = Math.max(0, Math.min(100, Number(hrv || 0) / 160 * 100));
-    var strainPct = Math.max(0, Math.min(100, Number(strain || 0) / 21 * 100));
-    var score = Math.round(rec * .34 + slp * .24 + hrvScore * .18 + (100 - strainPct) * .24);
-    var status = score >= 85 ? 'EXCELENTE' : score >= 70 ? 'BUENO' : score >= 55 ? 'MEDIO' : score >= 40 ? 'BAJO' : 'CRÍTICO';
-    var mode = insights.readiness || whoop.mode || whoop.operatingMode || (rec < 50 ? 'DEFENSIVO' : 'NORMAL');
-
-    healthOSSet('health-os-score', score);
-    healthOSSet('health-os-status', status);
-    healthOSSet('health-os-readiness', status);
-    healthOSSet('health-os-mode', mode);
-
-    healthOSSet('health-os-energy-physical', Math.round((rec + slp) / 2));
-    healthOSSet('health-os-energy-mental', Math.round((slp + hrvScore) / 2));
-    healthOSSet('health-os-energy-focus', Math.round((slp + rec + hrvScore) / 3));
-    healthOSSet('health-os-energy-deepwork', Math.round((slp + hrvScore + (100 - strainPct)) / 3));
-    healthOSSet('health-os-energy-trading', Math.round((rec + hrvScore + (100 - strainPct)) / 3));
-
-    var ai = document.getElementById('health-os-ai');
-    if (ai && (insights.aiBrief || whoop.alfredoAdvice)) {
-      ai.textContent = insights.aiBrief || whoop.alfredoAdvice;
-    }
-
-    var badge = document.getElementById('health-os-whoop-badge');
-    if (badge) badge.textContent = whoop.connected ? '● WHOOP LIVE' : 'WHOOP DETECTADO';
-
+function autopilotSet(id, value) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = value == null || value === '' ? '—' : String(value);
+}
+function applyAutopilotDatabase(d) {
+  if (!d || !d.ok) return;
+  var counts = d.counts || {};
+  autopilotSet('autopilot-db-health', counts.health || 0);
+  autopilotSet('autopilot-db-portfolio', counts.portfolio || 0);
+  autopilotSet('autopilot-db-trading', counts.decisions || 0);
+  autopilotSet('autopilot-db-last', d.lastUpdated ? new Date(d.lastUpdated).toLocaleString('es-MX') : 'Sin snapshots');
+  var p7 = d.progress && d.progress.sevenDays;
+  autopilotSet('autopilot-db-learning', p7 && p7.enoughData ? 'LEARNING' : 'COLLECTING');
+  var box = document.getElementById('autopilot-db-progress');
+  if (box) box.textContent = d.educationalNote || 'Cordelius empieza a aprender de tu salud, portafolio y decisiones.';
+}
+async function loadAutopilotDatabase() {
+  if (!document.getElementById('autopilot-db-health')) return;
+  try {
+    var response = await fetch('/api/autopilot/database', { cache:'no-store' });
+    if (!response.ok) throw new Error('database HTTP ' + response.status);
+    applyAutopilotDatabase(await response.json());
   } catch(e) {
-    healthOSSet('health-os-ai', 'No se pudo cargar Health OS. Revisa /api/health/insights y /api/whoop/today.');
-    console.error('loadHealthOS failed', e);
+    autopilotSet('autopilot-db-learning', 'ERROR');
+  }
+}
+async function saveAutopilotSnapshot() {
+  var box = document.getElementById('autopilot-db-progress');
+  if (box) box.textContent = 'Guardando snapshot local...';
+  try {
+    var response = await fetch('/api/autopilot/snapshot', { method:'POST', cache:'no-store' });
+    var data = response.ok ? await response.json() : null;
+    if (box) box.textContent = data && data.ok ? 'Snapshot guardado. Operating mode: ' + (data.operatingMode || 'NORMAL') : 'No se pudo guardar snapshot.';
+    await loadAutopilotDatabase();
+  } catch(e) {
+    if (box) box.textContent = 'Error guardando snapshot.';
+  }
+}
+async function renderAutopilotProgress() {
+  var box = document.getElementById('autopilot-db-progress');
+  if (!box) return;
+  try {
+    var response = await fetch('/api/autopilot/progress', { cache:'no-store' });
+    var d = response.ok ? await response.json() : null;
+    if (!d || !d.ok) throw new Error('progress error');
+    var p7 = d.sevenDays || {}, p30 = d.thirtyDays || {};
+    box.innerHTML = '7d: ' + (p7.enoughData ? 'learning' : 'recolectando') + ' · health ' + ((p7.counts && p7.counts.health) || 0) + ' · portfolio ' + ((p7.counts && p7.counts.portfolio) || 0) + ' · decisions ' + ((p7.counts && p7.counts.decisions) || 0) + '<br>30d: ' + (p30.enoughData ? 'learning' : 'recolectando') + ' · health ' + ((p30.counts && p30.counts.health) || 0) + ' · portfolio ' + ((p30.counts && p30.counts.portfolio) || 0) + ' · decisions ' + ((p30.counts && p30.counts.decisions) || 0);
+  } catch(e) {
+    box.textContent = 'No se pudo calcular progreso todavía.';
   }
 }
 
-function toggleAlfredo() {
+function renderOpportunityLists(d) {
+  if (!d || !d.ok) return;
+  var top = document.getElementById('opportunity-top-list');
+  if (top) top.innerHTML = (d.topOpportunities || []).slice(0,3).map(function(x){ return '<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">'+clientEsc(x.symbol)+'</b> <span style="color:#00ff99;font-weight:900">'+clientEsc(x.score)+'/100</span><div class="muted" style="font-size:11px">'+clientEsc(x.signal || '')+' · '+clientEsc(x.reason || '')+'</div></div>'; }).join('') || '<div class="muted">Sin oportunidades todavía.</div>';
+  var risks = document.getElementById('opportunity-risk-list');
+  if (risks) risks.innerHTML = (d.topRisks || []).slice(0,3).map(function(x){ return '<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">'+clientEsc(x.symbol)+'</b> <span style="color:#ff4d6d;font-weight:900">riesgo '+clientEsc(x.riskScore)+'/100</span><div class="muted" style="font-size:11px">'+clientEsc(x.reason || '')+'</div></div>'; }).join('') || '<div class="muted">Sin riesgos nuevos.</div>';
+  var queue = document.getElementById('opportunity-queue-list');
+  if (queue) queue.innerHTML = (d.researchQueue || []).length ? d.researchQueue.slice(0,8).map(function(s){ return '<span style="display:inline-flex;border:1px solid rgba(59,157,255,.24);border-radius:999px;padding:4px 9px;margin:2px;color:#9bd3ff;font-size:11px;font-weight:900">'+clientEsc(s)+'</span>'; }).join('') : '<span class="muted">Queue vacía</span>';
+  var watch = document.getElementById('opportunity-watchlist-list');
+  if (watch) watch.innerHTML = (d.watchlistCandidates || []).slice(0,6).map(function(x){ return '<span style="display:inline-flex;border:1px solid rgba(0,255,153,.18);border-radius:999px;padding:4px 9px;margin:2px;color:#00ff99;font-size:11px;font-weight:900">'+clientEsc(x.symbol)+' '+clientEsc(x.score)+'</span>'; }).join('') || '<span class="muted">Sin candidatos</span>';
+}
+async function loadOpportunityEngine() {
+  if (!document.getElementById('opportunity-top-list')) return;
+  try { var r = await fetch('/api/opportunities', { cache:'no-store' }); if (r.ok) renderOpportunityLists(await r.json()); } catch(e) {}
+}
+async function runOpportunityEngine() {
+  var box = document.getElementById('opportunity-research-result');
+  if (box) box.textContent = 'Ejecutando Opportunity Engine...';
+  try { var r = await fetch('/api/opportunities/run', { method:'POST', cache:'no-store' }); var d = r.ok ? await r.json() : null; if (d) renderOpportunityLists(d); if (box) box.textContent = d && d.ok ? 'Engine actualizado: '+((d.topOpportunities||[])[0] ? (d.topOpportunities[0].symbol + ' ' + d.topOpportunities[0].score + '/100') : 'sin oportunidades') : 'No se pudo ejecutar.'; } catch(e) { if (box) box.textContent = 'Error ejecutando opportunities.'; }
+}
+async function analyzeOpportunitySymbol() {
+  var input = document.getElementById('opportunity-research-symbol');
+  var box = document.getElementById('opportunity-research-result');
+  var symbol = input && input.value ? input.value.trim().toUpperCase() : 'NVDA';
+  if (box) box.textContent = 'Analizando '+symbol+'...';
+  try { var r = await fetch('/api/research/stock?symbol=' + encodeURIComponent(symbol), { cache:'no-store' }); var d = r.ok ? await r.json() : null; if (box) box.innerHTML = d && d.ok ? '<b>'+clientEsc(d.symbol)+'</b> · score '+clientEsc(d.score)+'/100 · riesgo '+clientEsc(d.riskScore)+'/100 · '+clientEsc(d.signal)+'<br>'+clientEsc(d.thesis)+'<br><span class="muted">'+clientEsc(d.educationalNote)+'</span>' : 'No se pudo analizar el ticker.'; await loadOpportunityEngine(); } catch(e) { if (box) box.textContent = 'Error analizando ticker.'; }
+}
+
+function toggleJarvis() {
+
   var p = document.getElementById('alfredo-panel');
   if (p) p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'block' : 'none';
 }
-function setAlfredoQ(q) {
+function setJarvisQ(q) {
   var inp = document.querySelector('#alfredo-panel [name=q]');
   if (inp) { inp.value = q; }
   var p = document.getElementById('alfredo-panel');
@@ -4250,39 +5106,20 @@ async function researchTicker() {
 
 document.addEventListener('DOMContentLoaded', function() {
   var saved = '';
+  var hashMod = (window.location.hash || '').replace('#', '');
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
+
+  var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'home');
+  showMod(activeMod);
+  loadJournalAuto();
+  loadJarvisContext();
+  loadIntelligenceFeed();
+  loadOpportunityEngine();
+});
+window.addEventListener('hashchange', function() {
   var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
-  showMod(hashMod || saved || 'home');
-  // Live-update Health Readiness panel from /api/whoop/today
-  (function whoopHealthLive() {
-    function set(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; }
-    function fmt1(n) { return n != null ? (typeof n === 'number' ? n.toFixed(1) : n) : null; }
-    function poll() {
-      fetch('/api/whoop/today').then(function(r){return r.json();}).then(function(d){
-        set('hr-recovery',  d.recovery     != null ? d.recovery + '%'              : '—');
-        set('hr-sleep',     d.sleep        != null ? d.sleep + '%'                 : '—');
-        set('hr-strain',    d.strain       != null ? fmt1(d.strain)                : '—');
-        set('hr-avghr',     d.averageHeartRate != null ? d.averageHeartRate + ' bpm' : '—');
-        set('hr-maxhr',     d.maxHeartRate != null ? d.maxHeartRate + ' bpm'       : '—');
-        set('hr-hrv',       d.hrv          != null ? fmt1(d.hrv) + ' ms'           : '—');
-        set('hr-rhr',       d.restingHeartRate != null ? d.restingHeartRate + ' bpm' : '—');
-        set('hr-kj',        d.kilojoule    != null ? Math.round(d.kilojoule) + ' kJ' : '—');
-        set('hr-state',     d.scoreState   || '—');
-        set('hr-mode',      d.mode         || d.operatingMode || 'NORMAL');
-        set('hr-mode-footer', d.mode       || d.operatingMode || 'NORMAL');
-        set('hr-suggestion',  d.suggestion || '');
-        if (d.alfredoAdvice) set('hr-advice', d.alfredoAdvice);
-        var badge = document.getElementById('hr-badge');
-        if (badge) {
-          badge.textContent = d.connected ? '● WHOOP LIVE' : (d.configured !== false ? 'WHOOP DETECTADO' : 'SIN DATOS');
-          badge.style.color = d.connected ? '#00ff99' : '#ffd35c';
-          badge.style.background = d.connected ? 'rgba(0,255,153,.15)' : 'rgba(255,211,92,.12)';
-        }
-      }).catch(function(){});
-    }
-    poll();
-    setInterval(poll, 60000);
-  })();
+  showMod(validModName(hashMod) ? hashMod : 'home');
+
 });
 </script>
 </html>`;
@@ -4362,6 +5199,41 @@ function handleJournal(req, res) {
   });
 }
 
+
+function handleHealthBehavior(req, res) {
+  let body = "";
+  req.on("data", c => body += c);
+  req.on("end", () => {
+    let behavior = "";
+    try { const parsed = JSON.parse(body || "{}"); behavior = parsed.behavior || ""; }
+    catch(e) { behavior = new URLSearchParams(body).get("behavior") || ""; }
+    const allowed = new Set(["sauna", "cannabis", "training", "stress", "lateCaffeine", "alcohol"]);
+    if (!allowed.has(behavior)) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:false, error:"invalid_behavior" })); }
+    const all = loadHealthBehaviors(); const key = todayKey(); all[key] = all[key] || {}; all[key][behavior] = !all[key][behavior]; saveHealthBehaviors(all);
+    res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:true, date:key, behaviors: all[key] }));
+  });
+}
+
+function readRequestBody(req) {
+  return new Promise(resolve => {
+    let body = "";
+    req.on("data", c => { body += c; if (body.length > 1e6) req.destroy(); });
+    req.on("end", () => resolve(body));
+    req.on("error", () => resolve(""));
+  });
+}
+function parseBodyPayload(body) {
+  try { return JSON.parse(body || "{}"); } catch(e) {}
+  const params = new URLSearchParams(body || "");
+  const obj = {};
+  for (const [k, v] of params.entries()) obj[k] = v;
+  return obj;
+}
+function sendJSON(res, data, status = 200) {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  return res.end(JSON.stringify(data));
+}
+
 const server = http.createServer(async (req, res) => {
   const path = req.url.split("?")[0];
   if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
@@ -4369,6 +5241,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && path === "/intel/delete") return handleIntelDelete(req, res);
   if (req.method === "POST" && path === "/intel/clear") return handleIntelClear(req, res);
   if (req.method === "POST" && path === "/api/journal") return handleJournal(req, res);
+  if (req.method === "POST" && path === "/api/health/behavior") return handleHealthBehavior(req, res);
   if (path === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
@@ -4382,9 +5255,9 @@ const server = http.createServer(async (req, res) => {
     addThought("Bot reiniciado desde cero.", "scan"); saveJSON(BOT_FILE, bot);
     res.writeHead(302, { Location: "/#bot" }); return res.end();
   }
-  if (path === "/health") {
+  if (path === "/health" || path === "/healthz") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ ok: true, ts: Date.now(), uptime: Math.floor(process.uptime()) }));
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), uptime: Math.floor(process.uptime()), service: CORDA_APP_NAME }));
   }
   if (path === "/api/status") {
     const pv = portfolioValue();
@@ -4449,6 +5322,65 @@ const server = http.createServer(async (req, res) => {
       tickers,
       matches: allMatches
     }));
+  }
+  if (path === "/api/executive") {
+    return sendJSON(res, buildExecutiveBriefing());
+  }
+  if (path === "/api/executive/score") {
+    return sendJSON(res, buildExecutiveScore());
+  }
+  if (path === "/api/project/status") {
+    return sendJSON(res, buildProjectStatus());
+  }
+  if (path === "/api/project/memory") {
+    return sendJSON(res, buildProjectMemory());
+  }
+  if (path === "/api/decisions") {
+    return sendJSON(res, { ok: true, ts: Date.now(), decisions: buildDecisionRecords(), educationalNote: "Decision Intelligence educativa; no trading real." });
+  }
+  if (path === "/api/decisions/patterns") {
+    return sendJSON(res, buildDecisionPatterns());
+  }
+  if (path === "/api/decisions/playbook") {
+    return sendJSON(res, buildDecisionPlaybook());
+  }
+  if (path === "/api/opportunities") {
+    return sendJSON(res, getOpportunityState());
+  }
+  if (req.method === "POST" && path === "/api/opportunities/run") {
+    return sendJSON(res, buildOpportunityEngine());
+  }
+  if (path === "/api/research/stock" && req.method === "GET") {
+    const url = new URL(req.url, "http://localhost");
+    return sendJSON(res, researchStock(url.searchParams.get("symbol") || ""));
+  }
+  if (path === "/api/research/stock" && req.method === "POST") {
+    const payload = parseBodyPayload(await readRequestBody(req));
+    return sendJSON(res, researchStock(payload.symbol || payload.ticker || ""));
+  }
+  if (path === "/api/research/queue" && req.method === "GET") {
+    const queue = getResearchQueue();
+    return sendJSON(res, { ok: true, ts: Date.now(), queue, count: queue.length, research: Object.values(getResearchCache()).sort((a, b) => (b.cachedAt || b.ts || 0) - (a.cachedAt || a.ts || 0)).slice(0, 10), educationalNote: "Research queue local educativa." });
+  }
+  if (path === "/api/research/queue/add" && req.method === "POST") {
+    const payload = parseBodyPayload(await readRequestBody(req));
+    const queue = addResearchQueueSymbol(payload.symbol || payload.ticker || "");
+    return sendJSON(res, { ok: true, ts: Date.now(), queue, count: queue.length });
+  }
+  if (path === "/api/research/queue/remove" && req.method === "POST") {
+    const payload = parseBodyPayload(await readRequestBody(req));
+    const queue = removeResearchQueueSymbol(payload.symbol || payload.ticker || "");
+    return sendJSON(res, { ok: true, ts: Date.now(), queue, count: queue.length });
+  }
+  if (path === "/api/research/queue/run" && req.method === "POST") {
+    return sendJSON(res, runResearchQueue());
+  }
+  if (path === "/api/watchlist/opportunities") {
+    const state = getOpportunityState();
+    return sendJSON(res, { ok: true, ts: Date.now(), candidates: state.watchlistCandidates, topOpportunities: state.topOpportunities, hotTickers: state.hotTickers, educationalNote: "Watchlist educativa; no señal de trading." });
+  }
+  if (path === "/api/jarvis/memory") {
+    return sendJSON(res, buildMemorySummary());
   }
   if (path === "/api/daily-scan") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -4750,6 +5682,498 @@ if (path === "/api/whoop/today") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(computeJournalData()));
   }
+
+  if (path === "/api/whoop/status") {
+    const tokenFile = "whoop_tokens.json";
+    let tokenInfo = { exists: false, savedAt: null, tokenType: null, hasAccessToken: false, hasRefreshToken: false };
+    if (fs.existsSync(tokenFile)) {
+      try {
+        const tokens = JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+        tokenInfo = {
+          exists: true,
+          savedAt: tokens.savedAt || null,
+          tokenType: tokens.token_type || null,
+          hasAccessToken: !!tokens.access_token,
+          hasRefreshToken: !!tokens.refresh_token
+        };
+      } catch (e) {
+        tokenInfo = { exists: true, parseError: true, savedAt: null, tokenType: null, hasAccessToken: false, hasRefreshToken: false };
+      }
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      configured: WHOOP_CONFIGURED,
+      tokenFile: tokenInfo,
+      cloudReady: true,
+      message: tokenInfo.exists ? "WHOOP token file detected. No secrets returned." : "WHOOP token file not found. Configure OAuth tokens locally or as deploy secret storage."
+    }));
+  }
+  if (path === "/api/whoop/today") {
+    try {
+      const https = require("https");
+      const fs = require("fs");
+
+      const tokenFile = "whoop_tokens.json";
+
+      const emptyWhoop = (message, extra) => ({
+        ok: true,
+        connected: false,
+        date: new Date().toLocaleDateString("es-MX"),
+        strain: null,
+        averageHeartRate: null,
+        maxHeartRate: null,
+        kilojoule: null,
+        scoreState: null,
+        recovery: null,
+        sleep: null,
+        hrv: null,
+        restingHeartRate: null,
+        operatingMode: "NORMAL",
+        mode: "NORMAL",
+        suggestion: "usa modo neutral",
+        alfredoAdvice: message,
+        message,
+        ...(extra || {})
+      });
+
+      if (!fs.existsSync(tokenFile)) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify(emptyWhoop(
+          "WHOOP configurado — tokens pendientes de autorización OAuth. NO es consejo médico."
+        )));
+      }
+
+      const readTokens = () => JSON.parse(fs.readFileSync(tokenFile, "utf8"));
+
+      const refreshTokens = (oldTokens) => new Promise((resolve) => {
+        if (!oldTokens.refresh_token) {
+          return resolve({ ok:false, error:"no_refresh_token" });
+        }
+
+        const body = new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: oldTokens.refresh_token,
+          client_id: process.env.WHOOP_CLIENT_ID || "",
+          client_secret: process.env.WHOOP_CLIENT_SECRET || ""
+        }).toString();
+
+        const options = {
+          hostname: "api.prod.whoop.com",
+          path: "/oauth/oauth2/token",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": Buffer.byteLength(body),
+            "Accept": "application/json"
+          }
+        };
+
+        const req2 = https.request(options, (rr) => {
+          let raw = "";
+          rr.on("data", c => raw += c);
+          rr.on("end", () => {
+            let parsed;
+            try { parsed = JSON.parse(raw); } catch(e) { parsed = { raw }; }
+
+            const success = rr.statusCode >= 200 && rr.statusCode < 300 && parsed.access_token;
+
+            if (success) {
+              const newTokens = {
+                savedAt: new Date().toISOString(),
+                token_type: parsed.token_type || oldTokens.token_type || null,
+                expires_in: parsed.expires_in || null,
+                scope: parsed.scope || oldTokens.scope || null,
+                access_token: parsed.access_token,
+                refresh_token: parsed.refresh_token || oldTokens.refresh_token || null
+              };
+
+              fs.writeFileSync(tokenFile, JSON.stringify(newTokens, null, 2));
+              return resolve({ ok:true, tokens:newTokens, statusCode:rr.statusCode });
+            }
+
+            return resolve({ ok:false, statusCode:rr.statusCode, error:parsed });
+          });
+        });
+
+        req2.on("error", e => resolve({ ok:false, error:e.message }));
+        req2.write(body);
+        req2.end();
+      });
+
+      const fetchWhoopPath = (tokens, whoopPath) => new Promise((resolve) => {
+        const options = {
+          hostname: "api.prod.whoop.com",
+          path: whoopPath,
+          method: "GET",
+          headers: {
+            "Authorization": "Bearer " + tokens.access_token,
+            "Accept": "application/json"
+          }
+        };
+
+        const r = https.request(options, (rr) => {
+          let raw = "";
+          rr.on("data", c => raw += c);
+          rr.on("end", () => {
+            let data;
+            try { data = JSON.parse(raw); } catch(e) { data = null; }
+            resolve({ statusCode: rr.statusCode, data });
+          });
+        });
+
+        r.on("error", e => resolve({ statusCode:500, data:null, error:e.message }));
+        r.end();
+      });
+
+      const latestRecord = (payload) => payload && Array.isArray(payload.records) && payload.records.length ? payload.records[0] : null;
+      const numeric = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+
+      let tokens = readTokens();
+      let result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
+
+      let refreshed = false;
+
+      if (result.statusCode === 401) {
+        const refresh = await refreshTokens(tokens);
+
+        if (refresh.ok) {
+          refreshed = true;
+          tokens = refresh.tokens;
+          result = await fetchWhoopPath(tokens, "/developer/v1/cycle?limit=1");
+        } else {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify(emptyWhoop(
+            "WHOOP token expirado y refresh falló. Reautoriza con /api/whoop/connect.",
+            {
+              whoopRawStatusCode: 401,
+              refreshAttempted: true,
+              refreshOk: false,
+              refreshStatusCode: refresh.statusCode || null,
+              refreshError: refresh.error ? "refresh_failed" : null
+            }
+          )));
+        }
+      }
+
+      const apiOk = result.statusCode >= 200 && result.statusCode < 300;
+      const data = result.data || {};
+      const cycle = latestRecord(data);
+      const score = cycle && cycle.score ? cycle.score : {};
+
+      let recoveryResult = { statusCode: null, data: null };
+      let sleepResult = { statusCode: null, data: null };
+      if (apiOk) {
+        [recoveryResult, sleepResult] = await Promise.all([
+          fetchWhoopPath(tokens, "/developer/v2/recovery?limit=1"),
+          fetchWhoopPath(tokens, "/developer/v2/activity/sleep?limit=1")
+        ]);
+      }
+
+      const recoveryRecord = latestRecord(recoveryResult.data);
+      const recoveryScore = recoveryRecord && recoveryRecord.score ? recoveryRecord.score : {};
+      const sleepRecord = latestRecord(sleepResult.data);
+      const sleepScore = sleepRecord && sleepRecord.score ? sleepRecord.score : {};
+
+      const strain = numeric(score.strain);
+      const averageHeartRate = numeric(score.average_heart_rate);
+      const maxHeartRate = numeric(score.max_heart_rate);
+      const kilojoule = numeric(score.kilojoule);
+      const scoreState = cycle ? cycle.score_state || null : null;
+      const recovery = numeric(recoveryScore.recovery_score);
+      const hrv = numeric(recoveryScore.hrv_rmssd_milli);
+      const restingHeartRate = numeric(recoveryScore.resting_heart_rate);
+      const sleep = numeric(sleepScore.sleep_performance_percentage);
+
+      let operatingMode = "NORMAL";
+      let suggestion = "usa modo neutral";
+
+      if (strain !== null && strain >= 10) {
+        operatingMode = "DEFENSIVO";
+        suggestion = "baja riesgo y evita sobreoperar";
+      } else if (strain !== null && strain < 3) {
+        operatingMode = "LOW_STRAIN";
+        suggestion = "buen momento para análisis tranquilo, sin forzar trades";
+      }
+
+      const advice = apiOk
+        ? `WHOOP conectado. Recovery ${recovery ?? "—"}%, Sleep ${sleep ?? "—"}%, HRV ${hrv ?? "—"} ms, RHR ${restingHeartRate ?? "—"} bpm, Strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo: ${operatingMode}. ${suggestion}. NO es consejo médico.`
+        : "WHOOP token presente, pero la API no respondió correctamente. Reautoriza si persiste.";
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: true,
+        connected: apiOk,
+        date: new Date().toLocaleDateString("es-MX"),
+        strain,
+        averageHeartRate,
+        maxHeartRate,
+        kilojoule,
+        scoreState,
+        recovery,
+        sleep,
+        hrv,
+        restingHeartRate,
+        operatingMode,
+        mode: operatingMode,
+        suggestion,
+        alfredoAdvice: advice,
+        message: apiOk ? "WHOOP conectado desde whoop_tokens.json." : "WHOOP token presente, pero API falló.",
+        whoopRawStatusCode: result.statusCode,
+        recoveryStatusCode: recoveryResult.statusCode,
+        sleepStatusCode: sleepResult.statusCode,
+        refreshed
+      }));
+    } catch (e) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: true,
+        connected: false,
+        error: "whoop_today_crash",
+        message: e.message,
+        strain: null,
+        averageHeartRate: null,
+        maxHeartRate: null,
+        kilojoule: null,
+        scoreState: null,
+        recovery: null,
+        sleep: null,
+        hrv: null,
+        restingHeartRate: null,
+        operatingMode: "NORMAL",
+        mode: "NORMAL",
+        suggestion: "usa modo neutral",
+        alfredoAdvice: "Crash leyendo WHOOP. NO es consejo médico."
+      }));
+    }
+  }
+
+
+
+  if (path === "/api/health/behaviors/today") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok:true, date: todayKey(), behaviors: getTodayHealthBehaviors() }));
+  }
+  if (path === "/api/health/snapshot") {
+    try {
+      const getJson = (url) => new Promise((resolve) => { http.get(url, (rr) => { let raw = ""; rr.on("data", c => raw += c); rr.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({ ok:false }); } }); }).on("error", () => resolve({ ok:false })); });
+      const whoop = await getJson("http://127.0.0.1:" + PORT + "/api/whoop/today");
+      const latest = healthSnapshotRecord(whoop || {}); const history = upsertHealthSnapshot(latest); const behaviors = loadHealthBehaviors(); const correlations = computeHealthCorrelations(history, behaviors); const insight = buildHealthInsight(whoop || {}, latest.scores);
+      res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:true, ts: Date.now(), latest, scores: latest.scores, history, correlations, alfredoHealthAI: insight }));
+    } catch(e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:false, error:"health_snapshot_crash", message:e.message })); }
+  }
+  if (path === "/api/health/insights") {
+    try {
+      const history = loadJSON(HEALTH_SNAPSHOT_FILE, []); const latest = Array.isArray(history) && history.length ? history[history.length - 1] : healthSnapshotRecord({}); const ai = buildHealthInsight(latest, latest.scores || computeHealthScores(latest));
+      res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:true, ts: Date.now(), alfredoHealthAI: ai, scores: latest.scores || computeHealthScores(latest), educationalNote:"Educativo. No es asesoría médica ni financiera." }));
+    } catch(e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:false, error:"health_insights_crash", message:e.message })); }
+  }
+
+  if (path === "/api/journal/auto") {
+    try {
+      const http = require("http");
+
+      const getJson = (url) => new Promise((resolve, reject) => {
+        http.get(url, (rr) => {
+          let raw = "";
+          rr.on("data", c => raw += c);
+          rr.on("end", () => {
+            try {
+              resolve(JSON.parse(raw));
+            } catch (e) {
+              resolve({ ok:false, raw });
+            }
+          });
+        }).on("error", reject);
+      });
+
+      const whoop = await getJson("http://127.0.0.1:" + PORT + "/api/whoop/today");
+
+      const strain = whoop && typeof whoop.strain === "number" ? whoop.strain : null;
+      const averageHeartRate = whoop && typeof whoop.averageHeartRate === "number" ? whoop.averageHeartRate : null;
+      const maxHeartRate = whoop && typeof whoop.maxHeartRate === "number" ? whoop.maxHeartRate : null;
+      const kilojoule = whoop && typeof whoop.kilojoule === "number" ? whoop.kilojoule : null;
+      const scoreState = whoop ? whoop.scoreState || null : null;
+      const recovery = whoop && typeof whoop.recovery === "number" ? whoop.recovery : null;
+      const sleep = whoop && typeof whoop.sleep === "number" ? whoop.sleep : null;
+      const hrv = whoop && typeof whoop.hrv === "number" ? whoop.hrv : null;
+      const restingHeartRate = whoop && typeof whoop.restingHeartRate === "number" ? whoop.restingHeartRate : null;
+      const pvAuto = portfolioValue();
+      const regAuto = marketRegime();
+      const ctxAuto = alfredoDailyContext({ recovery, sleep, hrv, restingHeartRate, strain, operatingMode: whoop ? whoop.operatingMode || whoop.mode || "NORMAL" : "NORMAL" }, pvAuto, regAuto);
+
+      let bodyState = "sin datos biométricos";
+      let moodEstimated = "neutral";
+      let tradingModeSuggestion = "NEUTRAL — sin datos biométricos, proceder con cautela";
+      let operatingMode = "NORMAL";
+
+      if (whoop && whoop.connected) {
+        operatingMode = whoop.operatingMode || whoop.mode || "NORMAL";
+
+        if (strain !== null && strain >= 10) {
+          bodyState = "carga física alta";
+          moodEstimated = "posible cansancio";
+          tradingModeSuggestion = "DEFENSIVO — baja riesgo, evita sobreoperar y prioriza decisiones simples";
+        } else if (strain !== null && strain < 3) {
+          bodyState = "carga física baja";
+          moodEstimated = "tranquilo";
+          tradingModeSuggestion = "ANÁLISIS — buen momento para revisar mercado sin forzar trades";
+        } else {
+          bodyState = "estado físico estable";
+          moodEstimated = "neutral";
+          tradingModeSuggestion = "NORMAL — puedes analizar con calma y confirmar señales";
+        }
+      }
+
+      const alfredoNote = whoop && whoop.connected
+        ? `WHOOP conectado: recovery ${recovery ?? "—"}%, sleep ${sleep ?? "—"}%, HRV ${hrv ?? "—"} ms, RHR ${restingHeartRate ?? "—"} bpm, strain ${strain ?? "—"}, HR promedio ${averageHeartRate ?? "—"}, HR máxima ${maxHeartRate ?? "—"}. Modo operativo: ${operatingMode}. ${tradingModeSuggestion}. NO es consejo médico ni financiero.`
+        : "Sin datos biométricos activos. Proceder con cautela. NO es consejo médico ni financiero.";
+
+      const journal = {
+        ok: true,
+        source: whoop && whoop.connected ? "WHOOP + Cordelius" : "local_only",
+        date: new Date().toLocaleDateString("es-MX", {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric"
+        }),
+        moodEstimated,
+        bodyState,
+        operatingMode,
+        mode: operatingMode,
+        tradingModeSuggestion,
+        alfredoNote,
+        alfredoAdvice: alfredoNote,
+        strain,
+        averageHeartRate,
+        maxHeartRate,
+        recovery,
+        sleep,
+        hrv,
+        restingHeartRate,
+        alfredoQuestion: ctxAuto.question,
+        trading: {
+          equityMXN: pvAuto.totalValueMXN,
+          pnlMXN: pvAuto.totalGainMXN,
+          pnlPct: pvAuto.totalGainPct,
+          riskMode: operatingMode,
+          marketRegime: regAuto.label
+        },
+        whoop: {
+          connected: !!(whoop && whoop.connected),
+          strain,
+          averageHeartRate,
+          maxHeartRate,
+          kilojoule,
+          scoreState,
+          recovery,
+          sleep,
+          hrv,
+          restingHeartRate,
+          operatingMode,
+          mode: operatingMode,
+          alfredoAdvice: whoop ? whoop.alfredoAdvice || null : null
+        },
+        educationalNote: "Generado automáticamente. No es consejo médico ni financiero."
+      };
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(journal));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: false,
+        error: "auto_journal_crash",
+        message: e.message
+      }));
+    }
+  }
+
+
+  if (path === "/api/trading/summary") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeTradingSummary()));
+  }
+  if (path === "/api/intelligence/feed") {
+    const now = Date.now();
+    const items = [];
+    news.slice(0, 25).forEach(n => {
+      const publishedMs = n.datetime ? Number(n.datetime) * 1000 : now;
+      items.push({
+        ticker: (n.related || n.symbol || "MARKET").toString().toUpperCase(),
+        source: n.source || "news",
+        publishedDate: new Date(publishedMs).toISOString().slice(0, 10),
+        eventDate: null,
+        delayDays: Math.max(0, Math.round((now - publishedMs) / 86400000)),
+        type: "news",
+        sentiment: "uncertain",
+        confidence: 50,
+        link: n.url || "#",
+        summary: (n.summary || n.headline || "Noticia sin resumen").toString().slice(0, 180),
+        educationalImpact: "Contexto educativo, no señal de trading."
+      });
+    });
+    (computeQuiverIntelligence().latestTrades || []).slice(0, 25).forEach(t => {
+      const eventDate = t.date || null;
+      const eventMs = eventDate ? Date.parse(eventDate) : NaN;
+      const delayDays = Number.isFinite(eventMs) ? Math.max(0, Math.round((now - eventMs) / 86400000)) : null;
+      items.push({
+        ticker: t.symbol || "—",
+        source: t.dataset || "Quiver/public disclosure",
+        publishedDate: null,
+        eventDate,
+        delayDays,
+        delayBadge: delayDays === null ? "unknown" : delayDays <= 0 ? "LIVE" : delayDays <= 7 ? "1-7d" : delayDays <= 30 ? "8-30d" : "stale",
+        type: t.dataset === "Insider" ? "insider" : t.dataset === "Congreso" ? "congressional" : "political",
+        sentiment: /buy|purchase/i.test(t.transaction || "") ? "bullish" : /sale|sell/i.test(t.transaction || "") ? "bearish" : "neutral",
+        confidence: delayDays === null ? 45 : delayDays <= 7 ? 68 : delayDays <= 30 ? 55 : 40,
+        link: null,
+        summary: `${t.transaction || "Actividad"} ${t.symbol || ""} reportado por ${t.who || "fuente pública"}`.trim(),
+        educationalImpact: "Revisar retraso y contexto; no perseguir trades."
+      });
+    });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, ts: Date.now(), items, disclaimer: "Contexto educativo, no señal de trading." }));
+  }
+  if (path === "/api/alfredo/context") {
+    const h = computeHealthReadiness();
+    const pv2 = portfolioValue();
+    const reg2 = marketRegime();
+    const ctx = alfredoDailyContext(h, pv2, reg2);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      alfredoMode: ctx.mode,
+      alfredoOneLiner: ctx.oneLiner,
+      alfredoQuestion: ctx.question,
+      alfredoNextActions: ctx.nextActions,
+      alfredoRiskWarning: "No es consejo financiero ni médico. Si no tengo un dato, no lo invento.",
+      alfredoMemorySuggestion: journalEntries.length ? "Revisar patrones de journal antes de decidir." : "Guardar una nota rápida para crear memoria local."
+    }));
+  }
+
+  if (path === "/api/autopilot/database") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(buildAutopilotDatabaseSummary()));
+  }
+  if (path === "/api/autopilot/progress") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(computeAutopilotProgress()));
+  }
+  if (req.method === "POST" && path === "/api/autopilot/snapshot") {
+    try {
+      const snapshot = await createAutopilotSnapshot();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(snapshot));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok:false, error:"autopilot_snapshot_crash", message:e.message }));
+    }
+  }
+
+
   if (path === "/api/os-status") {
     const h = computeHealthReadiness();
     const jd = computeJournalData();
@@ -4814,7 +6238,7 @@ if (path === "/api/whoop/today") {
 async function boot() {
   // CORDELIUS_BOOT_LISTEN_FIRST_FIX
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`${settings.appName} listo en http://localhost:${PORT}`);
+    console.log(`${CORDA_APP_NAME} listo en http://localhost:${PORT}`);
   });
 
   setTimeout(async () => {
