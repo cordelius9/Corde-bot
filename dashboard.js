@@ -25,6 +25,10 @@ const PORTFOLIO_SNAPSHOT_FILE = "data/portfolio_snapshots.json";
 const TRADING_DECISION_FILE = "data/trading_decisions.json";
 const AUTOPILOT_MEMORY_FILE = "data/autopilot_memory.json";
 const CORDELIUS_PROGRESS_FILE = "data/cordelius_progress.json";
+const OPPORTUNITY_ENGINE_FILE = "data/opportunity_engine.json";
+const OPPORTUNITY_HISTORY_FILE = "data/opportunity_history.json";
+const STOCK_RESEARCH_CACHE_FILE = "data/stock_research_cache.json";
+const RESEARCH_QUEUE_FILE = "data/research_queue.json";
 
 function ensureDataDir() {
   try { fs.mkdirSync("data", { recursive: true }); } catch (e) {}
@@ -51,6 +55,20 @@ function appendSnapshot(file, entry, limit = 500) {
   const next = rows.slice(-limit);
   saveJSON(file, next);
   return next;
+}
+
+function lastArrayItems(arr, n = 5) {
+  return Array.isArray(arr) ? arr.slice(-n).reverse() : [];
+}
+function uniqueStrings(values) {
+  return [...new Set((values || []).map(v => String(v || "").trim().toUpperCase()).filter(Boolean))];
+}
+function normalizeTickerSymbol(symbol) {
+  return String(symbol || "").toUpperCase().replace(/[^A-Z0-9.]/g, "").slice(0, 12);
+}
+function deterministicTickerScore(symbol, salt = 0) {
+  const seed = seedFor(normalizeTickerSymbol(symbol) || "MARKET") + salt;
+  return Math.max(1, Math.min(99, Math.round(45 + ((seed % 37) - 12) + ((seed % 11) * 1.5))));
 }
 ensureDataDir();
 function esc(s = "") {
@@ -538,6 +556,23 @@ function computeDailyScan() {
   summaryLines.push("Regimen: " + reg.label + ". " + reg.detail);
   summaryLines.push("EDUCATIVO: no es asesoria financiera.");
   const educationalSummary = summaryLines.join(" ");
+  const intelPositiveCount = intelItems.filter(x => x.mood === "POSITIVO").length;
+  const intelNegativeCount = intelItems.filter(x => x.mood === "NEGATIVO").length;
+  const affectedTickers = uniqueStrings(intelItems.flatMap(x => x.affected || []));
+  const hotTickers = uniqueStrings([
+    ...topQuiverTickers.map(x => x.symbol),
+    ...riskAlerts.flatMap(x => x.tickers || []),
+    ...educationalActions.map(x => x.symbol),
+    ...affectedTickers
+  ]).slice(0, 15);
+  const manualMarketTheme = {
+    title: "Cordelius Intelligence Manual",
+    positiveCount: intelPositiveCount,
+    negativeCount: intelNegativeCount,
+    affectedTickers,
+    hotTickers,
+    note: intelItems.length ? "Tema de mercado derivado de intel manual local." : "Sin intel manual; pendiente de proveedor/noticias."
+  };
 
   return {
     ok: true, ts: Date.now(), date: new Date().toLocaleDateString("es-MX"),
@@ -545,8 +580,15 @@ function computeDailyScan() {
     riskAlerts: riskAlerts.slice(0, 10),
     educationalActions: educationalActions.slice(0, 6),
     educationalSummary,
+    affectedTickers,
+    hotTickers,
+    intelPositiveCount,
+    intelNegativeCount,
+    positiveCount: intelPositiveCount,
+    negativeCount: intelNegativeCount,
+    manualMarketTheme,
     rawMatchesLimited: allQuiverMatches.slice(0, 20),
-    intel: { count: intelItems.length, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
+    intel: { count: intelItems.length, positiveCount: intelPositiveCount, negativeCount: intelNegativeCount, affectedTickers, hotTickers, recent: intelItems.slice(0, 3).map(x => ({ mood: x.mood, affected: x.affected, time: x.time, snippet: String(x.text || "").slice(0, 150) })) }
   };
 }
 
@@ -739,6 +781,8 @@ function computeDailyNewsletter() {
   if (qi.configured && qi.congressional && qi.congressional.total > 0) lines.push(`Quiver: ${qi.congressional.buys} compras / ${qi.congressional.sales} ventas del congreso.`);
   else if (!qi.configured) lines.push("Quiver: pendiente de API key.");
   if (intelItems.length > 0) lines.push(`Intel manual: ${intelItems.length} items · ${intelItems.filter(x=>x.mood==="POSITIVO").length}+ / ${intelItems.filter(x=>x.mood==="NEGATIVO").length}−.`);
+  const opportunityState = getOpportunityState();
+  if (opportunityState.topOpportunities && opportunityState.topOpportunities.length) lines.push(`Opportunity Engine: investigar ${opportunityState.topOpportunities.slice(0,3).map(x => x.symbol + " " + x.score + "/100").join(", ")} · educativo.`);
   lines.push(`Régimen: ${reg.label}. ${reg.detail}`);
   lines.push("EDUCATIVO — no es asesoría financiera.");
   return {
@@ -873,6 +917,183 @@ function computeMarketRadar() {
     quiverTrending: hotTickers.filter(t => t.quiverSignals > 0).slice(0, 10),
     portfolioOverlap,
     educationalSummary: summaryLines.join(" ")
+  };
+}
+
+
+function getResearchCache() {
+  const cache = loadJSON(STOCK_RESEARCH_CACHE_FILE, {});
+  return cache && typeof cache === "object" && !Array.isArray(cache) ? cache : {};
+}
+function cacheStockResearch(research) {
+  if (!research || !research.symbol) return research;
+  const cache = getResearchCache();
+  cache[research.symbol] = { ...research, cachedAt: Date.now() };
+  saveJSON(STOCK_RESEARCH_CACHE_FILE, cache);
+  return cache[research.symbol];
+}
+function getResearchQueue() {
+  return uniqueStrings(loadJSON(RESEARCH_QUEUE_FILE, []));
+}
+function saveResearchQueue(queue) {
+  const next = uniqueStrings(queue).slice(0, 50);
+  saveJSON(RESEARCH_QUEUE_FILE, next);
+  return next;
+}
+function addResearchQueueSymbol(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  if (!sym) return getResearchQueue();
+  return saveResearchQueue([...getResearchQueue(), sym]);
+}
+function removeResearchQueueSymbol(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  return saveResearchQueue(getResearchQueue().filter(x => x !== sym));
+}
+function stockPseudoAsset(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  const portfolioAsset = PORTFOLIO.find(a => a.symbol === sym);
+  if (portfolioAsset) return portfolioAsset;
+  const seed = seedFor(sym || "MARKET");
+  const day = ((seed % 21) - 10) / 5;
+  const price = 40 + (seed % 420);
+  quotes[sym] = quotes[sym] || { price, value: price, day, ok: true, source: "watchlist/research" };
+  return { source: "Watchlist", category: "Opportunity", symbol: sym, display: sym, name: sym, units: 1, currency: "USD", valueManual: price, costManual: price * (0.92 + ((seed % 17) / 100)), brokerGainPct: ((seed % 39) - 14), logo: sym.slice(0, 2), color: "#3b9dff", liveTicker: sym, type: sym === "QQQ" || sym === "SPY" ? "etf" : "stock" };
+}
+function buildTickerOpportunity(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  const asset = stockPseudoAsset(sym);
+  const ind = indicators(asset);
+  const radar = computeMarketRadar();
+  const radarHit = (radar.watchlist || []).find(t => t.symbol === sym) || {};
+  const quiver = Number(radarHit.quiverSignals || 0);
+  const inPortfolio = PORTFOLIO.some(a => a.symbol === sym);
+  const baseScore = inPortfolio ? assetScore(asset) : deterministicTickerScore(sym, 7);
+  const momentumScore = Math.max(0, Math.min(100, 50 + Number(ind.momentum || 0) * 7));
+  const rsiScore = Math.max(0, Math.min(100, 100 - Math.abs(Number(ind.rsi || 50) - 52) * 1.6));
+  const quiverScore = Math.min(25, quiver * 5);
+  const opportunityScore = Math.max(1, Math.min(99, Math.round(baseScore * 0.52 + momentumScore * 0.22 + rsiScore * 0.16 + quiverScore + (MARKET_WATCHLIST.includes(sym) ? 3 : 0))));
+  const riskScore = Math.max(1, Math.min(99, Math.round((assetRisk(asset) === "ALTO" ? 70 : assetRisk(asset) === "MEDIO/ALTO" ? 58 : 42) + Math.max(0, Number(ind.rsi || 50) - 70) + Math.max(0, -Number(ind.momentum || 0) * 6))));
+  const reason = [
+    inPortfolio ? "ya está en portafolio" : "candidato externo",
+    `trend ${ind.trend}`,
+    `RSI ${ind.rsi}`,
+    quiver ? `Quiver x${quiver}` : "sin señal Quiver reciente"
+  ].join(" · ");
+  return {
+    symbol: sym,
+    score: opportunityScore,
+    riskScore,
+    inPortfolio,
+    signal: opportunityScore >= 72 ? "INVESTIGAR PRIORIDAD" : opportunityScore >= 60 ? "WATCHLIST" : "OBSERVAR",
+    reason,
+    indicators: ind,
+    quiverSignals: quiver,
+    educationalNote: "Contexto educativo; no es recomendación de compra/venta."
+  };
+}
+function buildOpportunityEngine() {
+  const scan = computeDailyScan();
+  const radar = computeMarketRadar();
+  const symbols = uniqueStrings([
+    ...MARKET_WATCHLIST,
+    ...PORTFOLIO.map(a => a.symbol),
+    ...((radar.hotTickers || []).map(t => t.symbol)),
+    ...((scan.hotTickers || []).map(t => t.symbol)),
+    ...getResearchQueue()
+  ]);
+  const candidates = symbols.map(buildTickerOpportunity).sort((a, b) => b.score - a.score);
+  const risks = candidates.slice().sort((a, b) => b.riskScore - a.riskScore).slice(0, 10);
+  const queue = getResearchQueue();
+  const state = {
+    ok: true,
+    ts: Date.now(),
+    generatedAt: nowMX(),
+    topOpportunities: candidates.slice(0, 10),
+    topRisks: risks,
+    researchQueue: queue,
+    watchlistCandidates: candidates.filter(x => !x.inPortfolio).slice(0, 12),
+    affectedTickers: scan.affectedTickers || scan.impactedTickers || [],
+    hotTickers: (radar.hotTickers || []).slice(0, 10),
+    disclaimer: "Educational only. No financial advice. No trading execution."
+  };
+  saveJSON(OPPORTUNITY_ENGINE_FILE, state);
+  appendSnapshot(OPPORTUNITY_HISTORY_FILE, { ts: state.ts, topOpportunities: state.topOpportunities.slice(0, 5), topRisks: state.topRisks.slice(0, 5), queueSize: queue.length }, 250);
+  return state;
+}
+function getOpportunityState() {
+  const state = loadJSON(OPPORTUNITY_ENGINE_FILE, null);
+  if (state && state.ok && state.ts && Date.now() - state.ts < 6 * 60 * 60 * 1000) return state;
+  return buildOpportunityEngine();
+}
+function researchStock(symbol) {
+  const sym = normalizeTickerSymbol(symbol);
+  if (!sym) return { ok: false, error: "missing_symbol", educationalNote: "Envía un ticker como NVDA o TSLA." };
+  const cached = getResearchCache()[sym];
+  if (cached && cached.cachedAt && Date.now() - cached.cachedAt < 12 * 60 * 60 * 1000) return { ...cached, cacheHit: true };
+  const opp = buildTickerOpportunity(sym);
+  const asset = stockPseudoAsset(sym);
+  const relatedNews = news.filter(n => String(n.related || n.symbol || "").toUpperCase().includes(sym) || String(n.headline || n.summary || "").toUpperCase().includes(sym)).slice(0, 5);
+  const intel = intelItems.filter(i => (i.affected || []).includes(sym) || String(i.text || "").toUpperCase().includes(sym)).slice(0, 5);
+  const quiver = computeQuiverTrending();
+  const quiverHits = (quiver.topTickers || []).filter(t => t.symbol === sym).slice(0, 3);
+  const thesis = opp.score >= 72 ? "Prioridad de investigación: momentum/score fuertes; validar valuación, noticias y riesgo antes de cualquier decisión." : opp.score >= 58 ? "Candidato de watchlist: revisar catalizadores y timing; no perseguir movimiento." : "Observación: señal incompleta; esperar más datos o contexto.";
+  const risks = [];
+  if (opp.riskScore >= 65) risks.push("Riesgo elevado por volatilidad, RSI o concentración temática.");
+  if (!relatedNews.length) risks.push("Sin proveedor/noticias recientes en cache local; validar fuera de Cordelius.");
+  if (!quiverHits.length) risks.push("Sin confirmación Quiver reciente en cache local.");
+  const research = {
+    ok: true,
+    symbol: sym,
+    ts: Date.now(),
+    generatedAt: nowMX(),
+    score: opp.score,
+    riskScore: opp.riskScore,
+    signal: opp.signal,
+    thesis,
+    indicators: opp.indicators,
+    priceContext: { source: (quotes[sym] && quotes[sym].source) || "local", price: quotes[sym] ? quotes[sym].price : null, day: quotes[sym] ? quotes[sym].day : null },
+    relatedNews: relatedNews.map(n => ({ source: n.source || "news", headline: n.headline || n.summary || "Noticia", date: n.datetime ? new Date(Number(n.datetime) * 1000).toISOString().slice(0, 10) : null, url: n.url || null })),
+    manualIntel: intel.map(i => ({ mood: i.mood, affected: i.affected || [], text: String(i.text || "").slice(0, 220), time: i.time || null })),
+    quiver: quiverHits,
+    risks,
+    nextResearchSteps: ["Revisar reporte trimestral y guía", "Comparar valuación contra peers", "Validar catalizadores con fecha", "Definir hipótesis paper-trading solamente"],
+    educationalNote: "Investigación educativa. No es recomendación financiera ni orden de compra/venta."
+  };
+  return cacheStockResearch(research);
+}
+function runResearchQueue() {
+  const queue = getResearchQueue();
+  const results = queue.map(sym => researchStock(sym));
+  return { ok: true, ts: Date.now(), count: results.length, queue, results, educationalNote: "Research queue ejecutada en modo educativo; sin trading real." };
+}
+function buildJarvisContext() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const opp = getOpportunityState();
+  return {
+    ok: true,
+    ts: Date.now(),
+    health: { operatingMode: h.operatingMode, recovery: h.recovery, sleep: h.sleep, strain: h.strain },
+    portfolio: { totalMXN: pv.totalValueMXN, gainPct: pv.totalGainPct, assets: pv.assets.length },
+    opportunities: opp.topOpportunities.slice(0, 5),
+    risks: opp.topRisks.slice(0, 5),
+    researchQueue: getResearchQueue(),
+    recentResearch: Object.values(getResearchCache()).sort((a, b) => (b.cachedAt || b.ts || 0) - (a.cachedAt || a.ts || 0)).slice(0, 5),
+    disclaimer: "Jarvis/Alfredo solo entrega contexto educativo. No ejecuta trades."
+  };
+}
+function buildMemorySummary() {
+  const ctx = buildJarvisContext();
+  const top = ctx.opportunities[0];
+  const queue = ctx.researchQueue;
+  return {
+    ok: true,
+    ts: Date.now(),
+    summary: top ? `Oportunidad principal para investigar: ${top.symbol} (${top.score}/100). Queue: ${queue.length ? queue.join(", ") : "vacía"}.` : "Sin oportunidades nuevas todavía.",
+    opportunity: top || null,
+    queue,
+    context: ctx,
+    educationalNote: "Memoria local educativa; no asesoría financiera."
   };
 }
 
@@ -1248,6 +1469,29 @@ EDUCATIVO — no es asesoría financiera.`;
   } else if (q.includes("comprar") || q.includes("compro")) {
     const ideas = ranked.filter(a => a.signal.includes("BUY") || a.signal.includes("MOMENTUM")).slice(0, 4);
     reply = ideas.length ? `Ideas educativas: ${ideas.map(a => `${a.symbol} (${a.signal})`).join(", ")}. Confirmaria con tendencia y tamano pequeno.` : "No veo compra clara. Mercado " + reg.label + ": mejor paciencia.";
+  } else if (q.includes("research queue") || q.includes("cola de research") || q.includes("cola de investigación") || q.includes("que hay en research queue") || q.includes("qué hay en research queue")) {
+    const queue = getResearchQueue();
+    const memory = buildMemorySummary();
+    reply = queue.length
+      ? `Research Queue: ${queue.join(", ")}. ${memory.summary} Puedes pedir "Analiza NVDA" o ejecutar el queue desde Autopilot. EDUCATIVO — no es señal de trading.`
+      : `Research Queue vacía. ${memory.summary} Puedo sugerir una acción para investigar con el Opportunity Engine. EDUCATIVO.`;
+  } else if (q.includes("qué acción debería investigar") || q.includes("que accion deberia investigar") || q.includes("acción debería investigar") || q.includes("accion deberia investigar") || q.includes("oportunidad nueva") || q.includes("oportunidad viste")) {
+    const opp = getOpportunityState();
+    const top = (opp.topOpportunities || [])[0];
+    reply = top
+      ? `Opportunity Engine: investigaría primero ${top.symbol} (${top.score}/100). Motivo: ${top.reason}. Riesgo: ${top.riskScore}/100. No es compra/venta; solo prioridad de investigación educativa.`
+      : "No veo una oportunidad nueva con datos suficientes. Mantengo watchlist en observación educativa.";
+  } else if (q.includes("analiza ") || q.includes("analizar ") || q.includes("research ")) {
+    const symbols = uniqueStrings([...(q.match(/\b[A-Z]{2,5}\b/g) || []), ...(question.match(/\b[A-Z]{2,5}\b/g) || [])]);
+    const sym = symbols.find(x => MARKET_WATCHLIST.includes(x) || PORTFOLIO.some(a => a.symbol === x)) || symbols[0];
+    if (sym) {
+      const r = researchStock(sym);
+      reply = r.ok ? `Research ${r.symbol}: score ${r.score}/100 · riesgo ${r.riskScore}/100 · ${r.signal}. Tesis: ${r.thesis} Riesgos: ${(r.risks || []).slice(0,2).join(" ") || "sin riesgos destacados en cache"}. EDUCATIVO — no es recomendación financiera.` : `No pude analizar ${sym}. ${r.educationalNote || "Ticker inválido."}`;
+    } else {
+      const opp = getOpportunityState();
+      const top = (opp.topOpportunities || [])[0];
+      reply = top ? `¿Quieres que analice ${top.symbol}? Es la primera oportunidad del engine (${top.score}/100).` : "Dime un ticker, por ejemplo: Analiza NVDA.";
+    }
   } else if (q.includes("vigilar") || q.includes("analiza") || q.includes("que harias") || q.includes("hoy")) {
     const scan = computeDailyScan();
     const alerts = scan.riskAlerts.slice(0, 3).map(a => a.message).join("; ");
@@ -2549,6 +2793,27 @@ function renderAutopilotDatabasePanel() {
   </div>`;
 }
 
+function renderOpportunityEnginePanel() {
+  const state = getOpportunityState();
+  const oppRows = (state.topOpportunities || []).slice(0, 3).map(x => `<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">${esc(x.symbol)}</b> <span style="color:#00ff99;font-weight:900">${x.score}/100</span><div class="muted" style="font-size:11px">${esc(x.signal)} · ${esc(x.reason)}</div></div>`).join("") || `<div class="muted">Sin oportunidades todavía.</div>`;
+  const riskRows = (state.topRisks || []).slice(0, 3).map(x => `<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">${esc(x.symbol)}</b> <span style="color:#ff4d6d;font-weight:900">riesgo ${x.riskScore}/100</span><div class="muted" style="font-size:11px">${esc(x.reason)}</div></div>`).join("") || `<div class="muted">Sin riesgos nuevos.</div>`;
+  const queue = getResearchQueue();
+  const queueHtml = queue.length ? queue.slice(0, 8).map(s => `<span style="display:inline-flex;border:1px solid rgba(59,157,255,.24);border-radius:999px;padding:4px 9px;margin:2px;color:#9bd3ff;font-size:11px;font-weight:900">${esc(s)}</span>`).join("") : `<span class="muted">Queue vacía</span>`;
+  const watchHtml = (state.watchlistCandidates || []).slice(0, 6).map(x => `<span style="display:inline-flex;border:1px solid rgba(0,255,153,.18);border-radius:999px;padding:4px 9px;margin:2px;color:#00ff99;font-size:11px;font-weight:900">${esc(x.symbol)} ${x.score}</span>`).join("") || `<span class="muted">Sin candidatos</span>`;
+  return `<div class="panel" style="border:1px solid rgba(59,157,255,.16);background:rgba(59,157,255,.035);margin-top:14px">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <div><div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff">Cordelius Opportunity Engine</div><div class="muted" style="font-size:12px;margin-top:4px">Discovery + stock research educativo · sin ejecución ni órdenes.</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><input id="opportunity-research-symbol" placeholder="NVDA" style="max-width:110px;border:1px solid rgba(120,160,210,.18);background:rgba(0,0,0,.24);color:#eaf6ff;border-radius:12px;padding:10px;font-weight:900;text-transform:uppercase"><button class="btn" onclick="analyzeOpportunitySymbol()">Analyze Stock</button><button class="btn" onclick="runOpportunityEngine()">Run Opportunities</button></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px">
+      <div class="card" style="padding:14px"><div class="label">Top 3 Opportunities</div><div id="opportunity-top-list">${oppRows}</div></div>
+      <div class="card" style="padding:14px"><div class="label">Top 3 Risks</div><div id="opportunity-risk-list">${riskRows}</div></div>
+      <div class="card" style="padding:14px"><div class="label">Research Queue</div><div id="opportunity-queue-list" style="margin-top:8px">${queueHtml}</div><div class="label" style="margin-top:12px">Watchlist Candidates</div><div id="opportunity-watchlist-list" style="margin-top:8px">${watchHtml}</div></div>
+    </div>
+    <div id="opportunity-research-result" class="muted" style="font-size:13px;line-height:1.55;margin-top:12px">${esc(state.disclaimer || "Educational only. No financial advice.")}</div>
+  </div>`;
+}
+
 function renderAutopilotPanel() {
   const statusCards = [
     { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
@@ -2570,6 +2835,7 @@ function renderAutopilotPanel() {
         </div>`).join("")}
       </div>
       ${renderAutopilotDatabasePanel()}
+      ${renderOpportunityEnginePanel()}
       <div style="border-top:1px solid rgba(120,160,210,.08);padding-top:10px">
         <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;margin-bottom:8px">SCRIPTS</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -2674,12 +2940,15 @@ function renderExecutiveHub(pv, reg) {
   const h = computeHealthReadiness();
   const idea = computeTradeIdea();
   const nl = computeDailyNewsletter();
+  const opp = getOpportunityState();
+  const topOpp = (opp.topOpportunities || [])[0];
   const modules = [
     { label: "PORTAFOLIO",    value: money(pv.totalValueMXN), sub: pct(pv.totalGainPct), color: pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d", href: "#portfolio" },
     { label: "MERCADO",       value: esc(reg.label),           sub: pct(reg.avg),         color: reg.color,  href: "#vigilar" },
     { label: "PAPER TRADE",   value: idea.hasIdea ? esc(idea.type) : "SIN SEÑAL", sub: idea.hasIdea ? esc(idea.symbol || "") : "", color: idea.hasIdea ? "#00ff99" : "#9fb3c8", href: "#bot" },
     { label: "HEALTH",        value: h.configured ? "WHOOP ON" : "SIN DATOS",    sub: esc(h.operatingMode), color: h.configured ? "#00ff99" : "#9fb3c8", href: "#health" },
     { label: "QUIVER",        value: quiverData.configured ? "LIVE" : "PENDIENTE", sub: quiverData.configured ? "Datos institucionales" : "Agrega API key", color: quiverData.configured ? "#00ff99" : "#ffd35c", href: "#quiver" },
+    { label: "OPPORTUNITY",   value: topOpp ? esc(topOpp.symbol) : "WATCH", sub: topOpp ? topOpp.score + "/100" : "research", color: topOpp ? "#3b9dff" : "#9fb3c8", href: "#autopilot" },
   ];
   return `<div style="max-width:1280px;margin:0 auto 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
     ${modules.map(m => `<a href="${m.href}" style="text-decoration:none">
@@ -3310,7 +3579,7 @@ function showMod(name) {
   if (name === 'journal') loadJournalAuto();
   if (name === 'intelligence') loadIntelligenceFeed();
   if (name === 'alfredo') loadAlfredoContext();
-  if (name === 'autopilot') loadAutopilotDatabase();
+  if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); }
 }
 function healthSet(id, value) {
   var el = document.getElementById(id);
@@ -3512,6 +3781,34 @@ async function renderAutopilotProgress() {
   }
 }
 
+function renderOpportunityLists(d) {
+  if (!d || !d.ok) return;
+  var top = document.getElementById('opportunity-top-list');
+  if (top) top.innerHTML = (d.topOpportunities || []).slice(0,3).map(function(x){ return '<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">'+clientEsc(x.symbol)+'</b> <span style="color:#00ff99;font-weight:900">'+clientEsc(x.score)+'/100</span><div class="muted" style="font-size:11px">'+clientEsc(x.signal || '')+' · '+clientEsc(x.reason || '')+'</div></div>'; }).join('') || '<div class="muted">Sin oportunidades todavía.</div>';
+  var risks = document.getElementById('opportunity-risk-list');
+  if (risks) risks.innerHTML = (d.topRisks || []).slice(0,3).map(function(x){ return '<div style="border-top:1px solid rgba(120,160,210,.08);padding:8px 0"><b style="color:#eaf6ff">'+clientEsc(x.symbol)+'</b> <span style="color:#ff4d6d;font-weight:900">riesgo '+clientEsc(x.riskScore)+'/100</span><div class="muted" style="font-size:11px">'+clientEsc(x.reason || '')+'</div></div>'; }).join('') || '<div class="muted">Sin riesgos nuevos.</div>';
+  var queue = document.getElementById('opportunity-queue-list');
+  if (queue) queue.innerHTML = (d.researchQueue || []).length ? d.researchQueue.slice(0,8).map(function(s){ return '<span style="display:inline-flex;border:1px solid rgba(59,157,255,.24);border-radius:999px;padding:4px 9px;margin:2px;color:#9bd3ff;font-size:11px;font-weight:900">'+clientEsc(s)+'</span>'; }).join('') : '<span class="muted">Queue vacía</span>';
+  var watch = document.getElementById('opportunity-watchlist-list');
+  if (watch) watch.innerHTML = (d.watchlistCandidates || []).slice(0,6).map(function(x){ return '<span style="display:inline-flex;border:1px solid rgba(0,255,153,.18);border-radius:999px;padding:4px 9px;margin:2px;color:#00ff99;font-size:11px;font-weight:900">'+clientEsc(x.symbol)+' '+clientEsc(x.score)+'</span>'; }).join('') || '<span class="muted">Sin candidatos</span>';
+}
+async function loadOpportunityEngine() {
+  if (!document.getElementById('opportunity-top-list')) return;
+  try { var r = await fetch('/api/opportunities', { cache:'no-store' }); if (r.ok) renderOpportunityLists(await r.json()); } catch(e) {}
+}
+async function runOpportunityEngine() {
+  var box = document.getElementById('opportunity-research-result');
+  if (box) box.textContent = 'Ejecutando Opportunity Engine...';
+  try { var r = await fetch('/api/opportunities/run', { method:'POST', cache:'no-store' }); var d = r.ok ? await r.json() : null; if (d) renderOpportunityLists(d); if (box) box.textContent = d && d.ok ? 'Engine actualizado: '+((d.topOpportunities||[])[0] ? (d.topOpportunities[0].symbol + ' ' + d.topOpportunities[0].score + '/100') : 'sin oportunidades') : 'No se pudo ejecutar.'; } catch(e) { if (box) box.textContent = 'Error ejecutando opportunities.'; }
+}
+async function analyzeOpportunitySymbol() {
+  var input = document.getElementById('opportunity-research-symbol');
+  var box = document.getElementById('opportunity-research-result');
+  var symbol = input && input.value ? input.value.trim().toUpperCase() : 'NVDA';
+  if (box) box.textContent = 'Analizando '+symbol+'...';
+  try { var r = await fetch('/api/research/stock?symbol=' + encodeURIComponent(symbol), { cache:'no-store' }); var d = r.ok ? await r.json() : null; if (box) box.innerHTML = d && d.ok ? '<b>'+clientEsc(d.symbol)+'</b> · score '+clientEsc(d.score)+'/100 · riesgo '+clientEsc(d.riskScore)+'/100 · '+clientEsc(d.signal)+'<br>'+clientEsc(d.thesis)+'<br><span class="muted">'+clientEsc(d.educationalNote)+'</span>' : 'No se pudo analizar el ticker.'; await loadOpportunityEngine(); } catch(e) { if (box) box.textContent = 'Error analizando ticker.'; }
+}
+
 function toggleAlfredo() {
   var p = document.getElementById('alfredo-panel');
   if (p) p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'block' : 'none';
@@ -3531,6 +3828,7 @@ document.addEventListener('DOMContentLoaded', function() {
   loadJournalAuto();
   loadAlfredoContext();
   loadIntelligenceFeed();
+  loadOpportunityEngine();
 });
 window.addEventListener('hashchange', function() {
   var hashMod = (window.location.hash || '').replace('#', '');
@@ -3629,6 +3927,26 @@ function handleHealthBehavior(req, res) {
   });
 }
 
+function readRequestBody(req) {
+  return new Promise(resolve => {
+    let body = "";
+    req.on("data", c => { body += c; if (body.length > 1e6) req.destroy(); });
+    req.on("end", () => resolve(body));
+    req.on("error", () => resolve(""));
+  });
+}
+function parseBodyPayload(body) {
+  try { return JSON.parse(body || "{}"); } catch(e) {}
+  const params = new URLSearchParams(body || "");
+  const obj = {};
+  for (const [k, v] of params.entries()) obj[k] = v;
+  return obj;
+}
+function sendJSON(res, data, status = 200) {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  return res.end(JSON.stringify(data));
+}
+
 const server = http.createServer(async (req, res) => {
   const path = req.url.split("?")[0];
   if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
@@ -3717,6 +4035,44 @@ const server = http.createServer(async (req, res) => {
       tickers,
       matches: allMatches
     }));
+  }
+  if (path === "/api/opportunities") {
+    return sendJSON(res, getOpportunityState());
+  }
+  if (req.method === "POST" && path === "/api/opportunities/run") {
+    return sendJSON(res, buildOpportunityEngine());
+  }
+  if (path === "/api/research/stock" && req.method === "GET") {
+    const url = new URL(req.url, "http://localhost");
+    return sendJSON(res, researchStock(url.searchParams.get("symbol") || ""));
+  }
+  if (path === "/api/research/stock" && req.method === "POST") {
+    const payload = parseBodyPayload(await readRequestBody(req));
+    return sendJSON(res, researchStock(payload.symbol || payload.ticker || ""));
+  }
+  if (path === "/api/research/queue" && req.method === "GET") {
+    const queue = getResearchQueue();
+    return sendJSON(res, { ok: true, ts: Date.now(), queue, count: queue.length, research: Object.values(getResearchCache()).sort((a, b) => (b.cachedAt || b.ts || 0) - (a.cachedAt || a.ts || 0)).slice(0, 10), educationalNote: "Research queue local educativa." });
+  }
+  if (path === "/api/research/queue/add" && req.method === "POST") {
+    const payload = parseBodyPayload(await readRequestBody(req));
+    const queue = addResearchQueueSymbol(payload.symbol || payload.ticker || "");
+    return sendJSON(res, { ok: true, ts: Date.now(), queue, count: queue.length });
+  }
+  if (path === "/api/research/queue/remove" && req.method === "POST") {
+    const payload = parseBodyPayload(await readRequestBody(req));
+    const queue = removeResearchQueueSymbol(payload.symbol || payload.ticker || "");
+    return sendJSON(res, { ok: true, ts: Date.now(), queue, count: queue.length });
+  }
+  if (path === "/api/research/queue/run" && req.method === "POST") {
+    return sendJSON(res, runResearchQueue());
+  }
+  if (path === "/api/watchlist/opportunities") {
+    const state = getOpportunityState();
+    return sendJSON(res, { ok: true, ts: Date.now(), candidates: state.watchlistCandidates, topOpportunities: state.topOpportunities, hotTickers: state.hotTickers, educationalNote: "Watchlist educativa; no señal de trading." });
+  }
+  if (path === "/api/jarvis/memory") {
+    return sendJSON(res, buildMemorySummary());
   }
   if (path === "/api/daily-scan") {
     res.writeHead(200, { "Content-Type": "application/json" });
