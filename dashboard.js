@@ -1601,6 +1601,41 @@ EDUCATIVO — no es asesoría financiera.`;
         (di.strongestPattern ? `Aprendizaje clave: ${di.strongestPattern}. ` : "Sin patrones claros aún. ") +
         `Decisiones de hoy: ${di.decidedToday}. EDUCATIVO.`;
     }
+  } else if (q.includes("modo operativo") && (q.includes("jarvis") || q.includes("hoy") || q.includes("cuál es") || q.includes("cual es"))) {
+    const jp = buildJarvisPrivateSummary();
+    reply = `Modo operativo: *${jp.operatingMode}* — ${jp.stateLabel}. Regulación: ${jp.regulationScore}/10. ` +
+      `${jp.oneLineAdvice} ` +
+      (jp.tradingRestrictions.length ? `Restricción: ${jp.tradingRestrictions[0]} ` : "Trading permitido. ") +
+      (jp.healthRiskFlags.length ? `Atención: ${jp.healthRiskFlags[0]} ` : "") +
+      `Principio core: "${jp.corePrinciple}". No es consejo médico.`;
+  } else if (q.includes("puedo operar hoy") || q.includes("debo operar") || q.includes("trading permitido") || q.includes("trading hoy")) {
+    const jp = buildJarvisPrivateSummary();
+    if (!jp.tradingAllowed) {
+      reply = `*No recomendado.* ${jp.tradingRestrictions.join(" ")} Modo: ${jp.stateLabel}. "${jp.oneLineAdvice}" No es asesoría financiera.`;
+    } else {
+      const h = computeHealthReadiness ? computeHealthReadiness() : {};
+      reply = `Condiciones aceptables para trading educativo. Modo: ${jp.operatingMode}. Recovery: ${h.recovery !== null ? h.recovery + "%" : "sin datos"}. ${jp.oneLineAdvice} Recordatorio: análisis educativo, no es asesoría financiera.`;
+    }
+  } else if (q.includes("check-in") || q.includes("checkin") || q.includes("cómo registro") || q.includes("como registro") || q.includes("registro diario")) {
+    const mem = readPrivateJarvisMemory();
+    if (mem.todayCheckIn) {
+      reply = `Ya hiciste tu check-in hoy (${mem.todayCheckIn.date}). Energía: ${mem.todayCheckIn.energy || "—"}, Mood: ${mem.todayCheckIn.mood || "—"}, Cannabis: ${mem.todayCheckIn.cannabis ? "sí" : "no"}. Actualiza con POST /api/jarvis/check-in si algo cambió.`;
+    } else {
+      const q1 = (mem.dailyQuestions || [])[0];
+      reply = `Sin check-in hoy. Responde: "${q1 ? q1.question : "¿Cómo amaneciste?"}" — Usa POST /api/jarvis/check-in con campos: energy(1-10), mood, cannabis(true/false), sleepQuality(1-10), scalp(1-10), digestion(1-10), trainingIntent, tradingIntent.`;
+    }
+  } else if (q.includes("reglas de salud") || q.includes("mis reglas") || q.includes("regla jarvis") || q.includes("principios jarvis")) {
+    const mem = readPrivateJarvisMemory();
+    const top3 = (mem.activeRules || []).slice(0, 3).map((r, i) => `${i + 1}. ${r.rule}`).join("\n");
+    reply = `Reglas base Jarvis:\n${top3}\nTotal activas: ${(mem.activeRules || []).length}. Principio core: "${mem.corePrinciple}". No es consejo médico.`;
+  } else if (q.includes("pregunta del día") || q.includes("pregúntame algo") || q.includes("preguntame algo") || q.includes("qué me preguntas") || q.includes("que me preguntas")) {
+    const jp = buildJarvisPrivateSummary();
+    reply = `Pregunta del día: "${jp.dailyQuestion}"\n\n${jp.suggestedQuestions.length > 0 ? "También: " + jp.suggestedQuestions.join(" ") : ""}\n\nRecuerda: "${jp.corePrinciple}". Usa POST /api/jarvis/check-in para registrar tu respuesta.`;
+  } else if (q.includes("estado regulación") || q.includes("estado estimulacion") || q.includes("estado estimulación") || q.includes("riesgo hoy")) {
+    const jp = buildJarvisPrivateSummary();
+    reply = `Estado: *${jp.stateLabel}* · Score de regulación: ${jp.regulationScore}/10.\n${jp.oneLineAdvice}\n` +
+      (jp.healthRiskFlags.length ? `Riesgos: ${jp.healthRiskFlags.join("; ")}.\n` : "") +
+      `Principio: "${jp.corePrinciple}". No es consejo médico ni financiero.`;
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
@@ -2597,6 +2632,11 @@ const EXECUTIVE_BRIEFING_HISTORY_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, 
 const DECISION_JOURNAL_FILE           = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "decision_journal.json");
 const DECISION_PATTERNS_FILE          = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "decision_patterns.json");
 const PERSONAL_PLAYBOOK_FILE          = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "personal_playbook.json");
+const JARVIS_PRIVATE_PROFILE_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "jarvis_private_profile.json");
+const JARVIS_HEALTH_RULES_FILE        = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "jarvis_health_rules.json");
+const JARVIS_DAILY_QUESTIONS_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "jarvis_daily_questions.json");
+const JARVIS_RISK_RULES_FILE          = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "jarvis_risk_rules.json");
+const JARVIS_CHECKINS_FILE            = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "jarvis_checkins.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -4015,6 +4055,228 @@ function getDecisionIntelligence() {
   }
 }
 
+// ── Jarvis Private Memory (local-only, git-ignored) ──────────────────────────
+
+const _JARVIS_DEFAULT_HEALTH_RULES = [
+  { id: "R1", rule: "REGULACIÓN > ESTIMULACIÓN. Antes de agregar algo nuevo, pregunta: ¿esto regula o solo agrega señal?", active: true },
+  { id: "R2", rule: "Si recovery < 35: baja carga, no trading agresivo, no sauna intensa, no decisiones emocionales.", active: true, trigger: "recovery_critical" },
+  { id: "R3", rule: "Si recovery 35–60: moderado. Foco en sueño y comida limpia.", active: true, trigger: "recovery_moderate" },
+  { id: "R4", rule: "Si recovery > 70 y sueño bueno: entrenamiento fuerte y trabajo profundo permitido.", active: true, trigger: "recovery_good" },
+  { id: "R5", rule: "Si sleep < 6h: no trading discrecional ni mensajes emocionales importantes.", active: true, trigger: "sleep_low" },
+  { id: "R6", rule: "Si cannabis o alcohol: no trading ese día.", active: true, trigger: "substance_use" },
+  { id: "R7", rule: "Si quieres agregar un suplemento nuevo: espera 5–7 días antes de agregar otro.", active: true, trigger: "supplement_add" },
+  { id: "R8", rule: "Si hay sobreestimulación: reduce variables, no agregues más hacks.", active: true, trigger: "overstimulation" },
+  { id: "R9", rule: "Si hay ansiedad nocturna: no envíes mensajes largos, espera 12 horas.", active: true, trigger: "night_anxiety" },
+  { id: "R10", rule: "Antes de sugerir algo, Jarvis pregunta: ¿Esto regula el sistema o solo agrega otra señal?", active: true }
+];
+
+const _JARVIS_DEFAULT_DAILY_QUESTIONS = [
+  { id: "Q1", question: "¿Cómo amaneciste de energía (1–10)?", field: "energy", type: "number" },
+  { id: "Q2", question: "¿Cómo está tu estado de ánimo hoy?", field: "mood", type: "text" },
+  { id: "Q3", question: "¿Consumiste cannabis o alcohol ayer/hoy?", field: "cannabis", type: "boolean" },
+  { id: "Q4", question: "¿Cómo fue la calidad de tu sueño?", field: "sleepQuality", type: "scale" },
+  { id: "Q5", question: "¿Cómo está tu cuero cabelludo hoy?", field: "scalp", type: "scale" },
+  { id: "Q6", question: "¿Cómo está tu digestión?", field: "digestion", type: "scale" },
+  { id: "Q7", question: "¿Tienes intención de entrenar hoy?", field: "trainingIntent", type: "boolean" },
+  { id: "Q8", question: "¿Tienes intención de operar/tomar decisiones financieras hoy?", field: "tradingIntent", type: "boolean" }
+];
+
+const _JARVIS_DEFAULT_RISK_RULES = [
+  { id: "RR1", rule: "Cripto/Bitso > 50% del portafolio: concentración crítica — revisar.", trigger: "crypto_concentration", severity: "HIGH" },
+  { id: "RR2", rule: "No operar con recovery < 35 ni con sueño < 6h — decisiones bajo estas condiciones son estadísticamente peores.", trigger: "health_impaired", severity: "HIGH" },
+  { id: "RR3", rule: "No tomar decisiones financieras significativas bajo sustancias.", trigger: "substance_use", severity: "CRITICAL" },
+  { id: "RR4", rule: "Si un activo cae >15% desde compra y score <35: revisar tesis antes de mantener.", trigger: "asset_drawdown", severity: "MEDIUM" },
+  { id: "RR5", rule: "No agregar posición a un activo en drawdown sin análisis previo de la tesis.", trigger: "averaging_down", severity: "MEDIUM" }
+];
+
+function initJarvisPrivateMemory() {
+  try {
+    ensureDataDir();
+    if (!AUTOPILOT_FS.existsSync(JARVIS_PRIVATE_PROFILE_FILE)) {
+      writeJSONAtomic(JARVIS_PRIVATE_PROFILE_FILE, {
+        corePrinciple: "REGULACIÓN > ESTIMULACIÓN",
+        createdAt: new Date().toISOString(),
+        version: 1,
+        notes: "Archivo local — no subir a git."
+      });
+    }
+    if (!AUTOPILOT_FS.existsSync(JARVIS_HEALTH_RULES_FILE)) {
+      writeJSONAtomic(JARVIS_HEALTH_RULES_FILE, { rules: _JARVIS_DEFAULT_HEALTH_RULES, version: 1 });
+    }
+    if (!AUTOPILOT_FS.existsSync(JARVIS_DAILY_QUESTIONS_FILE)) {
+      writeJSONAtomic(JARVIS_DAILY_QUESTIONS_FILE, { questions: _JARVIS_DEFAULT_DAILY_QUESTIONS, version: 1 });
+    }
+    if (!AUTOPILOT_FS.existsSync(JARVIS_RISK_RULES_FILE)) {
+      writeJSONAtomic(JARVIS_RISK_RULES_FILE, { rules: _JARVIS_DEFAULT_RISK_RULES, version: 1 });
+    }
+    if (!AUTOPILOT_FS.existsSync(JARVIS_CHECKINS_FILE)) {
+      writeJSONAtomic(JARVIS_CHECKINS_FILE, []);
+    }
+  } catch(e) { console.log("initJarvisPrivateMemory omitido:", e.message); }
+}
+
+function readPrivateJarvisMemory() {
+  try {
+    const profile   = readJSONSafe(JARVIS_PRIVATE_PROFILE_FILE, {});
+    const hrFile    = readJSONSafe(JARVIS_HEALTH_RULES_FILE,    { rules: _JARVIS_DEFAULT_HEALTH_RULES });
+    const dqFile    = readJSONSafe(JARVIS_DAILY_QUESTIONS_FILE, { questions: _JARVIS_DEFAULT_DAILY_QUESTIONS });
+    const rrFile    = readJSONSafe(JARVIS_RISK_RULES_FILE,      { rules: _JARVIS_DEFAULT_RISK_RULES });
+    const checkins  = readJSONSafe(JARVIS_CHECKINS_FILE,        []);
+    const today     = todayDateKey();
+    const todayCI   = (Array.isArray(checkins) ? checkins : []).find(c => c.date === today) || null;
+    const lastCI    = (Array.isArray(checkins) ? checkins : []).slice(0, 1)[0] || null;
+    return {
+      ok: true,
+      corePrinciple: profile.corePrinciple || "REGULACIÓN > ESTIMULACIÓN",
+      activeRules: (hrFile.rules || _JARVIS_DEFAULT_HEALTH_RULES).filter(r => r.active),
+      dailyQuestions: dqFile.questions || _JARVIS_DEFAULT_DAILY_QUESTIONS,
+      riskFlags: rrFile.rules || _JARVIS_DEFAULT_RISK_RULES,
+      todayCheckIn: todayCI,
+      lastCheckIn: lastCI,
+      totalCheckIns: Array.isArray(checkins) ? checkins.length : 0
+    };
+  } catch(e) {
+    return { ok: false, error: e.message, corePrinciple: "REGULACIÓN > ESTIMULACIÓN", activeRules: _JARVIS_DEFAULT_HEALTH_RULES, dailyQuestions: _JARVIS_DEFAULT_DAILY_QUESTIONS, riskFlags: _JARVIS_DEFAULT_RISK_RULES, todayCheckIn: null };
+  }
+}
+
+function computeJarvisOperatingMode(whoopData, checkIn) {
+  try {
+    const recovery  = (whoopData && whoopData.recovery  != null) ? Number(whoopData.recovery)  : null;
+    const sleepHrs  = (whoopData && whoopData.sleepHours != null) ? Number(whoopData.sleepHours) : null;
+    const hrv       = (whoopData && whoopData.hrv        != null) ? Number(whoopData.hrv)        : null;
+    const energy    = checkIn ? Number(checkIn.energy  || 5) : null;
+    const cannabis  = checkIn ? !!checkIn.cannabis : false;
+    const sleepQ    = checkIn ? Number(checkIn.sleepQuality || 5) : null;
+
+    const healthRiskFlags = [], tradingRestrictions = [], suggestedQuestions = [];
+    let operatingMode = "NEUTRAL";
+    let regulationScore = 5;
+
+    // Critical blocks
+    if (cannabis) {
+      operatingMode = "DESCANSO";
+      tradingRestrictions.push("NO trading — consumo de cannabis/alcohol activo.");
+      healthRiskFlags.push("Sustancias: decisiones financieras no recomendadas hoy.");
+      regulationScore = Math.max(1, regulationScore - 4);
+    }
+    if (recovery !== null && recovery < 35) {
+      operatingMode = operatingMode === "DESCANSO" ? "DESCANSO" : "REGULACIÓN";
+      tradingRestrictions.push("Recovery crítico (" + recovery + "%) — no trading agresivo.");
+      healthRiskFlags.push("Recovery < 35%: baja carga, sin sauna intensa, sin decisiones emocionales.");
+      regulationScore = Math.max(1, regulationScore - 3);
+    }
+    if (sleepHrs !== null && sleepHrs < 6) {
+      tradingRestrictions.push("Sueño < 6h — no trading discrecional.");
+      healthRiskFlags.push("Sueño insuficiente (<6h): no mensajes emocionales importantes.");
+      regulationScore = Math.max(1, regulationScore - 2);
+    }
+
+    // Moderate adjustments
+    if (recovery !== null && recovery >= 35 && recovery < 70) {
+      if (operatingMode === "NEUTRAL") operatingMode = "MODERADO";
+      suggestedQuestions.push("¿Cómo está tu comida hoy? El sueño limpio y la digestión regulan más que cualquier hack.");
+      regulationScore = Math.max(3, regulationScore - 1);
+    }
+    if (recovery !== null && recovery >= 70 && (sleepHrs === null || sleepHrs >= 6)) {
+      if (operatingMode === "NEUTRAL" || operatingMode === "MODERADO") operatingMode = "ÓPTIMO";
+      regulationScore = Math.min(10, regulationScore + 2);
+    }
+    if (energy !== null && energy <= 4) {
+      if (!tradingRestrictions.length) tradingRestrictions.push("Energía baja — considerar sesión corta o descanso.");
+      regulationScore = Math.max(2, regulationScore - 1);
+    }
+
+    // Suggested questions based on state
+    if (!checkIn) {
+      suggestedQuestions.push("¿Cómo amaneciste de energía hoy (1–10)?");
+      suggestedQuestions.push("¿Consumiste algo que afecte tu sistema nervioso ayer/hoy?");
+    } else {
+      if (checkIn.tradingIntent) suggestedQuestions.push("¿Esto regula el sistema o solo agrega otra señal?");
+      if (checkIn.scalp && Number(checkIn.scalp) <= 3) suggestedQuestions.push("Cuero cabelludo bajo — ¿hay estrés o algo que lo esté activando?");
+      if (checkIn.digestion && Number(checkIn.digestion) <= 3) suggestedQuestions.push("Digestión comprometida — revisá qué comiste ayer.");
+    }
+
+    // One-line advice
+    const advice = cannabis
+      ? "Hoy es día de regulación. Sin trading, sin decisiones importantes. Deja que el sistema se equilibre."
+      : recovery !== null && recovery < 35
+        ? "Recovery crítico. Hoy regulás, no acelerás. Carga mínima en todo."
+        : recovery !== null && recovery >= 70
+          ? "Sistema en verde. Podés trabajar duro y enfocarte en lo que importa."
+          : sleepHrs !== null && sleepHrs < 6
+            ? "Sueño insuficiente. Priorizá recuperación antes de cualquier decisión importante."
+            : energy !== null && energy <= 4
+              ? "Energía baja reportada. Sesión corta, prioridad en lo esencial."
+              : "Estado moderado. Foco en calidad sobre cantidad. Una cosa a la vez.";
+
+    const stateLabel = operatingMode === "ÓPTIMO" ? "Regulación Verde"
+      : operatingMode === "MODERADO" ? "Estimulación Moderada"
+      : operatingMode === "DESCANSO" ? "Riesgo — Descanso"
+      : operatingMode === "REGULACIÓN" ? "Regulación Activa"
+      : "Estado Neutral";
+
+    return {
+      operatingMode, stateLabel, regulationScore,
+      healthRiskFlags, tradingRestrictions, suggestedQuestions,
+      oneLineAdvice: advice,
+      tradingAllowed: tradingRestrictions.length === 0,
+      basedOn: { recovery, sleepHrs, hrv, energy, cannabis, hasCheckIn: !!checkIn }
+    };
+  } catch(e) {
+    return { operatingMode: "NEUTRAL", stateLabel: "Estado Neutral", regulationScore: 5, healthRiskFlags: [], tradingRestrictions: [], suggestedQuestions: ["¿Cómo amaneciste?"], oneLineAdvice: "Sin datos suficientes.", tradingAllowed: true };
+  }
+}
+
+function saveJarvisCheckIn(data) {
+  try {
+    const today = todayDateKey();
+    const entry = {
+      date:          today,
+      timestamp:     new Date().toISOString(),
+      energy:        data.energy        !== undefined ? Number(data.energy)        : null,
+      mood:          data.mood          || null,
+      cannabis:      data.cannabis      !== undefined ? !!data.cannabis            : false,
+      sleepQuality:  data.sleepQuality  !== undefined ? Number(data.sleepQuality)  : null,
+      scalp:         data.scalp         !== undefined ? Number(data.scalp)         : null,
+      digestion:     data.digestion     !== undefined ? Number(data.digestion)     : null,
+      trainingIntent: data.trainingIntent !== undefined ? !!data.trainingIntent    : null,
+      tradingIntent:  data.tradingIntent  !== undefined ? !!data.tradingIntent     : null
+    };
+    const checkins = readJSONSafe(JARVIS_CHECKINS_FILE, []);
+    const filtered = (Array.isArray(checkins) ? checkins : []).filter(c => c.date !== today);
+    filtered.unshift(entry);
+    if (filtered.length > 200) filtered.length = 200;
+    writeJSONAtomic(JARVIS_CHECKINS_FILE, filtered);
+    return entry;
+  } catch(e) { return null; }
+}
+
+function buildJarvisPrivateSummary() {
+  try {
+    const mem = readPrivateJarvisMemory();
+    const h   = computeHealthReadiness ? computeHealthReadiness() : {};
+    const whoopLike = { recovery: h.recovery, sleepHours: h.sleep, hrv: h.hrv };
+    const mode = computeJarvisOperatingMode(whoopLike, mem.todayCheckIn);
+    return {
+      corePrinciple:      mem.corePrinciple,
+      operatingMode:      mode.operatingMode,
+      stateLabel:         mode.stateLabel,
+      regulationScore:    mode.regulationScore,
+      tradingAllowed:     mode.tradingAllowed,
+      tradingRestrictions: mode.tradingRestrictions,
+      healthRiskFlags:    mode.healthRiskFlags,
+      suggestedQuestions: mode.suggestedQuestions.slice(0, 2),
+      oneLineAdvice:      mode.oneLineAdvice,
+      activeRules:        (mem.activeRules || []).slice(0, 3).map(r => r.rule),
+      todayCheckIn:       mem.todayCheckIn ? true : false,
+      dailyQuestion:      (mem.dailyQuestions || [])[0] ? (mem.dailyQuestions[0].question) : "¿Cómo amaneciste hoy?"
+    };
+  } catch(e) {
+    return { operatingMode: "NEUTRAL", stateLabel: "Estado Neutral", tradingAllowed: true, oneLineAdvice: "Sin datos.", activeRules: [] };
+  }
+}
+
 // ── Executive AI Layer ────────────────────────────────────────────────────────
 // Phase 4A — Transforms Jarvis into an executive operating system.
 // Synthesizes WHOOP + Market Brain + Portfolio + Daily Intelligence +
@@ -4551,6 +4813,13 @@ function buildJarvisContext() {
     ctx.decisionIntel = null;
   }
 
+  // 11. Jarvis Private Memory — local operating mode, health rules, today's check-in
+  try {
+    ctx.jarvisPrivate = buildJarvisPrivateSummary();
+  } catch(e) {
+    ctx.jarvisPrivate = null;
+  }
+
   return ctx;
 }
 
@@ -4663,6 +4932,17 @@ function buildMemorySummary() {
       if (di.strongestPattern)  lines.push(`PATRÓN MÁS FUERTE: ${di.strongestPattern}`);
       if (di.biggestMistake)    lines.push(`ERROR MÁS REPETIDO: ${di.biggestMistake}`);
       if (di.topPlaybookRule)   lines.push(`REGLA PLAYBOOK: ${di.topPlaybookRule}`);
+    }
+
+    const jp = ctx.jarvisPrivate;
+    if (jp) {
+      lines.push(`MODO OPERATIVO: ${jp.operatingMode} — ${jp.stateLabel}`);
+      lines.push(`REGULACIÓN (0–10): ${jp.regulationScore} · Trading permitido: ${jp.tradingAllowed ? "SÍ" : "NO"}`);
+      lines.push(`PRINCIPIO CORE: ${jp.corePrinciple}`);
+      if (jp.tradingRestrictions.length) lines.push(`RESTRICCIÓN TRADING: ${jp.tradingRestrictions[0]}`);
+      if (jp.healthRiskFlags.length)     lines.push(`RIESGO SALUD: ${jp.healthRiskFlags[0]}`);
+      if (jp.oneLineAdvice)              lines.push(`CONSEJO HOY: ${jp.oneLineAdvice}`);
+      if (!jp.todayCheckIn)              lines.push(`CHECK-IN HOY: pendiente — usa POST /api/jarvis/check-in`);
     }
 
     if (lines.length === 0) return "Sin memoria disponible todavía.";
@@ -5861,6 +6141,114 @@ function renderDecisionIntelPanel() {
 </div>`;
 }
 
+function renderJarvisPrivatePanel() {
+  const jp = (function(){ try { return buildJarvisPrivateSummary(); } catch(e){ return null; } })();
+  const mem = (function(){ try { return readPrivateJarvisMemory(); } catch(e){ return null; } })();
+  if (!jp) return "";
+
+  const modeColor = jp.operatingMode === "ÓPTIMO" ? "#00ff99"
+    : jp.operatingMode === "MODERADO"   ? "#ffd35c"
+    : jp.operatingMode === "DESCANSO"   ? "#ff4d6d"
+    : jp.operatingMode === "REGULACIÓN" ? "#f472b6"
+    : "#9fb3c8";
+
+  const tradingColor = jp.tradingAllowed ? "#00ff99" : "#ff4d6d";
+  const tradingLabel = jp.tradingAllowed ? "PERMITIDO" : "RESTRINGIDO";
+
+  // Score bar (regulation 0–10)
+  const scoreW = Math.round((jp.regulationScore / 10) * 100);
+  const scoreColor = jp.regulationScore >= 7 ? "#00ff99" : jp.regulationScore >= 4 ? "#ffd35c" : "#ff4d6d";
+
+  // Rule chips
+  const ruleChips = (jp.activeRules || []).slice(0, 2).map(r =>
+    `<div style="font-size:11px;color:#9fb3c8;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)">${esc(r.slice(0, 90))}</div>`
+  ).join("");
+
+  // Risk flags
+  const riskRows = (jp.healthRiskFlags || []).map(f =>
+    `<div style="display:flex;gap:6px;align-items:flex-start;padding:3px 0"><span style="color:#ff4d6d;font-size:11px">⚠</span><span style="font-size:11px;color:#ff8fa3">${esc(f.slice(0, 80))}</span></div>`
+  ).join("") || `<div style="font-size:11px;color:#9fb3c8">Sin alertas activas.</div>`;
+
+  // Trading restriction
+  const trRow = (jp.tradingRestrictions || []).length > 0
+    ? `<div style="padding:6px 10px;background:rgba(255,77,109,.06);border:1px solid rgba(255,77,109,.15);border-radius:10px;font-size:11px;color:#ff8fa3">${esc(jp.tradingRestrictions[0].slice(0,100))}</div>`
+    : `<div style="padding:6px 10px;background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.12);border-radius:10px;font-size:11px;color:#9fb3c8">Sin restricciones activas.</div>`;
+
+  const ciStatus = mem && mem.todayCheckIn
+    ? `<span style="color:#00ff99;font-size:11px">✓ Check-in hoy</span>`
+    : `<span style="color:#ffd35c;font-size:11px">⊙ Sin check-in hoy</span>`;
+
+  return `<div style="background:rgba(244,114,182,.04);border:1px solid rgba(244,114,182,.18);border-radius:20px;padding:20px 22px;margin:0 0 14px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <span style="font-size:13px;font-weight:900;color:#f472b6;letter-spacing:.07em">◉ JARVIS OS · REGULACIÓN</span>
+      <span style="margin-left:10px;font-size:11px;color:#9fb3c8">"${esc(jp.corePrinciple)}"</span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      ${ciStatus}
+      <a href="/api/jarvis/private-memory" target="_blank" style="font-size:11px;color:#9fb3c8;text-decoration:none">JSON →</a>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+    <div style="background:${modeColor}11;border:1px solid ${modeColor}33;border-radius:14px;padding:10px 12px;text-align:center">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:${modeColor};text-transform:uppercase">Estado</div>
+      <div style="font-size:14px;font-weight:900;color:${modeColor};margin-top:3px">${esc(jp.operatingMode)}</div>
+      <div style="font-size:10px;color:#9fb3c8;margin-top:2px">${esc(jp.stateLabel)}</div>
+    </div>
+    <div style="background:rgba(129,140,248,.07);border:1px solid rgba(129,140,248,.18);border-radius:14px;padding:10px 12px;text-align:center">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#818cf8;text-transform:uppercase">Regulación</div>
+      <div style="font-size:14px;font-weight:900;color:${scoreColor};margin-top:3px">${jp.regulationScore}/10</div>
+      <div style="background:rgba(255,255,255,.06);border-radius:99px;height:4px;margin-top:4px;overflow:hidden">
+        <div style="background:${scoreColor};width:${scoreW}%;height:100%;border-radius:99px;transition:width .4s"></div>
+      </div>
+    </div>
+    <div style="background:${tradingColor}11;border:1px solid ${tradingColor}33;border-radius:14px;padding:10px 12px;text-align:center">
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:${tradingColor};text-transform:uppercase">Trading</div>
+      <div style="font-size:14px;font-weight:900;color:${tradingColor};margin-top:3px">${tradingLabel}</div>
+      <div style="font-size:10px;color:#9fb3c8;margin-top:2px">educativo</div>
+    </div>
+  </div>
+
+  <div style="background:rgba(244,114,182,.05);border:1px solid rgba(244,114,182,.12);border-radius:12px;padding:10px 14px;margin-bottom:12px">
+    <div style="font-size:11px;font-weight:900;color:#f472b6;margin-bottom:3px">◈ Consejo de hoy</div>
+    <div style="font-size:13px;color:#dce7f7">${esc(jp.oneLineAdvice)}</div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:5px">Restricción Trading</div>
+      ${trRow}
+    </div>
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:5px">Riesgos de Salud</div>
+      ${riskRows}
+    </div>
+  </div>
+
+  <div style="margin-bottom:12px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:5px">Pregunta del día</div>
+    <div style="font-size:12px;color:#c8d8e8;font-style:italic">"${esc(jp.dailyQuestion)}"</div>
+    ${jp.suggestedQuestions.length > 0 ? `<div style="font-size:11px;color:#9fb3c8;margin-top:3px">${esc(jp.suggestedQuestions[0])}</div>` : ""}
+  </div>
+
+  <div style="margin-bottom:10px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:5px">Reglas activas</div>
+    ${ruleChips || '<div style="font-size:11px;color:#9fb3c8">—</div>'}
+  </div>
+
+  <div id="jarvis-checkin-area">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:6px">Check-in rápido</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <input id="jci-energy" type="number" min="1" max="10" placeholder="Energía 1-10" style="background:#111827;color:#dce7f7;border:1px solid rgba(244,114,182,.25);border-radius:10px;padding:6px 10px;font-size:12px;width:110px">
+      <input id="jci-mood" type="text" placeholder="Mood" style="background:#111827;color:#dce7f7;border:1px solid rgba(244,114,182,.25);border-radius:10px;padding:6px 10px;font-size:12px;width:100px">
+      <label style="font-size:11px;color:#9fb3c8;display:flex;align-items:center;gap:4px"><input id="jci-cannabis" type="checkbox" style="accent-color:#f472b6"> Cannabis/alcohol</label>
+      <button onclick="submitJarvisCheckIn()" style="background:rgba(244,114,182,.15);color:#f472b6;border:1px solid rgba(244,114,182,.3);border-radius:99px;padding:6px 14px;font-size:11px;cursor:pointer;font-weight:900">Guardar check-in</button>
+    </div>
+  </div>
+</div>`;
+}
+
 function renderAutopilotPanel() {
   const statusCards = [
     { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
@@ -5974,6 +6362,7 @@ function renderAutopilotPanel() {
         </div>
       </div>
     </div>
+    ${renderJarvisPrivatePanel()}
     ${renderExecutivePanel()}
     ${renderDecisionIntelPanel()}
     ${renderBuildMemoryPanel()}
@@ -8324,6 +8713,27 @@ async function submitDecision() {
     }
   } catch(e) { alert('Error: ' + e.message); }
 }
+async function submitJarvisCheckIn() {
+  var energy   = parseInt(((document.getElementById('jci-energy')   || {}).value || '5'), 10);
+  var mood     = ((document.getElementById('jci-mood')     || {}).value || '').trim();
+  var cannabis = !!(document.getElementById('jci-cannabis') || {}).checked;
+  if (!energy || energy < 1 || energy > 10) { alert('Energía debe ser entre 1 y 10.'); return; }
+  var payload = { energy: energy, mood: mood || null, cannabis: cannabis };
+  try {
+    var r = await fetch('/api/jarvis/check-in', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    var data = r.ok ? await r.json() : null;
+    if (data && data.ok) {
+      var area = document.getElementById('jarvis-checkin-area');
+      if (area) area.innerHTML = '<div style="color:#00ff99;font-size:12px">✓ Check-in guardado. Modo: ' + (data.operatingMode || '—') + ' — ' + (data.oneLineAdvice || '') + '</div>';
+    } else {
+      alert('Error al guardar check-in.');
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
 </script>
 </html>`;
 }
@@ -9582,11 +9992,75 @@ if (path === "/api/whoop/today") {
     }
   }
 
+  // ── Jarvis Private Memory endpoints ──────────────────────────────────────────
+  if (path === "/api/jarvis/private-memory" && req.method === "GET") {
+    try {
+      const mem  = readPrivateJarvisMemory();
+      const jp   = buildJarvisPrivateSummary();
+      const safe = {
+        ok:                 true,
+        corePrinciple:      mem.corePrinciple,
+        operatingMode:      jp.operatingMode,
+        stateLabel:         jp.stateLabel,
+        regulationScore:    jp.regulationScore,
+        tradingAllowed:     jp.tradingAllowed,
+        tradingRestrictions: jp.tradingRestrictions,
+        healthRiskFlags:    jp.healthRiskFlags,
+        suggestedQuestions: jp.suggestedQuestions,
+        oneLineAdvice:      jp.oneLineAdvice,
+        dailyQuestion:      jp.dailyQuestion,
+        activeRules:        (mem.activeRules || []).slice(0, 5).map(r => ({ id: r.id, rule: r.rule })),
+        riskFlags:          (mem.riskFlags || []).map(r => ({ id: r.id, rule: r.rule, severity: r.severity })),
+        todayCheckIn:       mem.todayCheckIn ? true : false,
+        totalCheckIns:      mem.totalCheckIns
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(safe));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/jarvis/check-in" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        const entry = saveJarvisCheckIn(input);
+        if (!entry) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "No se pudo guardar." })); }
+        const jp = buildJarvisPrivateSummary();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, entry, operatingMode: jp.operatingMode, stateLabel: jp.stateLabel, oneLineAdvice: jp.oneLineAdvice, tradingAllowed: jp.tradingAllowed, tradingRestrictions: jp.tradingRestrictions }));
+      } catch(e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (path === "/api/jarvis/memory" && req.method === "GET") {
+    try {
+      const mem = buildMemorySummary();
+      const jp  = buildJarvisPrivateSummary();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, memory: mem, jarvisPrivate: { operatingMode: jp.operatingMode, stateLabel: jp.stateLabel, regulationScore: jp.regulationScore, oneLineAdvice: jp.oneLineAdvice, tradingAllowed: jp.tradingAllowed } }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
 
 async function boot() {
+  // Initialize Jarvis private memory files (local-only, git-ignored)
+  try { initJarvisPrivateMemory(); } catch(e) { console.log("initJarvisPrivateMemory omitido:", e.message); }
+
   // Initialize project memory files if they don't exist
   try { initProjectMemory(); } catch(e) { console.log("initProjectMemory omitido:", e.message); }
 

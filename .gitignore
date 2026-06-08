@@ -95,7 +95,9 @@ server.log
 health_behavior_log.json
 health_daily_snapshots.json
 
-# Autopilot database runtime files
+# Autopilot database runtime files (includes all Jarvis private memory)
+# jarvis_private_profile.json, jarvis_health_rules.json, jarvis_daily_questions.json
+# jarvis_risk_rules.json, jarvis_checkins.json — all covered by data/*.json
 data/*.json
 data/*.tmp
 
