@@ -13,6 +13,9 @@ const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLI
 // Alpaca — always paper unless explicitly disabled
 const ALPACA_PAPER = process.env.ALPACA_PAPER !== "false";
 const ALPACA_CONFIGURED = !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY);
+// Telegram alerts — read at runtime, never logged
+const TG_TOKEN_CONFIGURED = !!(process.env.TELEGRAM_BOT_TOKEN);
+const TG_CHAT_CONFIGURED  = !!(process.env.TELEGRAM_CHAT_ID);
 
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
@@ -2449,6 +2452,7 @@ const MARKET_DAILY_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_
 const USER_CHECKINS_FILE      = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "user_daily_checkins.json");
 const CORDELIUS_PATTERNS_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_patterns.json");
 const DAILY_INTELLIGENCE_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "daily_intelligence_summary.json");
+const CORDELIUS_ALERTS_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_alerts.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -2743,13 +2747,201 @@ function runAutoDailySnapshot() {
     try { computeCordeliusPatterns(); } catch(e) {
       console.log("[AutoSnapshot] patterns error:", e.message);
     }
+    try { checkAlerts(); } catch(e) {
+      console.log("[AutoSnapshot] checkAlerts error:", e.message);
+    }
 
-    const cap = snap && snap.learning && snap.learning.tradingCapacity ? snap.learning.tradingCapacity : "—";
-    const risk = snap && snap.learning && snap.learning.riskRecommendation ? snap.learning.riskRecommendation : "—";
+    const cap  = snap && snap.learning && snap.learning.tradingCapacity      ? snap.learning.tradingCapacity      : "—";
+    const risk = snap && snap.learning && snap.learning.riskRecommendation   ? snap.learning.riskRecommendation   : "—";
     console.log("[AutoSnapshot] Done — capacity: " + cap + " | risk: " + risk);
   } catch(e) {
     console.log("[AutoSnapshot] Error:", e.message);
     _lastAutoSnapshotDate = null; // allow retry next minute
+  }
+}
+
+// ── Cordelius Alerts Engine ────────────────────────────────────────────────────
+
+let _alertDailyCount = { date: "", count: 0 };
+const ALERTS_MAX_PER_DAY = 10;
+
+function notifyTelegramAlert(alert) {
+  const token  = process.env.TELEGRAM_BOT_TOKEN || "";
+  const chatId = process.env.TELEGRAM_CHAT_ID   || "";
+  if (!token || !chatId) return;
+  const emoji = { INFO: "ℹ️", WARNING: "⚠️", CRITICAL: "🔴", OPPORTUNITY: "💡" }[alert.severity] || "•";
+  const title   = (alert.title   || "").replace(/[*_`[\]]/g, "");
+  const message = (alert.message || "").replace(/[*_`[\]]/g, "");
+  const text = (emoji + " *Cordelius Alert*\n\n*" + title + "*\n" + message + "\n\n_" + alert.date + " · " + alert.type + "_").slice(0, 4096);
+  const payload = JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" });
+  const req = https.request({
+    hostname: "api.telegram.org",
+    path:     "/bot" + token + "/sendMessage",
+    method:   "POST",
+    headers:  { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+    timeout:  10000
+  }, (res) => {
+    let d = "";
+    res.on("data", c => d += c);
+    res.on("end", () => {
+      try { const j = JSON.parse(d); if (!j.ok) console.log("[Alerts] TG error:", j.description || j.error_code); } catch(e) {}
+    });
+  });
+  req.on("error",   (e) => console.log("[Alerts] TG request error:", e.message));
+  req.on("timeout", ()  => { req.destroy(); console.log("[Alerts] TG timeout"); });
+  req.write(payload);
+  req.end();
+}
+
+function checkAlerts() {
+  try {
+    const today = todayDateKey();
+    if (_alertDailyCount.date !== today) _alertDailyCount = { date: today, count: 0 };
+
+    const existing  = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
+    const todayKeys = new Set(
+      existing.filter(a => a && a.date === today).map(a => a.dedupeKey)
+    );
+    const newAlerts = [];
+
+    function maybeAlert(dedupeKey, type, severity, title, message, source) {
+      if (severity !== "CRITICAL" && todayKeys.has(dedupeKey)) return;
+      if (severity !== "CRITICAL" && _alertDailyCount.count >= ALERTS_MAX_PER_DAY) return;
+      const id = "alert_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+      newAlerts.push({ id, timestamp: new Date().toISOString(), date: today, type, severity, title, message, source, dedupeKey, sentToTelegram: false, acknowledged: false });
+      todayKeys.add(dedupeKey);
+      _alertDailyCount.count++;
+    }
+
+    // A — Health (live)
+    let h = null;
+    try { h = computeHealthReadiness(); } catch(e) {}
+    if (h) {
+      const rec = h.recovery != null ? Number(h.recovery) : null;
+      const slp = h.sleep    != null ? Number(h.sleep)    : null;
+      const hrv = h.hrv      != null ? Number(h.hrv)      : null;
+      if (rec !== null) {
+        if (rec < 25)
+          maybeAlert("health_rec_critical", "HEALTH", "CRITICAL",
+            "Recovery crítica: " + rec + "%",
+            "Tu recovery WHOOP es " + rec + "% — nivel crítico. Evita decisiones de riesgo alto hoy. (Educativo — no consejo médico.)", "whoop");
+        else if (rec < 40)
+          maybeAlert("health_rec_warning", "HEALTH", "WARNING",
+            "Recovery baja: " + rec + "%",
+            "Recovery en " + rec + "% (umbral 40%). Considera reducir riesgo hoy. (Educativo — no consejo médico.)", "whoop");
+      }
+      if (slp !== null && slp < 50)
+        maybeAlert("health_slp_warning", "HEALTH", "WARNING",
+          "Sueño deficiente: " + slp + "%",
+          "Eficiencia de sueño en " + slp + "%. Puede afectar capacidad de análisis. Prioriza descanso. (No consejo médico.)", "whoop");
+      if (hrv !== null) {
+        try {
+          const dlHist = readJSONSafe(DAILY_LEARNING_FILE, {});
+          const recDays = Object.keys(dlHist).sort().slice(-5).map(k => dlHist[k]);
+          const prevHrvs = recDays.slice(0, -1).map(d => d && d.whoop && d.whoop.hrv != null ? Number(d.whoop.hrv) : null).filter(v => v !== null);
+          if (prevHrvs.length >= 2) {
+            const avg = prevHrvs.reduce((s, v) => s + v, 0) / prevHrvs.length;
+            if (hrv < avg * 0.70)
+              maybeAlert("health_hrv_drop", "HEALTH", "WARNING",
+                "HRV caída: " + hrv.toFixed(1) + " ms (prom " + avg.toFixed(1) + " ms)",
+                "HRV de hoy (" + hrv.toFixed(1) + " ms) está >30% por debajo del promedio reciente (" + avg.toFixed(1) + " ms). Señal de estrés acumulado. (No consejo médico.)", "whoop");
+          }
+        } catch(e) {}
+      }
+    }
+
+    // B — Trading capacity (from saved daily learning)
+    try {
+      const dlHist    = readJSONSafe(DAILY_LEARNING_FILE, {});
+      const todaySnap = dlHist[today];
+      if (todaySnap && todaySnap.learning) {
+        const l = todaySnap.learning;
+        const m = todaySnap.market || {};
+        if (l.tradingCapacity === "BAJA")
+          maybeAlert("capacity_low", "CAPACITY", "WARNING",
+            "Capacidad de trading BAJA hoy",
+            (l.healthMarketSummary || "Sistema detecta capacidad BAJA.") + " Evita decisiones de alto impacto. (Educativo — no consejo financiero.)", "daily_learning");
+        if (l.tradingCapacity === "ALTA" && !["RISK_OFF","BEARISH","DEFENSIVO","REDUCIR_RIESGO"].includes(m.riskMode || ""))
+          maybeAlert("capacity_high_opp", "CAPACITY", "OPPORTUNITY",
+            "Condiciones óptimas para análisis — capacidad ALTA",
+            (l.nextDaySuggestions && l.nextDaySuggestions[0] ? l.nextDaySuggestions[0] : "Recovery y sueño óptimos.") + " Buen momento para revisar portafolio. (No consejo financiero.)", "daily_learning");
+      }
+    } catch(e) {}
+
+    // C — Portfolio
+    try {
+      const pv     = portfolioValue();
+      const assets = pv.assets || [];
+      const total  = pv.totalValueMXN || 0;
+      const cVal   = assets.filter(a => a.type === "crypto").reduce((s, a) => s + (a.valueMXN || 0), 0);
+      const cPct   = total > 0 ? cVal / total * 100 : 0;
+      if (cPct > 70)
+        maybeAlert("port_crypto_conc", "PORTFOLIO", "WARNING",
+          "Concentración cripto elevada: " + cPct.toFixed(1) + "%",
+          "Tu exposición cripto (" + cPct.toFixed(1) + "%) supera el 70%. Alta volatilidad — considera revisar diversificación. (No consejo financiero.)", "portfolio");
+      const gainPct = Number(pv.totalGainPct || 0);
+      if (gainPct >= 20)
+        maybeAlert("port_gain_20pct", "PORTFOLIO", "OPPORTUNITY",
+          "Ganancia total " + (gainPct >= 0 ? "+" : "") + gainPct.toFixed(1) + "% — evaluar take-profit",
+          "Tu portafolio acumula " + gainPct.toFixed(1) + "% de ganancia total. Educativamente, revisa posiciones sobrecompradas y take-profit parcial. (No consejo financiero.)", "portfolio");
+      const sorted   = assets.slice().sort((a, b) => (a.gainPct || 0) - (b.gainPct || 0));
+      const topLoser = sorted[0];
+      if (topLoser && (topLoser.gainPct || 0) < -10)
+        maybeAlert("port_loser_" + (topLoser.symbol || "X"), "PORTFOLIO", "WARNING",
+          (topLoser.symbol || "—") + " en caída: " + (topLoser.gainPct >= 0 ? "+" : "") + (topLoser.gainPct || 0).toFixed(1) + "%",
+          (topLoser.name || topLoser.symbol || "Activo") + " tiene pérdida de " + (topLoser.gainPct || 0).toFixed(1) + "% (score " + (topLoser.score || "—") + "/100). Evalúa tu tesis. (No consejo financiero.)", "portfolio");
+      const topWinner = sorted[sorted.length - 1];
+      if (topWinner && (topWinner.gainPct || 0) > 30)
+        maybeAlert("port_winner_" + (topWinner.symbol || "X"), "PORTFOLIO", "OPPORTUNITY",
+          (topWinner.symbol || "—") + " ganancia: +" + (topWinner.gainPct || 0).toFixed(1) + "%",
+          (topWinner.name || topWinner.symbol || "Activo") + " con +" + (topWinner.gainPct || 0).toFixed(1) + "% (score " + (topWinner.score || "—") + "/100). Considera evaluar take-profit parcial. (No consejo financiero.)", "portfolio");
+    } catch(e) {}
+
+    // D — Market regime (from saved daily learning)
+    try {
+      const dlHist    = readJSONSafe(DAILY_LEARNING_FILE, {});
+      const todaySnap = dlHist[today];
+      if (todaySnap && todaySnap.market) {
+        const rm = todaySnap.market.riskMode || "";
+        if (["DEFENSIVO","REDUCIR_RIESGO"].includes(rm))
+          maybeAlert("mkt_defensive_" + rm, "MARKET", "WARNING",
+            "Régimen defensivo detectado: " + rm,
+            "El sistema detecta condiciones defensivas (" + rm + "). Considera reducir exposición a activos volátiles. (Educativo — no consejo financiero.)", "market");
+        if (["RISK_OFF","BEARISH"].includes(rm))
+          maybeAlert("mkt_risk_off", "MARKET", "WARNING",
+            "Mercado en modo RISK_OFF / BEARISH",
+            "Señales bajistas detectadas (" + rm + "). Revisa posiciones defensivas. (Educativo — no consejo financiero.)", "market");
+      }
+    } catch(e) {}
+
+    // E — Pattern detection (once per sample-count tier)
+    try {
+      const patterns = readJSONSafe(CORDELIUS_PATTERNS_FILE, { available: false });
+      if (patterns.available && patterns.sampleCount >= 3) {
+        const tier = Math.floor(patterns.sampleCount / 7);
+        maybeAlert("patterns_tier_" + tier, "LEARNING", "INFO",
+          "Nuevos patrones detectados — " + patterns.sampleCount + " días de datos",
+          (patterns.nextDayRecommendation || "Jarvis ha detectado patrones de comportamiento. Revisa Autopilot → Daily Learning."), "patterns");
+      }
+    } catch(e) {}
+
+    if (newAlerts.length === 0) return { newCount: 0 };
+
+    // Telegram delivery
+    for (const alert of newAlerts) {
+      if (TG_TOKEN_CONFIGURED && TG_CHAT_CONFIGURED) {
+        notifyTelegramAlert(alert);
+        alert.sentToTelegram = true;
+      }
+    }
+
+    const allAlerts = [...newAlerts, ...existing].slice(0, 500);
+    writeJSONAtomic(CORDELIUS_ALERTS_FILE, allAlerts);
+    console.log("[Alerts] " + newAlerts.length + " new: " + newAlerts.map(a => a.severity + "/" + a.type).join(", "));
+    return { newCount: newAlerts.length, alerts: newAlerts };
+  } catch(e) {
+    console.log("[Alerts] checkAlerts error:", e.message);
+    return { newCount: 0, error: e.message };
   }
 }
 
@@ -3737,6 +3929,55 @@ function renderDailyLearningPanel() {
   </div>`;
 }
 
+function renderAlertsPanel() {
+  const alerts  = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
+  const unread  = alerts.filter(a => a && !a.acknowledged).length;
+  const latest  = alerts.slice(0, 5);
+  const SC = { INFO: "#3b9dff", WARNING: "#ffd35c", CRITICAL: "#ff4d6d", OPPORTUNITY: "#00ff99" };
+  const SE = { INFO: "ℹ",      WARNING: "⚠",       CRITICAL: "●",        OPPORTUNITY: "★" };
+  const rows = latest.length ? latest.map(a => {
+    const sc  = SC[a.severity] || "#9fb3c8";
+    const em  = SE[a.severity] || "•";
+    const msg = (a.message || "").slice(0, 160) + ((a.message || "").length > 160 ? "…" : "");
+    let ts = a.date || "";
+    try { ts = new Date(a.timestamp).toLocaleString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch(e) {}
+    const ackBtn = !a.acknowledged
+      ? `<button onclick="ackAlert('${esc(a.id)}')" style="padding:2px 10px;border-radius:6px;border:1px solid rgba(120,160,210,.2);background:transparent;color:#9fb3c8;font-size:10px;cursor:pointer">Marcar revisado</button>`
+      : `<span style="font-size:10px;color:#3a4a5a">✓ Revisado</span>`;
+    return `<div style="padding:10px 12px;border-radius:12px;background:${a.acknowledged?"rgba(0,0,0,.1)":"rgba(0,0,0,.25)"};border:1px solid ${sc}${a.acknowledged?"20":"35"};margin-bottom:6px;opacity:${a.acknowledged?".5":"1"}">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <span style="font-size:10px;font-weight:900;color:${sc};background:${sc}18;border:1px solid ${sc}30;border-radius:6px;padding:2px 7px;white-space:nowrap">${em} ${esc(a.severity)}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:700;color:#eaf6ff;margin-bottom:3px">${esc(a.title)}</div>
+          <div style="font-size:11px;color:#9fb3c8;line-height:1.45">${esc(msg)}</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap">
+            <span style="font-size:10px;color:#3a4a5a">${esc(ts)}</span>
+            ${a.sentToTelegram ? '<span style="font-size:10px;color:#00c8ff">· Telegram ✓</span>' : ""}
+            ${ackBtn}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join("") : `<div style="font-size:12px;color:#3a4a5a;padding:10px 0">Sin alertas recientes. Pulsa "Evaluar ahora" para verificar condiciones.</div>`;
+  return `<div id="alerts-panel" style="margin-top:12px;padding:20px 22px;background:rgba(255,77,109,.03);border:1px solid rgba(255,77,109,.18);border-radius:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ff6b8a">Cordelius Alerts</div>
+          ${unread > 0 ? `<span style="background:#ff4d6d;color:#fff;font-size:10px;font-weight:900;border-radius:99px;padding:1px 8px">${unread}</span>` : ""}
+          ${TG_CHAT_CONFIGURED ? '<span style="font-size:10px;color:#00c8ff;border:1px solid rgba(0,200,255,.25);border-radius:99px;padding:1px 8px">Telegram ✓</span>' : '<span style="font-size:10px;color:#3a4a5a;border:1px solid rgba(120,160,210,.12);border-radius:99px;padding:1px 8px">Telegram — agrega TELEGRAM_CHAT_ID</span>'}
+        </div>
+        <div style="font-size:11px;color:#3a4a5a;margin-top:3px">Alertas proactivas — salud, portafolio, mercado, aprendizaje. Máx ${ALERTS_MAX_PER_DAY}/día.</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="runAlertCheck()" id="alert-check-btn" style="padding:8px 14px;border-radius:10px;border:1px solid rgba(255,77,109,.35);background:rgba(255,77,109,.1);color:#ff6b8a;font-size:12px;font-weight:700;cursor:pointer">Evaluar ahora</button>
+        <a href="/api/alerts" target="_blank" style="padding:8px 14px;border-radius:10px;border:1px solid rgba(120,160,210,.2);background:transparent;color:#9fb3c8;font-size:12px;font-weight:700;cursor:pointer;text-decoration:none">Ver JSON →</a>
+      </div>
+    </div>
+    <div id="alerts-list">${rows}</div>
+  </div>`;
+}
+
 function renderAutopilotPanel() {
   const statusCards = [
     { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
@@ -3851,6 +4092,7 @@ function renderAutopilotPanel() {
       </div>
     </div>
     ${renderDailyLearningPanel()}
+    ${renderAlertsPanel()}
   </div>`;
 }
 
@@ -5843,6 +6085,55 @@ document.addEventListener('DOMContentLoaded', function() {
     setInterval(poll, 60000);
   })();
 });
+
+// ---- Cordelius Alerts (client) ----
+async function runAlertCheck() {
+  var btn = document.getElementById('alert-check-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Evaluando...'; }
+  try {
+    var r = await fetch('/api/alerts/check', { method: 'POST' });
+    if (r.ok) {
+      var d = await r.json();
+      if (d.newCount > 0) {
+        window.location.reload();
+      } else {
+        if (btn) {
+          btn.disabled = false; btn.textContent = 'Sin alertas nuevas';
+          setTimeout(function() { btn.textContent = 'Evaluar ahora'; }, 3000);
+        }
+      }
+    }
+  } catch(e) {
+    if (btn) {
+      btn.disabled = false; btn.textContent = 'Error — reintentar';
+      setTimeout(function() { btn.textContent = 'Evaluar ahora'; }, 3000);
+    }
+  }
+}
+
+async function ackAlert(alertId) {
+  try {
+    var r = await fetch('/api/alerts/ack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: alertId })
+    });
+    if (r.ok) {
+      // Find and fade the row
+      var allBtns = document.querySelectorAll('[onclick]');
+      for (var i = 0; i < allBtns.length; i++) {
+        var attr = allBtns[i].getAttribute('onclick') || '';
+        if (attr.indexOf(alertId) !== -1) {
+          var row = allBtns[i].closest('div[style*="margin-bottom:6px"]');
+          if (row) { row.style.opacity = '0.4'; row.style.transition = 'opacity .3s'; }
+          allBtns[i].textContent = '✓ Revisado';
+          allBtns[i].disabled = true;
+          break;
+        }
+      }
+    }
+  } catch(e) {}
+}
 </script>
 </html>`;
 }
@@ -6611,6 +6902,57 @@ if (path === "/api/whoop/today") {
     }
   }
 
+  // ---- Cordelius Alerts API ----
+  if (path === "/api/alerts" && req.method === "GET") {
+    try {
+      const allAlerts = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
+      const unread    = allAlerts.filter(a => a && !a.acknowledged).length;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, count: allAlerts.length, unread, alerts: allAlerts.slice(0, 50) }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/alerts/check" && req.method === "POST") {
+    try {
+      const result = checkAlerts();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, newCount: result.newCount || 0, error: result.error || null }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/alerts/ack" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.id) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: "id requerido" }));
+        }
+        const alerts  = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
+        let   found   = false;
+        const updated = alerts.map(a => {
+          if (a && a.id === input.id) { found = true; return { ...a, acknowledged: true, acknowledgedAt: new Date().toISOString() }; }
+          return a;
+        });
+        if (found) writeJSONAtomic(CORDELIUS_ALERTS_FILE, updated);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, found }));
+      } catch(e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   // ---- Autonomous Daily Intelligence API ----
   if (path === "/api/intelligence/today" && req.method === "GET") {
     try {
@@ -6734,6 +7076,10 @@ async function boot() {
     // Autonomous daily snapshot — check every minute, fires once per calendar day
     try { runAutoDailySnapshot(); } catch(e) { console.log("runAutoDailySnapshot boot omitido:", e.message); }
     setInterval(() => { try { runAutoDailySnapshot(); } catch(e) {} }, 60000);
+
+    // Proactive alerts — every 5 minutes (dedup prevents spam)
+    try { checkAlerts(); } catch(e) { console.log("checkAlerts boot omitido:", e.message); }
+    setInterval(() => { try { checkAlerts(); } catch(e) {} }, 5 * 60 * 1000);
 
   }, 500);
 }
