@@ -1140,7 +1140,7 @@ function botTick() {
 }
 
 
-async function askClaude(question, localReply, pv, reg, botEq, botPnl) {
+async function askClaude(question, localReply, pv, reg, botEq, botPnl, jarvisMemory = "") {
   if (!settings.thinkingEnabled || !ANTHROPIC_API_KEY) return "";
 
   const assetsContext = (pv.assets || []).map(a => ({
@@ -1215,6 +1215,9 @@ ${JSON.stringify(intelContext, null, 2)}
 
 BOT FICTICIO:
 ${JSON.stringify(botContext, null, 2)}
+
+MEMORIA PERSONAL DE CORDELIUS (historial comprimido — úsala para dar respuestas más personalizadas):
+${jarvisMemory || "Sin memoria disponible todavía."}
 
 REGLAS DE RESPUESTA:
 1. Si mencionas Apple/AAPL, recuerda que costo original fue aprox. 2640 MXN y valor manual aprox. 5450 MXN.
@@ -1468,7 +1471,9 @@ EDUCATIVO — no es asesoría financiera.`;
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
-  const ai = await askClaude(question, reply, pv, reg, botEq, botPnl);
+  let jarvisMemory = "";
+  try { jarvisMemory = buildMemorySummary(); } catch(e) { jarvisMemory = ""; }
+  const ai = await askClaude(question, reply, pv, reg, botEq, botPnl, jarvisMemory);
   if (ai) reply = ai;
   chatHistory.unshift({ question, reply, time: nowMX() });
   chatHistory = chatHistory.slice(0, 60);
@@ -2666,6 +2671,239 @@ function computeCordeliusPatterns() {
   };
   writeJSONAtomic(CORDELIUS_PATTERNS_FILE, patterns);
   return patterns;
+}
+
+// ============================================================
+// JARVIS MEMORY ENGINE — buildJarvisContext / buildMemorySummary
+// Reads and compresses all persistent memory for Claude injection
+// ============================================================
+
+function buildJarvisContext() {
+  const ctx = { generatedAt: new Date().toISOString() };
+
+  // 1. Current WHOOP / health state
+  try {
+    const h = computeHealthReadiness();
+    ctx.health = {
+      recovery:          h.recovery,
+      sleep:             h.sleep,
+      hrv:               h.hrv !== null ? Number(h.hrv).toFixed(1) : null,
+      strain:            h.strain !== null ? Number(h.strain).toFixed(1) : null,
+      restingHR:         h.restingHeartRate,
+      operatingMode:     h.operatingMode,
+      source:            h.source,
+      connected:         !!h.connected,
+      healthScore:       h.healthScore,
+      energyScore:       h.energyScore,
+      deepWorkScore:     h.deepWorkScore,
+      nervousSystemScore:h.nervousSystemScore,
+      stressLoadScore:   h.stressLoadScore,
+      suggestion:        h.suggestion
+    };
+  } catch(e) {
+    ctx.health = { error: e.message };
+  }
+
+  // 2. Portfolio summary (compressed — no individual asset details, those are in askClaude already)
+  try {
+    const pv = portfolioValue();
+    const assets = pv.assets || [];
+    const cryptoVal = assets.filter(a => a.type === "crypto").reduce((s, a) => s + (a.valueMXN || 0), 0);
+    const sorted = assets.slice().sort((a, b) => (b.gainPct || 0) - (a.gainPct || 0));
+    ctx.portfolio = {
+      totalMXN:    parseFloat((pv.totalValueMXN || 0).toFixed(0)),
+      gainPct:     parseFloat((pv.totalGainPct  || 0).toFixed(2)),
+      gainMXN:     parseFloat((pv.totalGainMXN  || 0).toFixed(0)),
+      cryptoPct:   pv.totalValueMXN > 0 ? parseFloat((cryptoVal / pv.totalValueMXN * 100).toFixed(1)) : 0,
+      regime:      (function(){ try { return marketRegime().label; } catch(e){ return "—"; } })(),
+      topWinner:   sorted[0] ? { sym: sorted[0].symbol, pct: parseFloat((sorted[0].gainPct||0).toFixed(1)), score: sorted[0].score } : null,
+      topLoser:    sorted[sorted.length-1] ? { sym: sorted[sorted.length-1].symbol, pct: parseFloat((sorted[sorted.length-1].gainPct||0).toFixed(1)), score: sorted[sorted.length-1].score } : null
+    };
+  } catch(e) {
+    ctx.portfolio = { error: e.message };
+  }
+
+  // 3. Daily learning — last 7 days compressed
+  try {
+    const hist   = readJSONSafe(DAILY_LEARNING_FILE, {});
+    const keys   = Object.keys(hist).sort().slice(-7);
+    ctx.dailyLearning = keys.map(k => {
+      const r = hist[k] || {};
+      const w = r.whoop   || {};
+      const c = r.checkin || {};
+      const m = r.market  || {};
+      const l = r.learning || {};
+      return {
+        date:     k,
+        mode:     w.operatingMode || null,
+        recovery: w.recovery      || null,
+        sleep:    w.sleep         || null,
+        capacity: l.tradingCapacity       || null,
+        risk:     l.riskRecommendation    || null,
+        focus:    c.focus   != null ? c.focus   : null,
+        mood:     c.mood    != null ? c.mood    : null,
+        cannabis: c.cannabis != null ? c.cannabis : null,
+        sauna:    c.sauna    != null ? c.sauna    : null,
+        workout:  c.workout  != null ? c.workout  : null,
+        portGain: m.gainPct  != null ? parseFloat(m.gainPct.toFixed(1)) : null,
+        checkinDone: !!c.updatedAt
+      };
+    });
+  } catch(e) {
+    ctx.dailyLearning = [];
+  }
+
+  // 4. Recent trading decisions — last 5, newest first
+  try {
+    const decisions = readJSONSafe(TRADING_DECISIONS_FILE, []);
+    const structured = decisions.filter(d => d && d.id).slice(-10).reverse().slice(0, 5);
+    ctx.recentDecisions = structured.map(d => ({
+      date:       (d.timestamp || "").slice(0, 10),
+      sym:        d.symbol || "—",
+      action:     d.action || "—",
+      conviction: d.conviction || null,
+      outcome:    d.outcomeStatus || "PENDING",
+      reason:     (d.reason || "").slice(0, 80)
+    }));
+  } catch(e) {
+    ctx.recentDecisions = [];
+  }
+
+  // 5. Detected behavior patterns (if available)
+  try {
+    const patterns = readJSONSafe(CORDELIUS_PATTERNS_FILE, {});
+    if (patterns.available) {
+      ctx.patterns = {
+        available:       true,
+        cannabisRecovery:patterns.cannabisVsRecovery   || null,
+        saunaRecovery:   patterns.saunaVsRecovery      || null,
+        recoveryVsPnl:   patterns.recoveryVsPnl        || null,
+        sleepVsFocus:    patterns.sleepVsFocus         || null,
+        bestCondition:   patterns.bestCondition ? {
+          date:     patterns.bestCondition.date,
+          recovery: patterns.bestCondition.recovery,
+          sleep:    patterns.bestCondition.sleep,
+          focus:    patterns.bestCondition.focus,
+          cannabis: patterns.bestCondition.cannabis,
+          sauna:    patterns.bestCondition.sauna
+        } : null,
+        nextDayRec: patterns.nextDayRecommendation || null
+      };
+    } else {
+      ctx.patterns = { available: false, msg: patterns.message || "Insuficiente datos" };
+    }
+  } catch(e) {
+    ctx.patterns = { available: false };
+  }
+
+  // 6. Autopilot progress + learning summary
+  try {
+    const progress = readJSONSafe(CORDELIUS_PROGRESS_FILE, {});
+    ctx.autopilot = {
+      level:     progress.level    || 1,
+      xp:        progress.xp       || 0,
+      streak:    progress.streak   || 0,
+      snapshots: progress.snapshots|| 0
+    };
+    const learning = computeAutopilotLearning();
+    ctx.autopilotLearning = {
+      total:            learning.totalDecisions,
+      reviewed:         learning.reviewedDecisions,
+      pending:          learning.pendingDecisions,
+      learningSummary:  (learning.learningSummary || "").slice(0, 220),
+      bestPatterns:     (learning.bestPatterns    || []).slice(0, 2).map(p => ({
+        sym: p.symbol, action: p.action, conviction: p.conviction
+      })),
+      repeatedMistakes: (learning.repeatedMistakes || []).slice(0, 2).map(m => ({
+        sym: m.symbol, action: m.action, count: m.count
+      }))
+    };
+  } catch(e) {
+    ctx.autopilot = {};
+    ctx.autopilotLearning = { learningSummary: "" };
+  }
+
+  return ctx;
+}
+
+function buildMemorySummary() {
+  // Compressed Spanish-language bullet points — ~400 tokens max
+  // Used for injecting into Claude prompt
+  try {
+    const ctx = buildJarvisContext();
+    const lines = [];
+
+    // Health
+    const h = ctx.health || {};
+    if (!h.error) {
+      if (h.recovery !== null && h.recovery !== undefined) {
+        lines.push(`SALUD HOY: Recovery ${h.recovery}%, sueño ${h.sleep != null ? h.sleep + '%' : '—'}, HRV ${h.hrv || '—'} ms, modo ${h.operatingMode}. Sugerencia: ${h.suggestion || '—'}.`);
+        if (h.deepWorkScore != null) lines.push(`SCORES: energía ${h.energyScore}/100, trabajo profundo ${h.deepWorkScore}/100, sistema nervioso ${h.nervousSystemScore}/100.`);
+      } else {
+        lines.push(`SALUD: WHOOP sin datos directos. Fuente: ${h.source || 'no configurado'}. Modo derivado: ${h.operatingMode}.`);
+      }
+    }
+
+    // Daily learning trend
+    const dl = ctx.dailyLearning || [];
+    if (dl.length > 0) {
+      const today = dl[dl.length - 1];
+      lines.push(`CAPACIDAD TRADING HOY: ${today.capacity || '—'} · Riesgo: ${today.risk || '—'} · Foco ${today.focus != null ? today.focus + '/10' : '—'} · Check-in: ${today.checkinDone ? 'Sí' : 'No'}.`);
+      if (dl.length >= 3) {
+        const withRec = dl.filter(d => d.recovery !== null && d.recovery !== undefined);
+        if (withRec.length >= 2) {
+          const avgRec = (withRec.reduce((s, d) => s + d.recovery, 0) / withRec.length).toFixed(0);
+          lines.push(`TENDENCIA (${dl.length}d): Recovery promedio ${avgRec}%. Días con cannabis: ${dl.filter(d => d.cannabis).length}. Días con workout: ${dl.filter(d => d.workout).length}. Días con sauna: ${dl.filter(d => d.sauna).length}.`);
+        }
+      }
+    }
+
+    // Portfolio
+    const p = ctx.portfolio || {};
+    if (!p.error) {
+      lines.push(`PORTAFOLIO: $${Number(p.totalMXN || 0).toLocaleString('es-MX')} MXN · Ganancia ${p.gainPct >= 0 ? '+' : ''}${p.gainPct}% · Cripto ${p.cryptoPct}% · Régimen ${p.regime}.`);
+      if (p.topWinner) lines.push(`ACTIVOS: Mejor ${p.topWinner.sym} (${p.topWinner.pct >= 0 ? '+' : ''}${p.topWinner.pct}%, score ${p.topWinner.score}). Más débil: ${p.topLoser ? p.topLoser.sym + ' (' + p.topLoser.pct + '%, score ' + p.topLoser.score + ')' : '—'}.`);
+    }
+
+    // Trading decisions
+    const dec = ctx.recentDecisions || [];
+    if (dec.length > 0) {
+      lines.push(`DECISIONES RECIENTES: ${dec.slice(0, 3).map(d => `${d.date} ${d.action} ${d.sym} [${d.outcome}${d.conviction ? ', cv' + d.conviction : ''}]`).join(' | ')}.`);
+    }
+
+    // Patterns
+    const pat = ctx.patterns || {};
+    if (pat.available) {
+      if (pat.nextDayRec) lines.push(`PATRÓN APRENDIDO: ${pat.nextDayRec}`);
+      const rv = pat.recoveryVsPnl;
+      if (rv && rv.highRecoveryAvgPnl != null && rv.sampleHigh >= 2) {
+        lines.push(`CORRELACIÓN: Recovery alta (≥70%) → PnL prom. ${rv.highRecoveryAvgPnl}% (${rv.sampleHigh}d). Recovery baja (<50%) → PnL prom. ${rv.lowRecoveryAvgPnl}% (${rv.sampleLow}d).`);
+      }
+      const sf = pat.sleepVsFocus;
+      if (sf && sf.goodSleepAvgFocus != null && sf.sampleGood >= 2) {
+        lines.push(`SUEÑO VS FOCO: Buen sueño → foco ${sf.goodSleepAvgFocus}/10 (${sf.sampleGood}d). Mal sueño → foco ${sf.badSleepAvgFocus}/10 (${sf.sampleBad}d).`);
+      }
+    } else if (pat.msg) {
+      lines.push(`PATRONES: ${pat.msg}`);
+    }
+
+    // Autopilot learning
+    const al = ctx.autopilotLearning || {};
+    if (al.total > 0) {
+      lines.push(`AUTOPILOT: Nivel ${(ctx.autopilot || {}).level || 1} · ${al.total} decisiones · ${al.reviewed} revisadas. ${al.learningSummary}`);
+      if (al.repeatedMistakes && al.repeatedMistakes.length > 0) {
+        lines.push(`ERROR REPETIDO: ${al.repeatedMistakes.map(m => m.sym + ' ' + m.action + ' ×' + m.count).join(', ')}.`);
+      }
+      if (al.bestPatterns && al.bestPatterns.length > 0) {
+        lines.push(`MEJOR PATRÓN: ${al.bestPatterns.map(p => p.action + ' en ' + p.sym + ' (cv ' + p.conviction + ')').join(', ')}.`);
+      }
+    }
+
+    if (lines.length === 0) return "Sin memoria disponible todavía.";
+    return lines.join("\n");
+  } catch(e) {
+    return "Error al construir memoria: " + e.message;
+  }
 }
 
 function computeTradingSummary() {
@@ -5166,6 +5404,14 @@ function jarvisUpdateThought(data) {
 
   if (!(ap.latest && ap.latest.length)) thoughts.push('Autopilot sin decisiones registradas. Documenta tu proceso de trading.');
 
+  // Memory-based thoughts from daily learning + patterns (server-side data via daily snapshot)
+  var dl = data.daily || {};
+  var dlCap = dl.tradingCapacity || null;
+  var dlRisk = dl.riskRecommendation || null;
+  if (dlCap === 'BAJA')  thoughts.push('Capacidad de trading BAJA hoy según datos fisiológicos. Considera reducir exposición.');
+  if (dlCap === 'ALTA')  thoughts.push('Capacidad de trading ALTA. Condiciones óptimas para análisis y decisiones.');
+  if (dlRisk === 'REDUCIR_RIESGO') thoughts.push('Memoria: recomendación de riesgo reducido activa. Evitar nuevas posiciones arriesgadas.');
+
   if (!thoughts.length) thoughts.push('Sistema operativo. Sin alertas activas. Monitoreo continuo en curso.');
 
   var el = document.getElementById('jv-thought');
@@ -6242,6 +6488,43 @@ if (path === "/api/whoop/today") {
       const keys     = Object.keys(history).sort();
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(JSON.stringify({ ok: true, recordCount: keys.length, patterns, latest: keys.length ? history[keys[keys.length - 1]] : null }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  // ---- Jarvis Memory Endpoints ----
+  if (path === "/api/jarvis/context" && req.method === "GET") {
+    try {
+      const ctx = buildJarvisContext();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, context: ctx }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/jarvis/memory" && req.method === "GET") {
+    try {
+      const summary = buildMemorySummary();
+      const ctx     = buildJarvisContext();
+      const tokenEstimate = Math.ceil(summary.length / 4);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok: true,
+        memorySummary: summary,
+        tokenEstimate,
+        sources: {
+          health:          ctx.health && !ctx.health.error,
+          portfolio:       ctx.portfolio && !ctx.portfolio.error,
+          dailyLearning:   (ctx.dailyLearning || []).length,
+          recentDecisions: (ctx.recentDecisions || []).length,
+          patterns:        (ctx.patterns || {}).available || false,
+          autopilotLevel:  (ctx.autopilot || {}).level || 1
+        }
+      }));
     } catch(e) {
       res.writeHead(500, { "Content-Type": "application/json" });
       return res.end(JSON.stringify({ ok: false, error: e.message }));
