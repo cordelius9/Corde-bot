@@ -1696,7 +1696,7 @@ function renderPortfolioRows(assets) {
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
           <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
-          <button onclick="setAlfredoQ('analiza ${a.symbol} en mi portafolio')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+          <button onclick="setJarvisQ('analiza ${a.symbol} en mi portafolio')" class="btn" style="font-size:12px;padding:7px 14px;color:#3b9dff;border-color:rgba(59,157,255,.3)">Consultar Jarvis</button>
           <button onclick="openDecisionModal && openDecisionModal()" class="btn" style="font-size:12px;padding:7px 14px;color:#00c8ff;border-color:rgba(0,200,255,.3)">Guardar decisión</button>
         </div>
       </div>
@@ -3713,7 +3713,7 @@ function renderJournalModule() {
       <div style="font-size:13px;color:#c8d8f0;line-height:1.6">${esc(aj.alfredoNote)}</div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         ${["resumen de mi día","cómo me he sentido","resume mi diario"].map(q =>
-          `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+          `<button onclick="setJarvisQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#3b9dff;border-color:rgba(59,157,255,.25)">${q}</button>`
         ).join("")}
       </div>
     </div>
@@ -3843,7 +3843,7 @@ function renderStockResearch() {
   const watchChips = ["AAPL","NVDA","MSFT","META","GOOGL","PLTR","XRP","BTC","AMZN","TSLA"];
   return `<div class="panel" style="max-width:1280px;margin:0 auto 12px;padding:20px 24px;border:1px solid rgba(59,157,255,.14)">
     <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Stock Research · Análisis de tickers</div>
-    <div style="font-size:13px;color:#9fb3c8;margin-bottom:14px">Investiga cualquier ticker — perfil, señales Quiver, noticias y tesis educativa. Powered by Alfredo AI.</div>
+    <div style="font-size:13px;color:#9fb3c8;margin-bottom:14px">Investiga cualquier ticker — perfil, señales Quiver, noticias y tesis educativa. Powered by Jarvis.</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       <input id="research-ticker" type="text" placeholder="Ej: AAPL, NVDA, META…" autocomplete="off" autocapitalize="characters"
         style="flex:1;min-width:160px;border:1px solid rgba(59,157,255,.3);border-radius:12px;padding:11px 16px;color:#fff;background:rgba(59,157,255,.05);font-size:15px;font-family:inherit"
@@ -3866,7 +3866,7 @@ function render() {
   const botEq = botValue(), botPnl = botEq - bot.initialCapital;
   const grouped = {};
   for (const a of assets) { const key = `${a.source} · ${a.category}`; grouped[key] = grouped[key] || []; grouped[key].push(a); }
-  const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Alfredo AI:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
+  const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Jarvis:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
   const botTables = renderBotTables();
   const topTV = TV_SYMBOL[best.symbol] || "NASDAQ:MSFT";
 
@@ -3959,20 +3959,47 @@ table{width:100%;border-collapse:collapse}th,td{padding:12px;border-bottom:1px s
 th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overflow:auto}
 .quiver-box{max-width:1280px;margin:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
 .quiver-item{border:1px solid rgba(120,160,210,.1);background:rgba(255,255,255,.04);padding:16px;border-radius:18px}
-.float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
 .mod{display:none}.mod.active-mod{display:block}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
-#alfredo-panel{position:fixed;right:20px;bottom:96px;width:min(400px,calc(100vw - 40px));z-index:99;max-height:72vh;overflow-y:auto;border-radius:24px;display:none}
-.brain-float{position:fixed;right:20px;bottom:20px;width:72px;height:72px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:radial-gradient(circle,rgba(0,255,153,.12),rgba(59,157,255,.06));border:1px solid rgba(0,255,153,.3);box-shadow:0 0 28px rgba(0,255,153,.35),0 0 56px rgba(0,255,153,.12);z-index:30;cursor:pointer;animation:brainpulse 3.2s ease-in-out infinite;backdrop-filter:blur(14px)}
-.brain-float:hover{box-shadow:0 0 48px rgba(0,255,153,.55),0 0 80px rgba(59,157,255,.25);border-color:rgba(0,255,153,.6)}
-.brain-float-label{font-size:7px;font-weight:900;letter-spacing:.14em;color:rgba(0,255,153,.75);text-transform:uppercase;line-height:1}
-.brain-ring-o{transform-origin:19px 19px;animation:bspin 8s linear infinite}
-.brain-ring-m{transform-origin:19px 19px;animation:bspin 5s linear infinite reverse}
-@keyframes brainpulse{0%,100%{box-shadow:0 0 28px rgba(0,255,153,.35),0 0 56px rgba(0,255,153,.12)}50%{box-shadow:0 0 48px rgba(0,255,153,.55),0 0 80px rgba(0,255,153,.2)}}
-@keyframes bspin{to{transform:rotate(360deg)}}
+/* ── Jarvis OS panel ── */
+#jarvis-panel{position:fixed;top:0;right:0;width:min(460px,100vw);height:100vh;z-index:500;background:rgba(2,4,10,.97);border-left:1px solid rgba(59,157,255,.18);backdrop-filter:blur(32px);transform:translateX(100%);transition:transform .38s cubic-bezier(.22,.84,.44,.96);overflow-y:auto;display:flex;flex-direction:column}
+#jarvis-panel.jv-open{transform:translateX(0)}
+#jv-overlay{position:fixed;inset:0;z-index:499;background:rgba(2,4,10,.4);backdrop-filter:blur(3px);display:none;cursor:pointer}
+#jv-overlay.jv-open{display:block}
+.jv-btn{display:flex;align-items:center;gap:7px;background:transparent;border:1px solid rgba(59,157,255,.22);border-radius:14px;padding:8px 14px;cursor:pointer;color:#9fb3c8;font-family:inherit;font-size:12px;font-weight:700;letter-spacing:.06em;transition:.2s;white-space:nowrap}
+.jv-btn:hover{background:rgba(59,157,255,.08);border-color:rgba(59,157,255,.45);color:#3b9dff}
+.jv-btn.jv-active{background:rgba(0,255,153,.07);border-color:rgba(0,255,153,.4);color:#00ff99;box-shadow:0 0 14px rgba(0,255,153,.12)}
+.jv-head{padding:20px 22px 14px;border-bottom:1px solid rgba(120,160,210,.1);display:flex;align-items:flex-start;justify-content:space-between;flex-shrink:0;background:rgba(0,0,0,.15)}
+.jv-head-label{font-size:7px;font-weight:900;letter-spacing:.24em;text-transform:uppercase;color:#2e4258;margin-bottom:5px}
+.jv-mode-badge{font-size:14px;font-weight:900}
+.jv-close{background:transparent;border:none;color:#2e4258;font-size:22px;cursor:pointer;padding:2px 8px;border-radius:8px;line-height:1;transition:.15s;font-family:inherit}
+.jv-close:hover{color:#eaf6ff;background:rgba(255,255,255,.06)}
+.jv-thought-wrap{padding:14px 22px 12px;border-bottom:1px solid rgba(120,160,210,.07);flex-shrink:0}
+.jv-thought-tag{display:inline-block;font-size:7px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#00ff99;border:1px solid rgba(0,255,153,.2);border-radius:6px;padding:2px 7px;margin-bottom:7px;background:rgba(0,255,153,.04)}
+.jv-thought-text{font-size:13px;color:#c8d8f0;line-height:1.7;min-height:42px;transition:opacity .35s}
+.jv-section{padding:12px 22px;border-bottom:1px solid rgba(120,160,210,.06)}
+.jv-section-hd{font-size:7px;font-weight:900;letter-spacing:.2em;text-transform:uppercase;color:#2e3f52;margin-bottom:9px}
+.jv-row{display:flex;align-items:center;justify-content:space-between;padding:2px 0}
+.jv-key{font-size:12px;color:#445f74}
+.jv-val{font-size:13px;font-weight:700;color:#c0d4ea;text-align:right}
+/* ── Neural node animations ── */
+.jv-n0{transform-box:fill-box;transform-origin:center;animation:jv-core-p 2.4s ease-in-out infinite}
+.jv-n1{animation:jv-np 3s .0s ease-in-out infinite}
+.jv-n2{animation:jv-np 3s .4s ease-in-out infinite}
+.jv-n3{animation:jv-np 3s .8s ease-in-out infinite}
+.jv-n4{animation:jv-np 3s 1.2s ease-in-out infinite}
+.jv-n5{animation:jv-np 3s 1.6s ease-in-out infinite}
+.jv-cn0{animation:jv-conn-p 2.8s .0s ease-in-out infinite}
+.jv-cn1{animation:jv-conn-p 2.8s .4s ease-in-out infinite}
+.jv-cn2{animation:jv-conn-p 2.8s .8s ease-in-out infinite}
+.jv-cn3{animation:jv-conn-p 2.8s 1.2s ease-in-out infinite}
+.jv-cn4{animation:jv-conn-p 2.8s 1.6s ease-in-out infinite}
+@keyframes jv-np{0%,100%{opacity:.15}50%{opacity:.85}}
+@keyframes jv-core-p{0%,100%{opacity:.85;transform:scale(1)}50%{opacity:1;transform:scale(1.35)}}
+@keyframes jv-conn-p{0%{opacity:.06}50%{opacity:.5}100%{opacity:.06}}
 .range-btn{border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--muted);border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;transition:.18s;font-family:inherit}
 .range-btn:hover,.range-btn.rb-active{background:rgba(59,157,255,.16);border-color:rgba(59,157,255,.5);color:#3b9dff}
 .news-item{max-width:1280px;margin:8px auto;border:1px solid rgba(120,160,210,.1);border-radius:18px;background:var(--panel);backdrop-filter:blur(16px);overflow:hidden}
@@ -3986,60 +4013,114 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
 ${(function(){
   const hb = computeHealthReadiness();
-  const brainColor = hb.operatingMode === "ÓPTIMO" ? "#00ff99"
-    : hb.operatingMode === "DEFENSIVO" ? "#ff4d6d"
-    : hb.operatingMode === "NEUTRAL"   ? "#ffd35c"
-    : "#3b9dff";
-  const brainGlow = hb.operatingMode === "DEFENSIVO" ? "rgba(255,77,109,.55)" : hb.operatingMode === "ÓPTIMO" ? "rgba(0,255,153,.55)" : "rgba(59,157,255,.45)";
-  const reg = marketRegime ? marketRegime() : { label: "—" };
-  const modeShort = hb.operatingMode === "ÓPTIMO" ? "OPT" : hb.operatingMode === "DEFENSIVO" ? "DEF" : hb.operatingMode === "NEUTRAL" ? "NEU" : "ON";
-  return `<button id="brain-float-btn" class="brain-float" onclick="toggleAlfredo()" title="Alfredo AI · Cordelius · ${esc(hb.operatingMode)}" style="border-color:${brainColor}55;box-shadow:0 0 28px ${brainGlow},0 0 56px ${brainGlow}40">
-  <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-    <circle cx="20" cy="20" r="18" stroke="${brainColor}45" stroke-width="1" stroke-dasharray="5 3" class="brain-ring-o"/>
-    <circle cx="20" cy="20" r="12" stroke="rgba(59,157,255,.55)" stroke-width="1.2" stroke-dasharray="3 4" class="brain-ring-m"/>
-    <circle cx="20" cy="20" r="7" fill="${brainColor}20" stroke="${brainColor}" stroke-width="1.4"/>
-    <circle cx="20" cy="20" r="2.8" fill="${brainColor}"/>
-    <line x1="20" y1="1" x2="20" y2="8" stroke="${brainColor}66" stroke-width="1.2" stroke-linecap="round"/>
-    <line x1="20" y1="32" x2="20" y2="39" stroke="${brainColor}66" stroke-width="1.2" stroke-linecap="round"/>
-    <line x1="1" y1="20" x2="8" y2="20" stroke="rgba(59,157,255,.55)" stroke-width="1.2" stroke-linecap="round"/>
-    <line x1="32" y1="20" x2="39" y2="20" stroke="rgba(59,157,255,.55)" stroke-width="1.2" stroke-linecap="round"/>
-    <circle cx="8" cy="8" r="2" fill="${brainColor}55"/>
-    <circle cx="32" cy="8" r="2" fill="${brainColor}55"/>
-    <circle cx="8" cy="32" r="2" fill="rgba(59,157,255,.4)"/>
-    <circle cx="32" cy="32" r="2" fill="rgba(59,157,255,.4)"/>
-    <line x1="8" y1="8" x2="20" y2="20" stroke="${brainColor}25" stroke-width=".8"/>
-    <line x1="32" y1="8" x2="20" y2="20" stroke="${brainColor}25" stroke-width=".8"/>
-  </svg>
-  <div class="brain-float-label" style="color:${brainColor}cc">${esc(modeShort)}</div>
-</button>`;
-})()}
-<div id="alfredo-panel" class="panel">
-  <div style="padding:16px 20px 20px">
-    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">Alfredo AI · Educativo</div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-      ${["Qué vigilar hoy","Morning report","Modo operativo","Resumen de mi día","Qué módulo revisar","Resume mi diario"].map(q =>
-        `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
+  const bc = hb.operatingMode === "ÓPTIMO" ? "#00ff99" : hb.operatingMode === "DEFENSIVO" ? "#ff4d6d" : hb.operatingMode === "NEUTRAL" ? "#ffd35c" : "#3b9dff";
+  const modeColor = bc;
+  return `
+<div id="jv-overlay" onclick="toggleJarvis()"></div>
+<div id="jarvis-panel">
+  <div class="jv-head">
+    <div>
+      <div class="jv-head-label">JARVIS &middot; CORDELIUS OS</div>
+      <div id="jv-mode-badge" class="jv-mode-badge" style="color:${modeColor}">${esc(hb.operatingMode || "CARGANDO")}</div>
+    </div>
+    <button class="jv-close" onclick="toggleJarvis()">&#x2715;</button>
+  </div>
+
+  <div class="jv-thought-wrap">
+    <div class="jv-thought-tag">JARVIS</div>
+    <div id="jv-thought" class="jv-thought-text">Analizando sistema&hellip;</div>
+  </div>
+
+  <div class="jv-section">
+    <div class="jv-section-hd">Health &middot; WHOOP</div>
+    <div class="jv-row"><span class="jv-key">Recovery</span><b id="jv-h-recovery" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Sleep</span><b id="jv-h-sleep" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">HRV</span><b id="jv-h-hrv" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Strain</span><b id="jv-h-strain" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Modo operativo</span><b id="jv-h-mode" class="jv-val" style="color:${modeColor}">${esc(hb.operatingMode || "—")}</b></div>
+  </div>
+
+  <div class="jv-section">
+    <div class="jv-section-hd">Trading &middot; Portafolio</div>
+    <div class="jv-row"><span class="jv-key">Valor total</span><b id="jv-t-value" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">PnL</span><b id="jv-t-pnl" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Mayor ganador</span><b id="jv-t-winner" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Mayor riesgo</span><b id="jv-t-loser" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Concentraci&oacute;n</span><b id="jv-t-risk" class="jv-val">—</b></div>
+  </div>
+
+  <div class="jv-section">
+    <div class="jv-section-hd">Intelligence &middot; Radar</div>
+    <div class="jv-row"><span class="jv-key">Noticias activas</span><b id="jv-i-count" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Balance de se&ntilde;ales</span><b id="jv-i-topics" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Riesgos detectados</span><b id="jv-i-risks" class="jv-val">—</b></div>
+  </div>
+
+  <div class="jv-section">
+    <div class="jv-section-hd">Autopilot &middot; Memoria</div>
+    <div class="jv-row"><span class="jv-key">XP total</span><b id="jv-a-xp" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Nivel</span><b id="jv-a-level" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">Decisiones</span><b id="jv-a-decisions" class="jv-val">—</b></div>
+    <div class="jv-row"><span class="jv-key">&Uacute;ltima acci&oacute;n</span><b id="jv-a-last" class="jv-val">—</b></div>
+  </div>
+
+  <div class="jv-section" style="flex:1;border-bottom:none;padding-bottom:24px">
+    <div class="jv-section-hd" style="margin-bottom:10px">Chat &middot; Consultar</div>
+    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">
+      ${["Qué vigilar hoy","Morning report","Modo operativo","Analiza mi portafolio","Resumen de hoy"].map(q =>
+        `<button onclick="setJarvisQ('${q}')" class="btn" style="font-size:11px;padding:5px 10px;border-color:rgba(59,157,255,.2)">${esc(q)}</button>`
       ).join("")}
     </div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
-    <div style="max-height:300px;overflow-y:auto;margin-top:12px">
-      ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
+    <form class="chatbox" method="POST" action="/ask">
+      <input name="q" id="jv-chat-input" placeholder="Consulta a Jarvis&hellip;" autocomplete="off">
+      <button class="btn" type="submit">Enviar</button>
+    </form>
+    <div style="max-height:240px;overflow-y:auto;margin-top:12px">
+      ${chatHtml || '<div class="msg muted">Sin historial todav&iacute;a.</div>'}
     </div>
   </div>
-</div>
+</div>`;
+})()}
 
 <header>
   <div class="logo-wrap">
     <div class="app-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><polygon points="22,4 40,34 4,34" stroke="rgba(255,255,255,.9)" stroke-width="2.2" fill="none"/><line x1="22" y1="4" x2="22" y2="34" stroke="rgba(255,255,255,.6)" stroke-width="1.2"/><circle cx="22" cy="22" r="4" fill="rgba(255,255,255,.95)"/></svg></div>
     <div><h1 id="brand-title">Cordelius</h1><div id="module-subtitle" class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
   </div>
-  <nav style="display:flex;flex-wrap:wrap;gap:6px">
+  <nav style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
     <button data-mod="home" class="nav-mod" onclick="showMod('home')">Inicio</button>
     <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">◈ Trading</button>
     <button data-mod="health" class="nav-mod" onclick="showMod('health')">◉ Health</button>
     <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">◎ Journal</button>
     <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">◆ Intelligence</button>
     <button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">◇ Autopilot</button>
+    <span style="width:1px;height:22px;background:rgba(120,160,210,.14);display:inline-block;margin:0 2px"></span>
+    ${(function(){
+      const hb = computeHealthReadiness();
+      const bc = hb.operatingMode === "ÓPTIMO" ? "#00ff99" : hb.operatingMode === "DEFENSIVO" ? "#ff4d6d" : hb.operatingMode === "NEUTRAL" ? "#ffd35c" : "#3b9dff";
+      return `<button id="jv-btn" class="jv-btn" onclick="toggleJarvis()" title="Jarvis &middot; Cordelius OS &middot; ${esc(hb.operatingMode)}" style="border-color:${bc}35;color:${bc}bb">
+  <svg width="36" height="28" viewBox="0 0 44 34" fill="none">
+    <line x1="22" y1="17" x2="22" y2="3" stroke="${bc}" stroke-width="1.2" class="jv-cn0"/>
+    <line x1="22" y1="17" x2="40" y2="17" stroke="${bc}" stroke-width="1.2" class="jv-cn1"/>
+    <line x1="22" y1="17" x2="35" y2="29" stroke="${bc}" stroke-width="1.2" class="jv-cn2"/>
+    <line x1="22" y1="17" x2="9" y2="29" stroke="${bc}" stroke-width="1.2" class="jv-cn3"/>
+    <line x1="22" y1="17" x2="4" y2="17" stroke="${bc}" stroke-width="1.2" class="jv-cn4"/>
+    <line x1="22" y1="3" x2="40" y2="17" stroke="rgba(59,157,255,.28)" stroke-width=".7"/>
+    <line x1="40" y1="17" x2="35" y2="29" stroke="rgba(59,157,255,.28)" stroke-width=".7"/>
+    <line x1="35" y1="29" x2="9" y2="29" stroke="rgba(59,157,255,.28)" stroke-width=".7"/>
+    <line x1="9" y1="29" x2="4" y2="17" stroke="rgba(59,157,255,.28)" stroke-width=".7"/>
+    <line x1="4" y1="17" x2="22" y2="3" stroke="rgba(59,157,255,.28)" stroke-width=".7"/>
+    <circle cx="22" cy="3" r="2.2" fill="${bc}" class="jv-n1"/>
+    <circle cx="40" cy="17" r="2.2" fill="${bc}" class="jv-n2"/>
+    <circle cx="35" cy="29" r="2.2" fill="${bc}" class="jv-n3"/>
+    <circle cx="9" cy="29" r="2.2" fill="${bc}" class="jv-n4"/>
+    <circle cx="4" cy="17" r="2.2" fill="${bc}" class="jv-n5"/>
+    <circle cx="22" cy="17" r="5.5" fill="${bc}" opacity=".1"/>
+    <circle cx="22" cy="17" r="3.5" fill="${bc}" class="jv-n0"/>
+  </svg>
+  <span style="font-size:11px;font-weight:900;letter-spacing:.04em">Jarvis</span>
+</button>`;
+    })()}
   </nav>
 </header>
 
@@ -4090,28 +4171,6 @@ ${renderHomePortal(pv, reg)}
 </div>
 
 <a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
-
-<a id="alfredo"></a><h2>Alfredo AI — asistente educativo</h2>
-<div class="panel" style="padding:0"><details class="chat-details">
-  <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:rgba(59,157,255,.07);border-radius:24px;user-select:none">
-    <span style="display:flex;align-items:center;gap:12px">
-      <span style="width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,#3b9dff,#00ff99);display:grid;place-items:center;font-size:18px;font-weight:900">AI</span>
-      <span><b>Alfredo AI</b> <span class="muted" style="font-size:13px">· preguntas sobre tu portafolio · educativo</span></span>
-    </span>
-    <span class="btn" style="font-size:13px;padding:6px 14px">Abrir chat ▾</span>
-  </summary>
-  <div style="padding:16px 20px 20px">
-    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-      ${["Qué vigilar hoy","Morning report con salud","Modo operativo hoy","Analiza mi portafolio","Stocks externos calientes","Congreso e insiders"].map(q =>
-        `<button onclick="document.querySelector('[name=q]').value='${q}'" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
-      ).join("")}
-    </div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Alfredo..." autocomplete="off"><button class="btn">Preguntar</button></form>
-    <div style="max-height:480px;overflow-y:auto;margin-top:12px">
-      ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
-    </div>
-  </div>
-</details></div>
 
 <a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
 ${(function(){
@@ -4414,7 +4473,7 @@ ${renderAutopilotPanel()}
 
 </body>
 <script>
-var _VALID_MODS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
+var _VALID_MODS = ['home','trading','health','journal','intelligence','autopilot'];
 
 function validModName(name) {
   var n = String(name || 'home').split('?')[0].replace('#','').toLowerCase().trim();
@@ -4428,7 +4487,6 @@ function getCordeliusModuleTitle(mod) {
     health: "Cordelius Health",
     journal: "Cordelius Journal",
     intelligence: "Cordelius Intelligence",
-    alfredo: "Cordelius Alfredo",
     autopilot: "Cordelius Autopilot"
   };
   return titles[mod] || "Cordelius";
@@ -4468,7 +4526,6 @@ function showMod(name) {
   if (n === 'health' && typeof loadHealthOS === 'function') loadHealthOS();
   if (n === 'journal' && typeof loadJournal === 'function') loadJournal();
   if (n === 'intelligence' && typeof loadIntelligence === 'function') loadIntelligence();
-  if (n === 'alfredo' && typeof loadAlfredo === 'function') loadAlfredo();
   if (n === 'autopilot' && typeof loadAutopilotDecisions === 'function') loadAutopilotDecisions();
 }
 }
@@ -4559,15 +4616,192 @@ async function loadHealthOS() {
   }
 }
 
-function toggleAlfredo() {
-  var p = document.getElementById('alfredo-panel');
-  if (p) p.style.display = (p.style.display === 'none' || p.style.display === '') ? 'block' : 'none';
+// ── Jarvis OS ──────────────────────────────────────────────────────────────
+
+window.jarvis = {
+  _data: { health: {}, trading: {}, intel: {}, autopilot: {} },
+  _open: false,
+  _thoughtTimer: null,
+  toggle: function() { toggleJarvis(); },
+  open:   function() { if (!this._open) toggleJarvis(); },
+  close:  function() { if (this._open) toggleJarvis(); },
+  read:   function(mod) { return this._data[mod] || {}; },
+  ask:    function(q) { setJarvisQ(q); this.open(); },
+  refresh: function() { return loadJarvisData(); }
+};
+
+function toggleJarvis() {
+  var panel   = document.getElementById('jarvis-panel');
+  var overlay = document.getElementById('jv-overlay');
+  var btn     = document.getElementById('jv-btn');
+  if (!panel) return;
+  var isOpen = panel.classList.contains('jv-open');
+  if (isOpen) {
+    panel.classList.remove('jv-open');
+    if (overlay) overlay.classList.remove('jv-open');
+    if (btn) btn.classList.remove('jv-active');
+    if (window.jarvis) {
+      window.jarvis._open = false;
+      if (window.jarvis._thoughtTimer) { clearInterval(window.jarvis._thoughtTimer); window.jarvis._thoughtTimer = null; }
+    }
+  } else {
+    panel.classList.add('jv-open');
+    if (overlay) overlay.classList.add('jv-open');
+    if (btn) btn.classList.add('jv-active');
+    if (window.jarvis) window.jarvis._open = true;
+    loadJarvisData();
+    if (window.jarvis) {
+      if (window.jarvis._thoughtTimer) clearInterval(window.jarvis._thoughtTimer);
+      window.jarvis._thoughtTimer = setInterval(function() {
+        if (window.jarvis._data && Object.keys(window.jarvis._data.health).length > 0) {
+          jarvisUpdateThought(window.jarvis._data);
+        }
+      }, 9000);
+    }
+  }
 }
-function setAlfredoQ(q) {
-  var inp = document.querySelector('#alfredo-panel [name=q]');
-  if (inp) { inp.value = q; }
-  var p = document.getElementById('alfredo-panel');
-  if (p) p.style.display = 'block';
+
+function setJarvisQ(q) {
+  var inp = document.getElementById('jv-chat-input');
+  if (!inp) inp = document.querySelector('#jarvis-panel [name=q]');
+  if (inp) inp.value = q;
+  if (window.jarvis) window.jarvis.open();
+}
+
+// backward-compat aliases (other code may still call these)
+function setAlfredoQ(q) { setJarvisQ(q); }
+function toggleAlfredo() { toggleJarvis(); }
+
+async function loadJarvisData() {
+  try {
+    var results = await Promise.allSettled([
+      fetch('/api/whoop/today',          { cache: 'no-store' }).then(function(r){ return r.ok ? r.json() : {}; }),
+      fetch('/api/portfolio',            { cache: 'no-store' }).then(function(r){ return r.ok ? r.json() : {}; }),
+      fetch('/api/intel',                { cache: 'no-store' }).then(function(r){ return r.ok ? r.json() : {}; }),
+      fetch('/api/autopilot/decisions',  { cache: 'no-store' }).then(function(r){ return r.ok ? r.json() : {}; })
+    ]);
+    var health  = results[0].status === 'fulfilled' ? results[0].value : {};
+    var trading = results[1].status === 'fulfilled' ? results[1].value : {};
+    var intel   = results[2].status === 'fulfilled' ? results[2].value : {};
+    var ap      = results[3].status === 'fulfilled' ? results[3].value : {};
+    if (window.jarvis) window.jarvis._data = { health: health, trading: trading, intel: intel, autopilot: ap };
+
+    function jvset(id, val) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = (val == null || val === '') ? '—' : String(val);
+    }
+    function jvcolor(id, text, col) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = text == null ? '—' : String(text);
+      if (col) el.style.color = col;
+    }
+
+    // — Health —
+    var rec  = health.recovery;
+    var slp  = health.sleep;
+    var hrv  = health.hrv;
+    var str  = health.strain;
+    var mode = health.mode || health.operatingMode || '—';
+    jvcolor('jv-h-recovery', rec  != null ? rec + '%'                   : null, rec  != null ? (rec >= 70 ? '#00ff99' : rec < 50 ? '#ff4d6d' : '#ffd35c') : null);
+    jvcolor('jv-h-sleep',    slp  != null ? slp + '%'                   : null, slp  != null ? (slp >= 70 ? '#00ff99' : slp < 50 ? '#ff4d6d' : '#ffd35c') : null);
+    jvset('jv-h-hrv',    hrv  != null ? Number(hrv).toFixed(1) + ' ms' : null);
+    jvset('jv-h-strain', str  != null ? Number(str).toFixed(1)          : null);
+    var modeColor = mode === 'ÓPTIMO' ? '#00ff99' : mode === 'DEFENSIVO' ? '#ff4d6d' : mode === 'NEUTRAL' ? '#ffd35c' : '#9fb3c8';
+    jvcolor('jv-h-mode', mode, modeColor);
+    var badge = document.getElementById('jv-mode-badge');
+    if (badge) { badge.textContent = mode; badge.style.color = modeColor; }
+    var jvBtn = document.getElementById('jv-btn');
+    if (jvBtn) { jvBtn.style.borderColor = modeColor + '40'; jvBtn.style.color = modeColor + 'cc'; }
+
+    // — Trading —
+    var assets   = trading.assets || [];
+    var totalMXN = trading.totalMXN || trading.totalValueMXN;
+    var gainPct  = trading.gainPct  || trading.totalGainPct;
+    jvset('jv-t-value', totalMXN != null ? '$' + Number(totalMXN).toLocaleString('es-MX', { maximumFractionDigits: 0 }) : null);
+    if (gainPct != null) {
+      jvcolor('jv-t-pnl', (gainPct >= 0 ? '+' : '') + Number(gainPct).toFixed(2) + '%', gainPct >= 0 ? '#00ff99' : '#ff4d6d');
+    }
+    if (assets.length > 0) {
+      var sorted = assets.slice().sort(function(a, b){ return (b.gainPct || b.pctChange || 0) - (a.gainPct || a.pctChange || 0); });
+      var winner = sorted[0]; var loser = sorted[sorted.length - 1];
+      if (winner) jvcolor('jv-t-winner', winner.symbol + ' +' + Number(winner.gainPct || winner.pctChange || 0).toFixed(1) + '%', '#00ff99');
+      if (loser)  jvcolor('jv-t-loser',  loser.symbol + ' ' + (Number(loser.gainPct || loser.pctChange || 0) >= 0 ? '+' : '') + Number(loser.gainPct || loser.pctChange || 0).toFixed(1) + '%', (loser.gainPct || 0) < 0 ? '#ff4d6d' : '#ffd35c');
+      var total    = totalMXN || 1;
+      var cryptoV  = assets.filter(function(a){ return a.type === 'crypto'; }).reduce(function(s, a){ return s + (a.valueMXN || 0); }, 0);
+      var cryptoPct = (cryptoV / total * 100);
+      jvcolor('jv-t-risk',
+        cryptoPct > 40 ? 'Cripto ' + cryptoPct.toFixed(0) + '% — ALTO' : cryptoPct > 25 ? 'Cripto ' + cryptoPct.toFixed(0) + '% — MEDIO' : 'Diversificado',
+        cryptoPct > 40 ? '#ff4d6d' : cryptoPct > 25 ? '#ffd35c' : '#00ff99');
+    }
+
+    // — Intelligence —
+    var isum = intel.summary || {};
+    jvset('jv-i-count', intel.count != null ? intel.count + ' artículos' : null);
+    var moods = [];
+    if (isum.positivo > 0) moods.push(isum.positivo + ' pos');
+    if (isum.negativo > 0) moods.push(isum.negativo + ' neg');
+    if (isum.neutral  > 0) moods.push(isum.neutral  + ' neu');
+    jvset('jv-i-topics', moods.length ? moods.join(' · ') : (intel.count > 0 ? 'Sin clasificar' : 'Sin noticias'));
+    jvcolor('jv-i-risks', isum.negativo > 0 ? isum.negativo + ' señales negativas' : 'Sin riesgos detectados', isum.negativo > 0 ? '#ff4d6d' : '#00ff99');
+
+    // — Autopilot —
+    var apL = ap.learning || {};
+    var xp  = apL.totalXP != null ? apL.totalXP : (ap.count || 0) * 5;
+    jvset('jv-a-xp',        xp + ' XP');
+    jvset('jv-a-level',     'Nivel ' + (Math.floor(xp / 50) + 1));
+    jvset('jv-a-decisions', ap.count != null ? ap.count + ' decisiones' : null);
+    var latest = (ap.latest || [])[0];
+    jvset('jv-a-last', latest ? (latest.action + ' · ' + (latest.symbol || '—')) : 'Sin decisiones');
+
+    jarvisUpdateThought({ health: health, trading: trading, intel: intel, autopilot: ap });
+  } catch(e) {
+    console.warn('loadJarvisData error', e);
+  }
+}
+
+function jarvisUpdateThought(data) {
+  var thoughts = [];
+  var h  = data.health   || {};
+  var t  = data.trading  || {};
+  var i  = data.intel    || {};
+  var ap = data.autopilot || {};
+  var rec  = Number(h.recovery || 0);
+  var slp  = Number(h.sleep    || 0);
+  var mode = h.mode || h.operatingMode || '';
+  var assets = t.assets || [];
+  var gainPct = t.gainPct || t.totalGainPct;
+
+  if (rec > 0 && rec < 50)  thoughts.push('Recuperación baja (' + rec + '%). Considera reducir exposición a riesgo hoy.');
+  if (rec >= 80)             thoughts.push('Recuperación óptima (' + rec + '%). Sistema en capacidad máxima de análisis.');
+  if (slp > 0 && slp < 60)  thoughts.push('Calidad de sueño reducida (' + slp + '%). La toma de decisiones puede verse afectada.');
+  if (mode === 'ÓPTIMO')    thoughts.push('Modo ÓPTIMO activo. Condiciones ideales para análisis profundo.');
+  if (mode === 'DEFENSIVO') thoughts.push('Modo DEFENSIVO. Sistema recomienda cautela en todas las operaciones.');
+
+  if (assets.length > 0) {
+    var sorted = assets.slice().sort(function(a, b){ return (b.gainPct || 0) - (a.gainPct || 0); });
+    if (sorted[0] && sorted[0].symbol) thoughts.push(sorted[0].symbol + ' está mostrando el mejor desempeño relativo en portafolio.');
+    var total    = t.totalMXN || t.totalValueMXN || 1;
+    var cryptoPct = assets.filter(function(a){ return a.type === 'crypto'; }).reduce(function(s, a){ return s + (a.valueMXN || 0); }, 0) / total * 100;
+    if (cryptoPct > 40) thoughts.push('Concentración en cripto al ' + cryptoPct.toFixed(0) + '%. Riesgo elevado de volatilidad.');
+  }
+  if (gainPct != null && gainPct > 20) thoughts.push('Portafolio con ganancia del ' + Number(gainPct).toFixed(1) + '%. Posición sólida.');
+  if (gainPct != null && gainPct < -5) thoughts.push('Portafolio en zona negativa (' + Number(gainPct).toFixed(1) + '%). Revisar exposición.');
+
+  var neg = (i.summary || {}).negativo || 0;
+  if (neg >= 3) thoughts.push(neg + ' señales negativas en Intelligence. Revisar radar de noticias.');
+
+  if (!(ap.latest && ap.latest.length)) thoughts.push('Autopilot sin decisiones registradas. Documenta tu proceso de trading.');
+
+  if (!thoughts.length) thoughts.push('Sistema operativo. Sin alertas activas. Monitoreo continuo en curso.');
+
+  var el = document.getElementById('jv-thought');
+  if (!el) return;
+  el.style.opacity = '0';
+  setTimeout(function() {
+    el.textContent = thoughts[Math.floor(Math.random() * thoughts.length)];
+    el.style.opacity = '1';
+  }, 200);
 }
 // ---- Portfolio chart range selector ----
 function redrawPortChart(days) {
