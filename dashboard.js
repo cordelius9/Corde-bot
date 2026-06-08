@@ -2447,7 +2447,8 @@ const DECISION_OUTCOMES_FILE  = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "decisio
 const DAILY_LEARNING_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "daily_learning.json");
 const MARKET_DAILY_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_daily_snapshots.json");
 const USER_CHECKINS_FILE      = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "user_daily_checkins.json");
-const CORDELIUS_PATTERNS_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_patterns.json");
+const CORDELIUS_PATTERNS_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_patterns.json");
+const DAILY_INTELLIGENCE_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "daily_intelligence_summary.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -2671,6 +2672,85 @@ function computeCordeliusPatterns() {
   };
   writeJSONAtomic(CORDELIUS_PATTERNS_FILE, patterns);
   return patterns;
+}
+
+// ── Daily Intelligence Summary ─────────────────────────────────────────────────
+// Generates and persists a flat compressed summary per day for Jarvis memory.
+function generateDailyIntelligenceSummary(snap) {
+  try {
+    const dateKey = (snap && snap.date) ? snap.date : todayDateKey();
+    const w = (snap && snap.whoop)    || {};
+    const l = (snap && snap.learning) || {};
+    const m = (snap && snap.market)   || {};
+
+    const entry = {
+      date:              dateKey,
+      ts:                Date.now(),
+      recovery:          w.recovery         != null ? w.recovery         : null,
+      sleep:             w.sleep            != null ? w.sleep            : null,
+      hrv:               w.hrv              != null ? w.hrv              : null,
+      operatingMode:     w.operatingMode    || "NORMAL",
+      tradingCapacity:   l.tradingCapacity  || "MEDIA",
+      riskMode:          l.riskRecommendation || "NORMAL",
+      marketRegime:      m.riskMode         || "NORMAL",
+      portfolioMXN:      m.portfolioMXN     != null ? m.portfolioMXN  : null,
+      gainPct:           m.gainPct          != null ? m.gainPct        : null,
+      cryptoExposurePct: m.cryptoExposurePct != null ? m.cryptoExposurePct : null,
+      topWinner:         m.topWinner        || null,
+      topLoser:          m.topLoser         || null,
+      summary: [
+        "DATE: "             + dateKey,
+        "RECOVERY: "         + (w.recovery         != null ? w.recovery         : "—"),
+        "TRADING CAPACITY: " + (l.tradingCapacity   || "—"),
+        "MARKET REGIME: "    + (m.riskMode          || "—"),
+        "TOP WINNER: "       + (m.topWinner         || "—"),
+        "TOP LOSER: "        + (m.topLoser          || "—"),
+        "RISK MODE: "        + (l.riskRecommendation || "—")
+      ].join("\n")
+    };
+
+    const summaries = readJSONSafe(DAILY_INTELLIGENCE_FILE, []);
+    const idx = Array.isArray(summaries) ? summaries.findIndex(s => s && s.date === dateKey) : -1;
+    if (idx >= 0) {
+      summaries[idx] = entry;
+    } else {
+      summaries.unshift(entry);
+      while (summaries.length > 365) summaries.pop();
+    }
+    writeJSONAtomic(DAILY_INTELLIGENCE_FILE, summaries);
+    return entry;
+  } catch(e) {
+    console.log("[DailyIntel] generateDailyIntelligenceSummary error:", e.message);
+    return null;
+  }
+}
+
+// ── Autonomous Daily Snapshot Engine ───────────────────────────────────────────
+// Runs every minute. If the date changed since the last auto-snapshot, generates
+// a fresh snapshot, updates the intelligence summary, and re-runs the pattern engine.
+let _lastAutoSnapshotDate = null;
+
+function runAutoDailySnapshot() {
+  try {
+    const today = todayDateKey();
+    if (_lastAutoSnapshotDate === today) return; // already ran for this calendar day
+    _lastAutoSnapshotDate = today;
+    console.log("[AutoSnapshot] New day detected — generating snapshot for " + today);
+
+    const snap = computeDailyLearningSnapshot();
+    generateDailyIntelligenceSummary(snap);
+
+    try { computeCordeliusPatterns(); } catch(e) {
+      console.log("[AutoSnapshot] patterns error:", e.message);
+    }
+
+    const cap = snap && snap.learning && snap.learning.tradingCapacity ? snap.learning.tradingCapacity : "—";
+    const risk = snap && snap.learning && snap.learning.riskRecommendation ? snap.learning.riskRecommendation : "—";
+    console.log("[AutoSnapshot] Done — capacity: " + cap + " | risk: " + risk);
+  } catch(e) {
+    console.log("[AutoSnapshot] Error:", e.message);
+    _lastAutoSnapshotDate = null; // allow retry next minute
+  }
 }
 
 // ============================================================
@@ -6531,6 +6611,42 @@ if (path === "/api/whoop/today") {
     }
   }
 
+  // ---- Autonomous Daily Intelligence API ----
+  if (path === "/api/intelligence/today" && req.method === "GET") {
+    try {
+      const summaries = readJSONSafe(DAILY_INTELLIGENCE_FILE, []);
+      const today     = todayDateKey();
+      const entry     = (Array.isArray(summaries) ? summaries.find(s => s && s.date === today) : null)
+                        || (Array.isArray(summaries) && summaries.length ? summaries[0] : null);
+      if (!entry) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({
+          ok: true, available: false,
+          date: today,
+          message: "Sin resumen todavía. Se genera automáticamente al primer ciclo del día (≤1 min tras arranque)."
+        }));
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({
+        ok:             true,
+        available:      true,
+        date:           entry.date,
+        recovery:       entry.recovery,
+        tradingCapacity:entry.tradingCapacity,
+        marketRegime:   entry.marketRegime,
+        portfolioValue: entry.portfolioMXN,
+        gainPct:        entry.gainPct,
+        topWinner:      entry.topWinner,
+        topLoser:       entry.topLoser,
+        riskMode:       entry.riskMode,
+        summary:        entry.summary
+      }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
@@ -6614,6 +6730,11 @@ async function boot() {
         ]);
       } catch (e) {}
     }, QUIVER_CACHE_MS);
+
+    // Autonomous daily snapshot — check every minute, fires once per calendar day
+    try { runAutoDailySnapshot(); } catch(e) { console.log("runAutoDailySnapshot boot omitido:", e.message); }
+    setInterval(() => { try { runAutoDailySnapshot(); } catch(e) {} }, 60000);
+
   }, 500);
 }
 boot();
