@@ -1706,6 +1706,8 @@ function renderPortfolioRows(assets) {
           <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
           <button onclick="setJarvisQ('analiza ${a.symbol} en mi portafolio')" class="btn" style="font-size:12px;padding:7px 14px;color:#3b9dff;border-color:rgba(59,157,255,.3)">Consultar Jarvis</button>
           <button onclick="openDecisionModal && openDecisionModal()" class="btn" style="font-size:12px;padding:7px 14px;color:#00c8ff;border-color:rgba(0,200,255,.3)">Guardar decisión</button>
+          <button onclick="openPortfolioEdit('${esc(a.symbol)}')" class="btn" style="font-size:12px;padding:7px 14px;color:#ffd35c;border-color:rgba(255,211,92,.3)">Editar posición</button>
+          <button onclick="removePortfolioAsset('${esc(a.symbol)}')" class="btn" style="font-size:12px;padding:7px 14px;color:#ff4d6d;border-color:rgba(255,77,109,.3)">Eliminar</button>
         </div>
       </div>
     </details>`;
@@ -2453,6 +2455,7 @@ const USER_CHECKINS_FILE      = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "user_da
 const CORDELIUS_PATTERNS_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_patterns.json");
 const DAILY_INTELLIGENCE_FILE     = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "daily_intelligence_summary.json");
 const CORDELIUS_ALERTS_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_alerts.json");
+const PORTFOLIO_STORE_FILE        = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_portfolio.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -2493,6 +2496,73 @@ function appendSnapshot(arr, item, maxLen, file) {
   const trimmed = next.slice(0, maxLen || 200);
   writeJSONAtomic(file, trimmed);
   return trimmed;
+}
+
+// ── Runtime Portfolio Store ────────────────────────────────────────────────────
+// Reads data/cordelius_portfolio.json and merges overrides into the live PORTFOLIO[]
+// array (mutating it in place). All existing code that reads PORTFOLIO continues
+// to work unchanged. Called synchronously at boot before server.listen().
+
+function loadPortfolioStore() {
+  try {
+    ensureDataDir();
+    const stored = readJSONSafe(PORTFOLIO_STORE_FILE, null);
+
+    if (!Array.isArray(stored) || stored.length === 0) {
+      // First run — snapshot current hardcoded state to file
+      writeJSONAtomic(PORTFOLIO_STORE_FILE, PORTFOLIO.map(a => ({ ...a })));
+      console.log("[PortfolioStore] Initialized from PORTFOLIO[] (" + PORTFOLIO.length + " assets)");
+      return;
+    }
+
+    // Build lookup by symbol
+    const bySymbol = {};
+    for (const s of stored) { if (s && s.symbol) bySymbol[s.symbol] = s; }
+
+    // Merge stored values into live array (mutable fields only for existing; full push for new)
+    for (const sym of Object.keys(bySymbol)) {
+      const s   = bySymbol[sym];
+      const idx = PORTFOLIO.findIndex(a => a.symbol === sym);
+      if (idx >= 0) {
+        if (s.units        != null) PORTFOLIO[idx].units        = Number(s.units)       || PORTFOLIO[idx].units;
+        if (s.valueManual  != null) PORTFOLIO[idx].valueManual  = Number(s.valueManual) || PORTFOLIO[idx].valueManual;
+        if (s.costManual   != null) PORTFOLIO[idx].costManual   = Number(s.costManual)  || PORTFOLIO[idx].costManual;
+        if (s.currency)             PORTFOLIO[idx].currency     = s.currency;
+        if (s.source)               PORTFOLIO[idx].source       = s.source;
+      } else {
+        // Runtime-added asset — push to live array
+        const sym2 = String(s.symbol).toUpperCase().replace(/[^A-Z0-9.]/g, "").slice(0, 10);
+        PORTFOLIO.push({
+          source:       String(s.source       || "Manual").slice(0, 20),
+          category:     String(s.category     || "Manual").slice(0, 30),
+          symbol:       sym2,
+          display:      String(s.display      || sym2).slice(0, 15),
+          name:         String(s.name         || sym2).slice(0, 60),
+          units:        Number(s.units)       || 0,
+          currency:     ["MXN","USD"].includes(s.currency) ? s.currency : "MXN",
+          valueManual:  Number(s.valueManual) || 0,
+          costManual:   Number(s.costManual)  || 0,
+          brokerGainPct:Number(s.brokerGainPct)||0,
+          logo:         String(s.logo || sym2.slice(0, 2)).slice(0, 4).toUpperCase(),
+          color:        /^#[0-9a-fA-F]{3,6}$/.test(s.color || "") ? s.color : "#334155",
+          liveTicker:   String(s.liveTicker || sym2).slice(0, 20),
+          type:         ["stock","stock_mx","crypto","etf"].includes(s.type) ? s.type : "stock"
+        });
+      }
+    }
+
+    // If hardcoded entries are missing from the file, write a full snapshot
+    const needsWrite = PORTFOLIO.some(a => !bySymbol[a.symbol]);
+    if (needsWrite) writeJSONAtomic(PORTFOLIO_STORE_FILE, PORTFOLIO.map(a => ({ ...a })));
+
+    console.log("[PortfolioStore] Loaded: " + PORTFOLIO.length + " assets");
+  } catch(e) {
+    console.log("[PortfolioStore] loadPortfolioStore error:", e.message);
+  }
+}
+
+function savePortfolioStore() {
+  writeJSONAtomic(PORTFOLIO_STORE_FILE, PORTFOLIO.map(a => ({ ...a })));
 }
 
 // ── Daily Learning Engine — server functions ────────────────────────────────
@@ -5091,7 +5161,118 @@ ${renderHomePortal(pv, reg)}
 
 <a id="brain"></a><h2>Cerebro vivo de Cordelius</h2>${brainHtml()}
 
-<a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
+<a id="portfolio"></a>
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:0 0 6px">
+  <h2 style="margin:0">Portafolio real por cuenta</h2>
+  <div style="display:flex;gap:6px;flex-wrap:wrap">
+    <button onclick="openPortfolioAdd()" style="padding:7px 14px;border-radius:10px;border:1px solid rgba(0,255,153,.35);background:rgba(0,255,153,.1);color:#00ff99;font-size:12px;font-weight:700;cursor:pointer">+ Agregar activo</button>
+    <a href="/api/portfolio/editable" target="_blank" style="padding:7px 14px;border-radius:10px;border:1px solid rgba(120,160,210,.2);background:transparent;color:#9fb3c8;font-size:12px;font-weight:700;text-decoration:none">Ver JSON →</a>
+  </div>
+</div>
+
+<!-- Portfolio Edit Modal -->
+<div id="port-edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:#0a1220;border:1px solid rgba(255,211,92,.3);border-radius:22px;padding:28px 32px;width:90%;max-width:440px;box-shadow:0 30px 80px rgba(0,0,0,.6)">
+    <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Editar posición</div>
+    <div id="pe-sym-label" style="font-size:16px;font-weight:900;color:#eaf6ff;margin-bottom:16px">—</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">UNIDADES / CANTIDAD</div>
+          <input id="pe-units" type="number" step="any" min="0" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box">
+        </div>
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">MONEDA</div>
+          <select id="pe-currency" style="width:100%;background:#0a1220;border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none">
+            <option value="MXN">MXN</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">VALOR ACTUAL (en moneda)</div>
+        <input id="pe-value" type="number" step="any" min="0" placeholder="Valor actual del total de posición" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box">
+      </div>
+      <div>
+        <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">COSTO ORIGINAL (en moneda)</div>
+        <input id="pe-cost" type="number" step="any" min="0" placeholder="Costo total de compra" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box">
+      </div>
+    </div>
+    <div style="font-size:11px;color:#3a4a5a;margin-top:10px">Cambio guardado al instante en data/cordelius_portfolio.json · educativo — no consejo financiero.</div>
+    <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
+      <button onclick="document.getElementById('port-edit-modal').style.display='none'" style="padding:10px 20px;border-radius:10px;border:1px solid rgba(120,160,210,.2);background:transparent;color:#9fb3c8;font-size:13px;cursor:pointer">Cancelar</button>
+      <button onclick="submitPortfolioEdit()" style="padding:10px 20px;border-radius:10px;border:none;background:linear-gradient(90deg,#ffd35c,#f59e0b);color:#000;font-size:13px;font-weight:900;cursor:pointer">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Portfolio Add Modal -->
+<div id="port-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;align-items:center;justify-content:center;overflow-y:auto">
+  <div style="background:#0a1220;border:1px solid rgba(0,255,153,.3);border-radius:22px;padding:28px 32px;width:90%;max-width:480px;box-shadow:0 30px 80px rgba(0,0,0,.6);margin:20px auto">
+    <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin-bottom:16px">Agregar activo al portafolio</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">SÍMBOLO *</div>
+          <input id="pa-sym" placeholder="ej. TSLA, SOL" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(0,255,153,.25);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box;font-weight:900">
+        </div>
+        <div style="flex:2">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">NOMBRE</div>
+          <input id="pa-name" placeholder="ej. Tesla Inc." style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">UNIDADES *</div>
+          <input id="pa-units" type="number" step="any" min="0" placeholder="0" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box">
+        </div>
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">MONEDA</div>
+          <select id="pa-currency" style="width:100%;background:#0a1220;border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none">
+            <option value="MXN">MXN</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">VALOR ACTUAL</div>
+          <input id="pa-value" type="number" step="any" min="0" placeholder="0.00" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box">
+        </div>
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">COSTO ORIGINAL</div>
+          <input id="pa-cost" type="number" step="any" min="0" placeholder="0.00" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none;box-sizing:border-box">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">BROKER / FUENTE</div>
+          <select id="pa-source" style="width:100%;background:#0a1220;border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none">
+            <option value="GBM">GBM</option>
+            <option value="Plata">Plata</option>
+            <option value="Bitso">Bitso</option>
+            <option value="Manual">Manual</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <div style="font-size:10px;color:#9fb3c8;margin-bottom:4px;letter-spacing:.08em">TIPO</div>
+          <select id="pa-type" style="width:100%;background:#0a1220;border:1px solid rgba(120,160,210,.2);border-radius:10px;padding:10px 14px;color:#eaf6ff;font-size:14px;outline:none">
+            <option value="stock">Stock (USA)</option>
+            <option value="stock_mx">Stock México</option>
+            <option value="crypto">Cripto</option>
+            <option value="etf">ETF</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#3a4a5a;margin-top:10px">Sistema educativo — sin órdenes reales. No es consejo financiero.</div>
+    <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
+      <button onclick="document.getElementById('port-add-modal').style.display='none'" style="padding:10px 20px;border-radius:10px;border:1px solid rgba(120,160,210,.2);background:transparent;color:#9fb3c8;font-size:13px;cursor:pointer">Cancelar</button>
+      <button onclick="submitPortfolioAdd()" style="padding:10px 20px;border-radius:10px;border:none;background:linear-gradient(90deg,#00ff99,#00c8ff);color:#000;font-size:13px;font-weight:900;cursor:pointer">Agregar</button>
+    </div>
+  </div>
+</div>
+
 ${(function(){
   const bySource = {};
   for (const a of assets) { bySource[a.source] = bySource[a.source] || []; bySource[a.source].push(a); }
@@ -6086,6 +6267,111 @@ document.addEventListener('DOMContentLoaded', function() {
   })();
 });
 
+// ---- Portfolio Runtime Editor ----
+var _portEditSym = '';
+
+function openPortfolioEdit(symbol) {
+  _portEditSym = symbol;
+  fetch('/api/portfolio/editable').then(function(r){ return r.json(); }).then(function(d) {
+    var asset = (d.assets || []).find(function(a){ return a.symbol === symbol; });
+    if (!asset) return;
+    document.getElementById('pe-sym-label').textContent = asset.symbol + (asset.name ? ' — ' + asset.name : '');
+    document.getElementById('pe-units').value    = asset.units        || 0;
+    document.getElementById('pe-value').value    = asset.valueManual  || 0;
+    document.getElementById('pe-cost').value     = asset.costManual   || 0;
+    document.getElementById('pe-currency').value = asset.currency     || 'MXN';
+    document.getElementById('port-edit-modal').style.display = 'flex';
+  }).catch(function(e){ console.warn('openPortfolioEdit fetch error', e); });
+}
+
+async function submitPortfolioEdit() {
+  if (!_portEditSym) return;
+  var btn = document.querySelector('#port-edit-modal button[onclick="submitPortfolioEdit()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+  try {
+    var r = await fetch('/api/portfolio/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol:       _portEditSym,
+        qty:          parseFloat(document.getElementById('pe-units').value)  || 0,
+        costBasis:    parseFloat(document.getElementById('pe-cost').value)   || 0,
+        valueManual:  parseFloat(document.getElementById('pe-value').value)  || 0,
+        currency:     document.getElementById('pe-currency').value || 'MXN'
+      })
+    });
+    var d = await r.json();
+    if (d.ok) {
+      document.getElementById('port-edit-modal').style.display = 'none';
+      window.location.reload();
+    } else {
+      alert('Error: ' + (d.error || 'desconocido'));
+      if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+    }
+  } catch(e) {
+    alert('Error de conexión');
+    if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; }
+  }
+}
+
+function openPortfolioAdd() {
+  ['pa-sym','pa-name','pa-units','pa-value','pa-cost'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.value = '';
+  });
+  var src = document.getElementById('pa-source'); if (src) src.value = 'Manual';
+  var typ = document.getElementById('pa-type');   if (typ) typ.value = 'stock';
+  var cur = document.getElementById('pa-currency');if(cur) cur.value = 'MXN';
+  document.getElementById('port-add-modal').style.display = 'flex';
+}
+
+async function submitPortfolioAdd() {
+  var sym = (document.getElementById('pa-sym').value || '').toUpperCase().trim();
+  if (!sym) { alert('Símbolo requerido'); return; }
+  var btn = document.querySelector('#port-add-modal button[onclick="submitPortfolioAdd()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Agregando...'; }
+  try {
+    var r = await fetch('/api/portfolio/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol:      sym,
+        name:        document.getElementById('pa-name').value     || sym,
+        qty:         parseFloat(document.getElementById('pa-units').value)  || 0,
+        costBasis:   parseFloat(document.getElementById('pa-cost').value)   || 0,
+        valueManual: parseFloat(document.getElementById('pa-value').value)  || 0,
+        currency:    document.getElementById('pa-currency').value || 'MXN',
+        source:      document.getElementById('pa-source').value   || 'Manual',
+        type:        document.getElementById('pa-type').value     || 'stock'
+      })
+    });
+    var d = await r.json();
+    if (d.ok) {
+      document.getElementById('port-add-modal').style.display = 'none';
+      window.location.reload();
+    } else {
+      alert('Error: ' + (d.error || 'desconocido'));
+      if (btn) { btn.disabled = false; btn.textContent = 'Agregar'; }
+    }
+  } catch(e) {
+    alert('Error de conexión');
+    if (btn) { btn.disabled = false; btn.textContent = 'Agregar'; }
+  }
+}
+
+async function removePortfolioAsset(symbol) {
+  if (!confirm('¿Eliminar ' + symbol + ' del portafolio?\n\nEsta acción persiste en disco. Se puede re-agregar con "+ Agregar activo". No es asesoría financiera.')) return;
+  try {
+    var r = await fetch('/api/portfolio/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: symbol })
+    });
+    var d = await r.json();
+    if (d.ok) { window.location.reload(); }
+    else { alert('Error al eliminar: ' + (d.error || 'desconocido')); }
+  } catch(e) { alert('Error de conexión'); }
+}
+
 // ---- Cordelius Alerts (client) ----
 async function runAlertCheck() {
   var btn = document.getElementById('alert-check-btn');
@@ -6902,6 +7188,88 @@ if (path === "/api/whoop/today") {
     }
   }
 
+  // ---- Runtime Portfolio Editor API ----
+  if (path === "/api/portfolio/editable" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, count: PORTFOLIO.length, assets: PORTFOLIO.map(a => ({ ...a })) }));
+  }
+
+  if (path === "/api/portfolio/update" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.symbol) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "symbol requerido" })); }
+        const sym = String(input.symbol).toUpperCase();
+        const idx = PORTFOLIO.findIndex(a => a.symbol === sym);
+        if (idx < 0) { res.writeHead(404, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "Activo no encontrado: " + sym })); }
+        if (input.qty        != null) PORTFOLIO[idx].units        = Number(input.qty)        || PORTFOLIO[idx].units;
+        if (input.costBasis  != null) PORTFOLIO[idx].costManual   = Number(input.costBasis)  || PORTFOLIO[idx].costManual;
+        if (input.valueManual!= null) PORTFOLIO[idx].valueManual  = Number(input.valueManual)|| PORTFOLIO[idx].valueManual;
+        if (input.currency)           PORTFOLIO[idx].currency     = ["MXN","USD"].includes(input.currency) ? input.currency : PORTFOLIO[idx].currency;
+        savePortfolioStore();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, symbol: sym, updated: { ...PORTFOLIO[idx] } }));
+      } catch(e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: e.message })); }
+    });
+    return;
+  }
+
+  if (path === "/api/portfolio/add" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.symbol) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "symbol requerido" })); }
+        const sym = String(input.symbol).toUpperCase().replace(/[^A-Z0-9.]/g, "").slice(0, 10);
+        if (!sym) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "symbol inválido" })); }
+        if (PORTFOLIO.some(a => a.symbol === sym)) { res.writeHead(409, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "Activo ya existe: " + sym + ". Usa /api/portfolio/update para modificar." })); }
+        const newAsset = {
+          source:       String(input.source       || "Manual").slice(0, 20),
+          category:     String(input.category     || "Manual").slice(0, 30),
+          symbol:       sym,
+          display:      String(input.display      || sym).slice(0, 15),
+          name:         String(input.name         || sym).slice(0, 60),
+          units:        Number(input.qty)         || 0,
+          currency:     ["MXN","USD"].includes(input.currency) ? input.currency : "MXN",
+          valueManual:  Number(input.valueManual) || 0,
+          costManual:   Number(input.costBasis)   || 0,
+          brokerGainPct:0,
+          logo:         String(input.logo || sym.slice(0, 2)).slice(0, 4).toUpperCase(),
+          color:        /^#[0-9a-fA-F]{3,6}$/.test(input.color || "") ? input.color : "#334155",
+          liveTicker:   String(input.liveTicker || sym).slice(0, 20),
+          type:         ["stock","stock_mx","crypto","etf"].includes(input.type) ? input.type : "stock"
+        };
+        PORTFOLIO.push(newAsset);
+        savePortfolioStore();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, symbol: sym, asset: newAsset, totalAssets: PORTFOLIO.length }));
+      } catch(e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: e.message })); }
+    });
+    return;
+  }
+
+  if (path === "/api/portfolio/remove" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.symbol) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "symbol requerido" })); }
+        const sym = String(input.symbol).toUpperCase();
+        const idx = PORTFOLIO.findIndex(a => a.symbol === sym);
+        if (idx < 0) { res.writeHead(404, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: "Activo no encontrado: " + sym })); }
+        const removed = PORTFOLIO.splice(idx, 1)[0];
+        savePortfolioStore();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, removed: removed.symbol, totalAssets: PORTFOLIO.length }));
+      } catch(e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: false, error: e.message })); }
+    });
+    return;
+  }
+
   // ---- Cordelius Alerts API ----
   if (path === "/api/alerts" && req.method === "GET") {
     try {
@@ -6994,6 +7362,9 @@ if (path === "/api/whoop/today") {
 });
 
 async function boot() {
+  // Load persistent portfolio store before serving any requests
+  try { loadPortfolioStore(); } catch(e) { console.log("loadPortfolioStore omitido:", e.message); }
+
   // CORDELIUS_BOOT_LISTEN_FIRST_FIX
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`${settings.appName} listo en http://localhost:${PORT}`);
