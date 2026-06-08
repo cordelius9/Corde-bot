@@ -4176,6 +4176,7 @@ function alfredoDailyContext(h, pv, reg) {
 }
 
 function renderHomePortal(pv, reg) {
+  const nl = computeDailyNewsletter();
   const h = computeHealthReadiness();
   const jd = computeJournalData();
   const ctx = alfredoDailyContext(h, pv, reg);
