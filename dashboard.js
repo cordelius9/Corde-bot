@@ -1540,6 +1540,67 @@ EDUCATIVO — no es asesoría financiera.`;
     } else {
       reply = "Market Brain aún no tiene datos de este ciclo. Se genera cada 15 min o tras el snapshot diario. Intenta en un momento.";
     }
+  } else if (q.includes("qué decisiones me hacen ganar") || q.includes("que decisiones me hacen ganar") || q.includes("qué decisiones funcionan") || q.includes("que decisiones funcionan") || q.includes("cuáles son mis mejores decisiones") || q.includes("cuales son mis mejores decisiones")) {
+    const di = getDecisionIntelligence();
+    if (di.totalDecisions === 0) {
+      reply = "Aún no hay decisiones registradas. Usa el panel 'Decision Intelligence' en Autopilot para empezar a loguear tus decisiones. Con el tiempo Cordelius aprenderá qué funciona para ti.";
+    } else {
+      reply = `Decisiones registradas: ${di.totalDecisions}. Tasa de éxito: ${di.successRate}%. ` +
+        (di.strongestPattern ? `Patrón más fuerte: ${di.strongestPattern}. ` : "") +
+        (di.topPlaybookRule ? `Regla principal del playbook: ${di.topPlaybookRule}. ` : "") +
+        `Exitosas: ${di.successCount} / Fallidas: ${di.failCount}. EDUCATIVO — no es asesoría financiera.`;
+    }
+  } else if (q.includes("qué errores repito") || q.includes("que errores repito") || q.includes("mis errores") || q.includes("errores frecuentes") || q.includes("error más repetido") || q.includes("error mas repetido")) {
+    const di = getDecisionIntelligence();
+    if (di.totalDecisions < 3) {
+      reply = "Necesito más decisiones registradas para identificar patrones de error. Registra al menos 3 decisiones con resultado en el panel Decision Intelligence.";
+    } else {
+      reply = di.biggestMistake
+        ? `Error más repetido: ${di.biggestMistake}. ` +
+          (di.patterns && di.patterns.length > 1 ? `Otros patrones: ${di.patterns.slice(1,3).map(p=>p.finding).join("; ")}. ` : "") +
+          `Basado en ${di.totalDecisions} decisiones. Registrar más resultados mejora el análisis. EDUCATIVO.`
+        : `Con ${di.totalDecisions} decisiones aún no se detectan patrones de error claros. Sigue registrando resultados.`;
+    }
+  } else if (q.includes("qué condiciones me favorecen") || q.includes("que condiciones me favorecen") || q.includes("cuándo tomo mejores decisiones") || q.includes("cuando tomo mejores decisiones") || q.includes("qué condiciones llevan a mis mejores") || q.includes("que condiciones llevan a mis mejores")) {
+    const di = getDecisionIntelligence();
+    if (di.totalDecisions < 5) {
+      reply = "Necesito al menos 5 decisiones con resultado para analizar condiciones. Registra más decisiones en el panel Decision Intelligence.";
+    } else {
+      const pats = (di.patterns || []).filter(p => p.type === "recovery" || p.type === "sleep" || p.type === "regime").slice(0, 3);
+      reply = pats.length
+        ? `Condiciones favorables según tu historial: ${pats.map(p => p.finding).join("; ")}. ` +
+          `Tasa de éxito global: ${di.successRate}%. Basado en ${di.totalDecisions} decisiones. EDUCATIVO.`
+        : `Con ${di.totalDecisions} decisiones aún sin correlaciones claras. Registra más resultados con datos de WHOOP activos.`;
+    }
+  } else if (q.includes("qué debería evitar") || q.includes("que deberia evitar") || q.includes("qué no hacer") || q.includes("que no hacer") || q.includes("mis peores patrones") || q.includes("qué me perjudica") || q.includes("que me perjudica")) {
+    const di = getDecisionIntelligence();
+    if (!di.biggestMistake && di.totalDecisions < 3) {
+      reply = "Sin suficientes datos para identificar qué evitar. Registra decisiones con resultado en el panel Decision Intelligence.";
+    } else {
+      reply = (di.biggestMistake ? `Evitar: ${di.biggestMistake}. ` : "") +
+        (di.topPlaybookRule ? `Regla principal: ${di.topPlaybookRule}. ` : "") +
+        `RECORDATORIO: concentración en cripto/Bitso >50% del portafolio es riesgo alto. EDUCATIVO.`;
+    }
+  } else if (q.includes("patrón está emergiendo") || q.includes("patron esta emergiendo") || q.includes("qué patrón") || q.includes("que patron") || q.includes("patrón detectado") || q.includes("patron detectado")) {
+    const di = getDecisionIntelligence();
+    if (di.totalDecisions < 3) {
+      reply = "Sin datos suficientes para detectar patrones. Registra tus decisiones de trading, inversión y salud en el panel Decision Intelligence.";
+    } else {
+      const top3 = (di.patterns || []).slice(0, 3).map(p => p.finding).join("; ");
+      reply = top3
+        ? `Patrones emergentes (${di.totalDecisions} decisiones): ${top3}. Tasa de éxito: ${di.successRate}%. Último análisis: ${di.lastAnalyzed ? di.lastAnalyzed.slice(0,10) : "hoy"}. EDUCATIVO.`
+        : `Datos insuficientes para patrones estadísticos. Continúa registrando decisiones con resultados.`;
+    }
+  } else if (q.includes("cómo estoy mejorando") || q.includes("como estoy mejorando") || q.includes("progreso como decisor") || q.includes("mi aprendizaje") || q.includes("decisiones recientes")) {
+    const di = getDecisionIntelligence();
+    if (di.totalDecisions === 0) {
+      reply = "No hay decisiones registradas todavía. Empieza en el panel 'Decision Intelligence' dentro de Autopilot.";
+    } else {
+      const recent = di.recentDecisions.slice(0, 3).map(d => `${d.category}: ${d.action || d.asset || "—"} → ${d.outcome || "pendiente"}`).join("; ");
+      reply = `Decisiones recientes: ${recent}. Total: ${di.totalDecisions}. Éxito: ${di.successRate}%. ` +
+        (di.strongestPattern ? `Aprendizaje clave: ${di.strongestPattern}. ` : "Sin patrones claros aún. ") +
+        `Decisiones de hoy: ${di.decidedToday}. EDUCATIVO.`;
+    }
   } else {
     reply = `Cordelius activo. Portafolio ${money(pv.totalValueMXN)}, rendimiento ${pct(pv.totalGainPct)}, regimen ${reg.label}. Mejor score: ${best.symbol} (${best.score}/100); mas debil: ${worst.symbol} (${worst.score}/100).`;
   }
@@ -2533,6 +2594,9 @@ const BUILD_LOG_FILE                  = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, 
 const CORDELIUS_ROADMAP_FILE          = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_roadmap.json");
 const EXECUTIVE_BRIEFING_FILE         = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "executive_briefing.json");
 const EXECUTIVE_BRIEFING_HISTORY_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "executive_briefing_history.json");
+const DECISION_JOURNAL_FILE           = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "decision_journal.json");
+const DECISION_PATTERNS_FILE          = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "decision_patterns.json");
+const PERSONAL_PLAYBOOK_FILE          = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "personal_playbook.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -3531,6 +3595,426 @@ function initProjectMemory() {
   }
 }
 
+// ── Decision Intelligence Engine ─────────────────────────────────────────────
+// Phase 5A — Logs Pedro's decisions with full context, tracks outcomes,
+// analyzes patterns, and builds a personal playbook from lived experience.
+
+const DECISION_CATEGORIES = ["Trading", "Investment", "Health", "Business", "Personal"];
+const DECISION_OUTCOMES_LIST = ["Success", "Neutral", "Failure"];
+
+function logDecision(entry) {
+  try {
+    const now  = new Date();
+    const id   = "dj_" + now.getTime().toString(36) + Math.random().toString(36).slice(2, 5);
+    const h    = (function(){ try { return computeHealthReadiness(); } catch(e){ return {}; } })();
+    const b    = readJSONSafe(MARKET_BRAIN_FILE, null) || {};
+    const exec = readJSONSafe(EXECUTIVE_BRIEFING_FILE, null) || {};
+    const pv   = (function(){ try { const p = portfolioValue(); return { totalMXN: +p.totalValueMXN.toFixed(0), gainPct: +p.totalGainPct.toFixed(2) }; } catch(e){ return {}; } })();
+
+    const record = {
+      id,
+      timestamp:         now.toISOString(),
+      date:              todayDateKey(),
+      category:          DECISION_CATEGORIES.includes(entry.category) ? entry.category : "Personal",
+      action:            (entry.action      || "").slice(0, 200),
+      asset:             (entry.asset       || "").toUpperCase().slice(0, 20),
+      reason:            (entry.reason      || "").slice(0, 400),
+      confidence:        Math.min(100, Math.max(0, Number(entry.confidence) || 50)),
+      // Captured context
+      marketRegime:      b.marketRegime     || "NEUTRAL",
+      executiveScore:    exec.score         || null,
+      recovery:          h.recovery         !== undefined ? h.recovery : null,
+      sleep:             h.sleep            !== undefined ? h.sleep    : null,
+      hrv:               h.hrv              !== undefined ? h.hrv      : null,
+      operatingMode:     h.operatingMode    || "NORMAL",
+      portfolioSnapshot: pv,
+      marketBrainSnapshot: b.date ? { regime: b.marketRegime, confidence: b.confidence, riskMode: b.riskMode } : null,
+      // Outcome — filled later
+      outcome:           null,
+      outcomeUpdatedAt:  null,
+      pnl:               null,
+      gainPct:           null,
+      subjectiveScore:   null,
+      outcomeNotes:      null,
+      tags:              Array.isArray(entry.tags) ? entry.tags.slice(0, 8).map(t => String(t).slice(0, 30)) : []
+    };
+
+    const journal = readJSONSafe(DECISION_JOURNAL_FILE, []);
+    const safe    = Array.isArray(journal) ? journal : [];
+    safe.unshift(record);
+    if (safe.length > 1000) safe.length = 1000;
+    writeJSONAtomic(DECISION_JOURNAL_FILE, safe);
+    console.log("[DecisionIntel] Logged: " + record.category + " — " + record.action.slice(0, 60));
+    return record;
+  } catch(e) {
+    console.log("[DecisionIntel] logDecision error:", e.message);
+    return null;
+  }
+}
+
+function updateDecisionOutcome(decisionId, outcome) {
+  try {
+    if (!decisionId || !outcome) return { ok: false, error: "decisionId y outcome son requeridos" };
+    const outcomeValue = outcome.outcome || outcome;
+    if (!DECISION_OUTCOMES_LIST.includes(outcomeValue)) return { ok: false, error: "outcome debe ser: " + DECISION_OUTCOMES_LIST.join(", ") };
+
+    const now    = new Date();
+    const record = {
+      decisionId,
+      date:           todayDateKey(),
+      outcome:        outcomeValue,
+      pnl:            outcome.pnl            != null ? Number(outcome.pnl)            : null,
+      gainPct:        outcome.gainPct        != null ? Number(outcome.gainPct)        : null,
+      lossPct:        outcome.lossPct        != null ? Number(outcome.lossPct)        : null,
+      subjectiveScore:outcome.subjectiveScore!= null ? Math.min(10, Math.max(1, Number(outcome.subjectiveScore))) : null,
+      notes:          (outcome.notes         || "").slice(0, 600),
+      updatedAt:      now.toISOString()
+    };
+
+    // Also update the journal entry in-place
+    const journal = readJSONSafe(DECISION_JOURNAL_FILE, []);
+    let found = false;
+    const updatedJournal = (Array.isArray(journal) ? journal : []).map(d => {
+      if (d && d.id === decisionId) {
+        found = true;
+        return { ...d, outcome: outcomeValue, outcomeUpdatedAt: now.toISOString(),
+          pnl: record.pnl, gainPct: record.gainPct, subjectiveScore: record.subjectiveScore, outcomeNotes: record.notes };
+      }
+      return d;
+    });
+    if (found) writeJSONAtomic(DECISION_JOURNAL_FILE, updatedJournal);
+
+    // Persist to outcomes file
+    const outcomes = readJSONSafe(DECISION_OUTCOMES_FILE, []);
+    const safe     = Array.isArray(outcomes) ? outcomes.filter(o => o && o.decisionId !== decisionId) : [];
+    safe.unshift(record);
+    if (safe.length > 1000) safe.length = 1000;
+    writeJSONAtomic(DECISION_OUTCOMES_FILE, safe);
+
+    // Recompute patterns after new outcome
+    try { analyzeDecisionPatterns(); } catch(e2) {}
+
+    return { ok: true, found, record };
+  } catch(e) {
+    console.log("[DecisionIntel] updateDecisionOutcome error:", e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+function analyzeDecisionPatterns() {
+  try {
+    const journal  = readJSONSafe(DECISION_JOURNAL_FILE, []);
+    const safe     = Array.isArray(journal) ? journal.filter(d => d && d.id) : [];
+    const withOutcome = safe.filter(d => d.outcome && DECISION_OUTCOMES_LIST.includes(d.outcome));
+    const total    = safe.length;
+    const analyzed = withOutcome.length;
+
+    if (analyzed < 2) {
+      const result = {
+        lastAnalyzed: new Date().toISOString(), totalDecisions: total, analyzedDecisions: analyzed,
+        message: "Se necesitan al menos 2 decisiones con resultado para detectar patrones.",
+        patterns: [], categoryStats: {}, regimeStats: {}, recoveryBuckets: {}, sleepBuckets: {}
+      };
+      writeJSONAtomic(DECISION_PATTERNS_FILE, result);
+      return result;
+    }
+
+    const successScore = d => d.outcome === "Success" ? 1 : d.outcome === "Failure" ? 0 : 0.5;
+
+    // Category stats
+    const categoryStats = {};
+    for (const cat of DECISION_CATEGORIES) {
+      const entries = withOutcome.filter(d => d.category === cat);
+      if (!entries.length) continue;
+      const rate = entries.reduce((s, d) => s + successScore(d), 0) / entries.length;
+      const avgConf = entries.reduce((s, d) => s + (d.confidence || 50), 0) / entries.length;
+      const avgSubj = entries.filter(d => d.subjectiveScore != null).reduce((s, d) => s + d.subjectiveScore, 0) / (entries.filter(d => d.subjectiveScore != null).length || 1);
+      categoryStats[cat] = { count: entries.length, successRate: +(rate * 100).toFixed(1), avgConfidence: +avgConf.toFixed(1), avgSubjectiveScore: +avgSubj.toFixed(1) };
+    }
+
+    // Market regime stats
+    const regimeStats = {};
+    for (const d of withOutcome) {
+      const reg = d.marketRegime || "NEUTRAL";
+      if (!regimeStats[reg]) regimeStats[reg] = { count: 0, successSum: 0 };
+      regimeStats[reg].count++;
+      regimeStats[reg].successSum += successScore(d);
+    }
+    for (const r of Object.keys(regimeStats)) {
+      regimeStats[r].successRate = +((regimeStats[r].successSum / regimeStats[r].count) * 100).toFixed(1);
+      delete regimeStats[r].successSum;
+    }
+
+    // Recovery bucket stats
+    const recBuckets = { high: [], medium: [], low: [], unknown: [] };
+    for (const d of withOutcome) {
+      const r = d.recovery;
+      if (r == null) recBuckets.unknown.push(d);
+      else if (r >= 67) recBuckets.high.push(d);
+      else if (r >= 34) recBuckets.medium.push(d);
+      else recBuckets.low.push(d);
+    }
+    const recoveryBuckets = {};
+    for (const [k, arr] of Object.entries(recBuckets)) {
+      if (!arr.length) continue;
+      recoveryBuckets[k] = {
+        label: k === "high" ? "≥67%" : k === "medium" ? "34-66%" : k === "low" ? "<34%" : "N/A",
+        count: arr.length,
+        successRate: +((arr.reduce((s, d) => s + successScore(d), 0) / arr.length) * 100).toFixed(1)
+      };
+    }
+
+    // Sleep bucket stats
+    const sleepBuckets = {};
+    const sleepBucketsRaw = { good: [], poor: [], unknown: [] };
+    for (const d of withOutcome) {
+      const s = d.sleep;
+      if (s == null) sleepBucketsRaw.unknown.push(d);
+      else if (s >= 60) sleepBucketsRaw.good.push(d);
+      else sleepBucketsRaw.poor.push(d);
+    }
+    for (const [k, arr] of Object.entries(sleepBucketsRaw)) {
+      if (!arr.length) continue;
+      sleepBuckets[k] = { count: arr.length, successRate: +((arr.reduce((s, d) => s + successScore(d), 0) / arr.length) * 100).toFixed(1) };
+    }
+
+    // Generate pattern findings
+    const patterns = [];
+
+    // Health vs outcome patterns
+    if (recoveryBuckets.high && recoveryBuckets.low && recoveryBuckets.high.count >= 2 && recoveryBuckets.low.count >= 1) {
+      const diff = recoveryBuckets.high.successRate - (recoveryBuckets.low ? recoveryBuckets.low.successRate : 50);
+      if (Math.abs(diff) >= 10) {
+        patterns.push({
+          id: "pat_recovery",
+          type: "health_vs_outcome",
+          category: "Health",
+          finding: `Decisiones con recovery ≥67% tienen ${diff > 0 ? "+" : ""}${diff.toFixed(0)}% de éxito vs recovery <34%.`,
+          confidence: Math.min(95, 60 + recoveryBuckets.high.count * 2 + (recoveryBuckets.low ? recoveryBuckets.low.count : 0) * 2),
+          evidence: recoveryBuckets.high.count + (recoveryBuckets.low ? recoveryBuckets.low.count : 0),
+          recommendation: diff > 0
+            ? "Tomar decisiones importantes cuando recovery ≥67."
+            : "Recovery alta no garantiza éxito — revisar otros factores."
+        });
+      }
+    }
+
+    // Sleep patterns
+    if (sleepBuckets.good && sleepBuckets.poor && sleepBuckets.good.count >= 2 && sleepBuckets.poor.count >= 1) {
+      const diff = sleepBuckets.good.successRate - sleepBuckets.poor.successRate;
+      if (Math.abs(diff) >= 10) {
+        patterns.push({
+          id: "pat_sleep",
+          type: "health_vs_outcome",
+          category: "Health",
+          finding: `Buen sueño (≥60%) → ${sleepBuckets.good.successRate}% éxito. Mal sueño → ${sleepBuckets.poor.successRate}% éxito.`,
+          confidence: Math.min(92, 58 + sleepBuckets.good.count * 2 + sleepBuckets.poor.count * 2),
+          evidence: sleepBuckets.good.count + sleepBuckets.poor.count,
+          recommendation: diff > 0 ? "Priorizar buen sueño antes de decisiones de inversión." : "Sueño no correlaciona aún — acumular más datos."
+        });
+      }
+    }
+
+    // Category best performer
+    const catEntries = Object.entries(categoryStats).filter(([, v]) => v.count >= 2).sort(([, a], [, b]) => b.successRate - a.successRate);
+    if (catEntries.length >= 2) {
+      const [bestCat, bestStat] = catEntries[0];
+      const [worstCat, worstStat] = catEntries[catEntries.length - 1];
+      if (bestStat.successRate - worstStat.successRate >= 15) {
+        patterns.push({
+          id: "pat_category",
+          type: "category_performance",
+          category: bestCat,
+          finding: `Mejor categoría: ${bestCat} (${bestStat.successRate}% éxito, ${bestStat.count} obs). Más débil: ${worstCat} (${worstStat.successRate}%).`,
+          confidence: Math.min(90, 55 + bestStat.count * 3 + worstStat.count * 3),
+          evidence: bestStat.count + worstStat.count,
+          recommendation: `Enfocarse en decisiones tipo '${bestCat}' donde históricamente hay mejor resultado.`
+        });
+      }
+    }
+
+    // Market regime best performer
+    const regEntries = Object.entries(regimeStats).filter(([, v]) => v.count >= 2).sort(([, a], [, b]) => b.successRate - a.successRate);
+    if (regEntries.length >= 2) {
+      const [bestReg, bestRS] = regEntries[0];
+      patterns.push({
+        id: "pat_regime",
+        type: "market_regime",
+        category: "Trading",
+        finding: `Mejor régimen histórico para decidir: ${bestReg} (${bestRS.successRate}% éxito, ${bestRS.count} obs).`,
+        confidence: Math.min(88, 50 + bestRS.count * 4),
+        evidence: bestRS.count,
+        recommendation: `Ser más agresivo en régimen ${bestReg}; defensivo en ${regEntries[regEntries.length-1][0]}.`
+      });
+    }
+
+    // Confidence calibration
+    const highConf = withOutcome.filter(d => d.confidence >= 70);
+    const lowConf  = withOutcome.filter(d => d.confidence < 50);
+    if (highConf.length >= 3 && lowConf.length >= 2) {
+      const hcRate = highConf.reduce((s, d) => s + successScore(d), 0) / highConf.length;
+      const lcRate = lowConf.reduce( (s, d) => s + successScore(d), 0) / lowConf.length;
+      patterns.push({
+        id: "pat_confidence",
+        type: "confidence_calibration",
+        category: "Personal",
+        finding: `Alta confianza (≥70%): ${(hcRate*100).toFixed(0)}% éxito (${highConf.length} obs). Baja confianza (<50%): ${(lcRate*100).toFixed(0)}% éxito.`,
+        confidence: Math.min(85, 55 + highConf.length * 2 + lowConf.length * 2),
+        evidence: highConf.length + lowConf.length,
+        recommendation: hcRate > lcRate
+          ? "Tu confianza es buen predictor — confiar más en la intuición calibrada."
+          : "Alta confianza no predice éxito — revisar sesgos de sobreconfianza."
+      });
+    }
+
+    // Most repeated failures
+    const failureActions = withOutcome.filter(d => d.outcome === "Failure");
+    const actionCounts = {};
+    for (const d of failureActions) {
+      const key = (d.asset || d.action.split(" ").slice(0,3).join(" ")).slice(0,30).toUpperCase();
+      actionCounts[key] = (actionCounts[key] || 0) + 1;
+    }
+    const repeatedFails = Object.entries(actionCounts).filter(([, c]) => c >= 2).sort(([, a], [, b]) => b - a).slice(0, 3);
+    if (repeatedFails.length > 0) {
+      patterns.push({
+        id: "pat_repeated_fail",
+        type: "mistake_pattern",
+        category: "Personal",
+        finding: `Error repetido: ${repeatedFails.map(([k, c]) => k + " (×" + c + ")").join(", ")}.`,
+        confidence: Math.min(90, 65 + repeatedFails.reduce((s, [, c]) => s + c, 0) * 3),
+        evidence: repeatedFails.reduce((s, [, c]) => s + c, 0),
+        recommendation: "Evitar " + repeatedFails[0][0] + " — ha fallado " + repeatedFails[0][1] + " veces. Revisar tesis."
+      });
+    }
+
+    const result = {
+      lastAnalyzed: new Date().toISOString(),
+      totalDecisions: total,
+      analyzedDecisions: analyzed,
+      overallSuccessRate: analyzed > 0 ? +((withOutcome.reduce((s, d) => s + successScore(d), 0) / analyzed * 100).toFixed(1)) : null,
+      patterns,
+      categoryStats,
+      regimeStats,
+      recoveryBuckets,
+      sleepBuckets,
+      strongestPattern: patterns.length > 0 ? patterns.sort((a, b) => b.confidence - a.confidence)[0] : null,
+      biggestMistake:   patterns.find(p => p.type === "mistake_pattern") || null,
+      topFinding:       patterns.length > 0 ? patterns[0].finding : null
+    };
+
+    writeJSONAtomic(DECISION_PATTERNS_FILE, result);
+    buildPersonalPlaybook(result);
+    return result;
+  } catch(e) {
+    console.log("[DecisionIntel] analyzeDecisionPatterns error:", e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+function buildPersonalPlaybook(patterns) {
+  try {
+    const p = patterns || readJSONSafe(DECISION_PATTERNS_FILE, null);
+    if (!p || !p.patterns) {
+      writeJSONAtomic(PERSONAL_PLAYBOOK_FILE, { lastGenerated: new Date().toISOString(), version: 1, sections: { Trading: [], Portfolio: [], Health: [], Productivity: [] }, message: "Insuficientes datos aún." });
+      return;
+    }
+
+    const sections = { Trading: [], Portfolio: [], Health: [], Productivity: [], Personal: [] };
+
+    // Health rules
+    const recPat  = p.patterns.find(x => x.id === "pat_recovery");
+    const sleepPat = p.patterns.find(x => x.id === "pat_sleep");
+    if (recPat && recPat.confidence >= 60) {
+      sections.Health.push({ rule: recPat.recommendation, confidence: recPat.confidence, evidence: recPat.evidence, finding: recPat.finding, status: "ACTIVE" });
+    }
+    if (sleepPat && sleepPat.confidence >= 60) {
+      sections.Health.push({ rule: sleepPat.recommendation, confidence: sleepPat.confidence, evidence: sleepPat.evidence, finding: sleepPat.finding, status: "ACTIVE" });
+    }
+
+    // Recovery < 50 rule (fundamental)
+    if (p.recoveryBuckets && p.recoveryBuckets.low && p.recoveryBuckets.low.successRate < 45 && p.recoveryBuckets.low.count >= 2) {
+      sections.Health.push({ rule: "Evitar decisiones de inversión agresivas con Recovery < 50.", confidence: Math.min(92, 70 + p.recoveryBuckets.low.count * 3), evidence: p.recoveryBuckets.low.count, finding: "Recovery baja (<50%) correlaciona con malos resultados.", status: "ACTIVE" });
+    }
+
+    // Trading rules
+    const regPat = p.patterns.find(x => x.id === "pat_regime");
+    if (regPat && regPat.confidence >= 60) {
+      sections.Trading.push({ rule: regPat.recommendation, confidence: regPat.confidence, evidence: regPat.evidence, finding: regPat.finding, status: "ACTIVE" });
+    }
+    const catPat = p.patterns.find(x => x.id === "pat_category" && x.category === "Trading");
+    if (catPat) {
+      sections.Trading.push({ rule: catPat.recommendation, confidence: catPat.confidence, evidence: catPat.evidence, finding: catPat.finding, status: "ACTIVE" });
+    }
+
+    // Personal / repeated mistakes
+    const failPat = p.patterns.find(x => x.id === "pat_repeated_fail");
+    if (failPat) {
+      sections.Personal.push({ rule: failPat.recommendation, confidence: failPat.confidence, evidence: failPat.evidence, finding: failPat.finding, status: "ACTIVE" });
+    }
+
+    // Confidence calibration
+    const confPat = p.patterns.find(x => x.id === "pat_confidence");
+    if (confPat) {
+      sections.Productivity.push({ rule: confPat.recommendation, confidence: confPat.confidence, evidence: confPat.evidence, finding: confPat.finding, status: "ACTIVE" });
+    }
+
+    // Portfolio concentration rule (hardcoded + data-backed)
+    sections.Portfolio.push({ rule: "Limitar cripto a <50% del portafolio para reducir volatilidad.", confidence: 78, evidence: 0, finding: "Regla general + respaldada por observaciones de concentración.", status: "ACTIVE" });
+
+    // Remove empty sections
+    const cleanSections = {};
+    for (const [k, v] of Object.entries(sections)) if (v.length > 0) cleanSections[k] = v;
+
+    const playbook = {
+      lastGenerated: new Date().toISOString(),
+      version: 1,
+      totalRules: Object.values(cleanSections).reduce((s, a) => s + a.length, 0),
+      basedOn: p.analyzedDecisions,
+      sections: cleanSections,
+      topRule: (cleanSections.Health || cleanSections.Trading || Object.values(cleanSections))[0] ?
+        (cleanSections.Health || cleanSections.Trading || Object.values(cleanSections)[0])[0] : null
+    };
+
+    writeJSONAtomic(PERSONAL_PLAYBOOK_FILE, playbook);
+  } catch(e) {
+    console.log("[DecisionIntel] buildPersonalPlaybook error:", e.message);
+  }
+}
+
+function getDecisionIntelligence() {
+  try {
+    const journal  = readJSONSafe(DECISION_JOURNAL_FILE, []);
+    const patterns = readJSONSafe(DECISION_PATTERNS_FILE, null);
+    const playbook = readJSONSafe(PERSONAL_PLAYBOOK_FILE, null);
+    const safe     = Array.isArray(journal) ? journal.filter(d => d && d.id) : [];
+    const withOut  = safe.filter(d => d.outcome);
+    const today    = todayDateKey();
+
+    const successCount = withOut.filter(d => d.outcome === "Success").length;
+    const failCount    = withOut.filter(d => d.outcome === "Failure").length;
+    const successRate  = withOut.length > 0 ? +((successCount / withOut.length * 100).toFixed(1)) : null;
+
+    return {
+      ok:               true,
+      totalDecisions:   safe.length,
+      decidedToday:     safe.filter(d => d.date === today).length,
+      withOutcome:      withOut.length,
+      successRate,
+      successCount,
+      failCount,
+      recentDecisions:  safe.slice(0, 5).map(d => ({ id: d.id, date: d.date, category: d.category, action: (d.action||"").slice(0,60), outcome: d.outcome, confidence: d.confidence })),
+      patterns:         patterns || { patterns: [], message: "Insuficientes datos." },
+      strongestPattern: patterns && patterns.strongestPattern ? patterns.strongestPattern.finding : null,
+      biggestMistake:   patterns && patterns.biggestMistake   ? patterns.biggestMistake.finding   : null,
+      topPlaybookRule:  playbook && playbook.topRule           ? playbook.topRule.rule              : null,
+      playbookRules:    playbook ? playbook.totalRules : 0,
+      lastAnalyzed:     patterns ? patterns.lastAnalyzed : null
+    };
+  } catch(e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 // ── Executive AI Layer ────────────────────────────────────────────────────────
 // Phase 4A — Transforms Jarvis into an executive operating system.
 // Synthesizes WHOOP + Market Brain + Portfolio + Daily Intelligence +
@@ -3748,6 +4232,18 @@ function buildExecutiveBriefing() {
       nextBestAction,
       executiveNarrative
     };
+
+    const decisionPatterns = readJSONSafe(DECISION_PATTERNS_FILE, null);
+    if (decisionPatterns && decisionPatterns.strongestPattern) {
+      briefing.learningSection = {
+        strongestPattern:      decisionPatterns.strongestPattern.finding,
+        biggestMistake:        decisionPatterns.biggestMistake ? decisionPatterns.biggestMistake.finding : null,
+        confidence:            decisionPatterns.strongestPattern.confidence,
+        basedOn:               decisionPatterns.analyzedDecisions || 0,
+        recommendedBehavior:   decisionPatterns.strongestPattern.recommendation,
+        overallSuccessRate:    decisionPatterns.overallSuccessRate || null
+      };
+    }
 
     writeJSONAtomic(EXECUTIVE_BRIEFING_FILE, briefing);
 
@@ -4026,13 +4522,33 @@ function buildJarvisContext() {
         thingsToAvoid:    (b.thingsToAvoid    || []).slice(0, 2),
         recommendedActions:(b.recommendedActions||[]).slice(0, 3),
         projectPriority:  b.projectPriority,
-        scoreExplanation: b.scoreExplanation
+        scoreExplanation: b.scoreExplanation,
+        learningSection:  b.learningSection || null
       };
     } else {
       ctx.executive = null;
     }
   } catch(e) {
     ctx.executive = null;
+  }
+
+  // 10. Decision Intelligence — patterns, playbook, recent decisions (from files, no circular calls)
+  try {
+    const journal   = readJSONSafe(DECISION_JOURNAL_FILE, []);
+    const patterns  = readJSONSafe(DECISION_PATTERNS_FILE, null);
+    const playbook  = readJSONSafe(PERSONAL_PLAYBOOK_FILE, null);
+    const recent    = Array.isArray(journal) ? journal.slice(0, 5) : [];
+    ctx.decisionIntel = {
+      totalDecisions:   Array.isArray(journal) ? journal.length : 0,
+      recentDecisions:  recent.map(d => ({ date: d.date, category: d.category, action: d.action, asset: d.asset, outcome: d.outcome, confidence: d.confidence })),
+      strongestPattern: patterns && patterns.strongestPattern ? patterns.strongestPattern.finding : null,
+      biggestMistake:   patterns && patterns.biggestMistake   ? patterns.biggestMistake.finding   : null,
+      overallSuccessRate: patterns ? patterns.overallSuccessRate : null,
+      topPlaybookRule:  playbook && playbook.topRule ? playbook.topRule : null,
+      lastAnalyzed:     patterns ? patterns.analyzedAt : null
+    };
+  } catch(e) {
+    ctx.decisionIntel = null;
   }
 
   return ctx;
@@ -4137,6 +4653,16 @@ function buildMemorySummary() {
       if (ex.topRisks    && ex.topRisks.length)    lines.push(`RIESGO EXEC: ${ex.topRisks.slice(0,2).join(" | ")}`);
       if (ex.topOpportunities && ex.topOpportunities.length) lines.push(`OPORT EXEC: ${ex.topOpportunities.slice(0,1).join("")}`);
       lines.push(`ACCION HOY: ${ex.nextBestAction}`);
+      if (ex.learningSection && ex.learningSection.strongestPattern) lines.push(`APRENDIZAJE EXEC: ${ex.learningSection.strongestPattern}`);
+    }
+
+    const di = ctx.decisionIntel;
+    if (di && di.totalDecisions > 0) {
+      lines.push(`DECISIONES REGISTRADAS: ${di.totalDecisions} total`);
+      if (di.overallSuccessRate !== null) lines.push(`TASA DE ÉXITO: ${di.overallSuccessRate}%`);
+      if (di.strongestPattern)  lines.push(`PATRÓN MÁS FUERTE: ${di.strongestPattern}`);
+      if (di.biggestMistake)    lines.push(`ERROR MÁS REPETIDO: ${di.biggestMistake}`);
+      if (di.topPlaybookRule)   lines.push(`REGLA PLAYBOOK: ${di.topPlaybookRule}`);
     }
 
     if (lines.length === 0) return "Sin memoria disponible todavía.";
@@ -5195,6 +5721,146 @@ function renderAlertsPanel() {
   </div>`;
 }
 
+function renderDecisionIntelPanel() {
+  const di = (function(){ try { return getDecisionIntelligence(); } catch(e){ return { ok: false, totalDecisions: 0 }; } })();
+  const journal  = (function(){ try { return readJSONSafe(DECISION_JOURNAL_FILE, []); } catch(e){ return []; } })();
+  const patterns = (function(){ try { return readJSONSafe(DECISION_PATTERNS_FILE, null); } catch(e){ return null; } })();
+  const playbook = (function(){ try { return readJSONSafe(PERSONAL_PLAYBOOK_FILE, null); } catch(e){ return null; } })();
+
+  // Category pills
+  const categories = ["Trading","Investment","Health","Business","Personal"];
+  const catCounts = {};
+  categories.forEach(c => { catCounts[c] = journal.filter(d => d.category === c).length; });
+
+  const catPills = categories.map(c => {
+    const n = catCounts[c] || 0;
+    const active = n > 0;
+    return `<span style="background:${active ? "rgba(129,140,248,.12)" : "rgba(120,140,160,.04)"};color:${active ? "#818cf8" : "#9fb3c8"};border:1px solid ${active ? "rgba(129,140,248,.3)" : "rgba(120,140,160,.12)"};border-radius:99px;padding:2px 10px;font-size:11px">${esc(c)}: ${n}</span>`;
+  }).join("");
+
+  // Pattern list
+  const patternRows = patterns && patterns.patterns && patterns.patterns.length
+    ? patterns.patterns.slice(0, 4).map(p => {
+        const conf = p.confidence || 0;
+        const cColor = conf >= 75 ? "#00ff99" : conf >= 50 ? "#ffd35c" : "#9fb3c8";
+        return `<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div style="font-size:12px;color:#dce7f7;flex:1">${esc((p.finding||"").slice(0,80))}</div>
+            <span style="color:${cColor};font-size:10px;font-weight:900;white-space:nowrap">${conf}%</span>
+          </div>
+          ${p.recommendation ? `<div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc((p.recommendation||"").slice(0,70))}</div>` : ""}
+        </div>`;
+      }).join("")
+    : '<div style="color:#9fb3c8;font-size:12px">Sin patrones detectados todavía. Registra decisiones con resultados.</div>';
+
+  // Playbook rules
+  const playbookSections = playbook && playbook.sections
+    ? Object.entries(playbook.sections).filter(([, rules]) => rules && rules.length > 0)
+    : [];
+  const playbookRows = playbookSections.length
+    ? playbookSections.flatMap(([section, rules]) =>
+        rules.slice(0, 2).map(r =>
+          `<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+            <div style="font-size:10px;color:#818cf8;font-weight:900">${esc(section).toUpperCase()}</div>
+            <div style="font-size:12px;color:#dce7f7">${esc((r.rule||"").slice(0,70))}</div>
+            <div style="font-size:10px;color:#9fb3c8">Confianza: ${r.confidence || "—"}% · ${esc(r.evidence||"")}</div>
+          </div>`
+        )
+      ).slice(0, 4).join("")
+    : '<div style="color:#9fb3c8;font-size:12px">Playbook vacío — se genera automáticamente con suficientes datos.</div>';
+
+  // Recent decisions
+  const recentRows = di.recentDecisions && di.recentDecisions.length
+    ? di.recentDecisions.slice(0, 4).map(d => {
+        const oc = d.outcome === "Success" ? "#00ff99" : d.outcome === "Failure" ? "#ff4d6d" : d.outcome === "Neutral" ? "#ffd35c" : "#9fb3c8";
+        const ocLabel = d.outcome || "pendiente";
+        return `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+          <span style="background:rgba(129,140,248,.1);color:#818cf8;border-radius:6px;padding:1px 7px;font-size:10px;font-weight:900;white-space:nowrap;margin-top:1px">${esc(d.category||"—")}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;color:#dce7f7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((d.action || d.asset || "—").slice(0,50))}</div>
+            <div style="font-size:10px;color:#9fb3c8">${esc(d.date||"")} · conf: ${d.confidence||"—"}%</div>
+          </div>
+          <span style="color:${oc};font-size:11px;font-weight:900;white-space:nowrap">${esc(ocLabel)}</span>
+        </div>`;
+      }).join("")
+    : '<div style="color:#9fb3c8;font-size:12px">Sin decisiones registradas.</div>';
+
+  const successRate = di.successRate !== null ? di.successRate : null;
+  const srColor = successRate === null ? "#9fb3c8" : successRate >= 60 ? "#00ff99" : successRate >= 40 ? "#ffd35c" : "#ff4d6d";
+
+  return `<div style="background:rgba(244,114,182,.04);border:1px solid rgba(244,114,182,.15);border-radius:20px;padding:20px 22px;margin:0 0 14px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <span style="font-size:13px;font-weight:900;color:#f472b6;letter-spacing:.07em">◈ DECISION INTELLIGENCE</span>
+      <span style="margin-left:10px;font-size:11px;color:#9fb3c8">${di.totalDecisions} decisiones · ${di.withOutcome} con resultado</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      ${successRate !== null ? `<span style="background:${srColor}22;color:${srColor};border:1px solid ${srColor}44;border-radius:99px;padding:2px 10px;font-size:11px;font-weight:900">${successRate}% éxito</span>` : ""}
+      <button onclick="openAddDecisionModal()" style="background:rgba(244,114,182,.12);color:#f472b6;border:1px solid rgba(244,114,182,.3);border-radius:99px;padding:4px 12px;font-size:11px;cursor:pointer;font-weight:800">+ Decisión</button>
+      <a href="/api/decisions" target="_blank" style="font-size:11px;color:#9fb3c8;text-decoration:none">JSON →</a>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${catPills}</div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:6px">Decisiones recientes</div>
+      ${recentRows}
+      <div style="margin-top:8px;font-size:11px;color:#9fb3c8">
+        ${di.strongestPattern ? `<b style="color:#f472b6">Patrón clave:</b> ${esc((di.strongestPattern||"").slice(0,80))}` : "Registra más decisiones para detectar patrones."}
+      </div>
+    </div>
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:6px">Patrones detectados</div>
+      ${patternRows}
+    </div>
+  </div>
+
+  <div style="margin-top:14px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:6px">Personal Playbook</div>
+    ${playbookRows}
+    ${di.biggestMistake ? `<div style="margin-top:8px;padding:8px 12px;background:rgba(255,77,109,.06);border:1px solid rgba(255,77,109,.15);border-radius:12px;font-size:12px;color:#ff8fa3"><b style="color:#ff4d6d">⚠ Error más repetido:</b> ${esc((di.biggestMistake||"").slice(0,100))}</div>` : ""}
+  </div>
+
+</div>
+
+<!-- Add Decision Modal -->
+<div id="add-decision-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.75);align-items:center;justify-content:center">
+  <div style="background:#0b1220;border:1px solid rgba(244,114,182,.3);border-radius:22px;padding:24px;width:min(460px,92vw)">
+    <div style="font-size:15px;font-weight:900;color:#f472b6;margin-bottom:16px">◈ Registrar Decisión</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div>
+        <label style="font-size:11px;color:#9fb3c8;display:block;margin-bottom:4px">Categoría</label>
+        <select id="di-category" style="width:100%;background:#111827;color:#dce7f7;border:1px solid rgba(244,114,182,.25);border-radius:10px;padding:8px 10px;font-size:12px">
+          <option>Trading</option><option>Investment</option><option>Health</option><option>Business</option><option>Personal</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:11px;color:#9fb3c8;display:block;margin-bottom:4px">Asset / Ticker</label>
+        <input id="di-asset" type="text" placeholder="AAPL, BTC, —" style="width:100%;background:#111827;color:#dce7f7;border:1px solid rgba(244,114,182,.25);border-radius:10px;padding:8px 10px;font-size:12px;box-sizing:border-box">
+      </div>
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:11px;color:#9fb3c8;display:block;margin-bottom:4px">Acción / Decisión</label>
+      <input id="di-action" type="text" placeholder="Ej: Comprar XRP, Reducir posición, Descansar un día" style="width:100%;background:#111827;color:#dce7f7;border:1px solid rgba(244,114,182,.25);border-radius:10px;padding:8px 10px;font-size:12px;box-sizing:border-box">
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:11px;color:#9fb3c8;display:block;margin-bottom:4px">Razón</label>
+      <input id="di-reason" type="text" placeholder="¿Por qué tomaste esta decisión?" style="width:100%;background:#111827;color:#dce7f7;border:1px solid rgba(244,114,182,.25);border-radius:10px;padding:8px 10px;font-size:12px;box-sizing:border-box">
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="font-size:11px;color:#9fb3c8;display:block;margin-bottom:4px">Confianza (0–100)</label>
+      <input id="di-confidence" type="number" min="0" max="100" value="60" style="width:100%;background:#111827;color:#dce7f7;border:1px solid rgba(244,114,182,.25);border-radius:10px;padding:8px 10px;font-size:12px;box-sizing:border-box">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="document.getElementById('add-decision-modal').style.display='none'" style="background:rgba(120,140,160,.1);color:#9fb3c8;border:1px solid rgba(120,140,160,.2);border-radius:99px;padding:8px 16px;font-size:12px;cursor:pointer">Cancelar</button>
+      <button onclick="submitDecision()" style="background:rgba(244,114,182,.15);color:#f472b6;border:1px solid rgba(244,114,182,.35);border-radius:99px;padding:8px 18px;font-size:12px;font-weight:900;cursor:pointer">Registrar</button>
+    </div>
+  </div>
+</div>`;
+}
+
 function renderAutopilotPanel() {
   const statusCards = [
     { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
@@ -5309,6 +5975,7 @@ function renderAutopilotPanel() {
       </div>
     </div>
     ${renderExecutivePanel()}
+    ${renderDecisionIntelPanel()}
     ${renderBuildMemoryPanel()}
     ${renderDailyLearningPanel()}
     ${renderAlertsPanel()}
@@ -7629,6 +8296,34 @@ async function runMarketBrainScan() {
     if (btn2) { btn2.textContent = '↺ Rescan'; btn2.disabled = false; }
   }
 }
+function openAddDecisionModal() {
+  var modal = document.getElementById('add-decision-modal');
+  if (modal) modal.style.display = 'flex';
+}
+async function submitDecision() {
+  var action = ((document.getElementById('di-action') || {}).value || '').trim();
+  if (!action) { alert('La acción es obligatoria.'); return; }
+  var entry = {
+    category:   ((document.getElementById('di-category') || {}).value || 'Trading'),
+    action:     action,
+    asset:      ((document.getElementById('di-asset')     || {}).value || '').trim() || null,
+    reason:     null,
+    confidence: parseInt(((document.getElementById('di-confidence') || {}).value || '60'), 10)
+  };
+  try {
+    var r = await fetch('/api/decisions/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry)
+    });
+    if (r.ok) {
+      document.getElementById('add-decision-modal').style.display = 'none';
+      setTimeout(function(){ location.reload(); }, 500);
+    } else {
+      alert('Error al registrar decisión.');
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
 </script>
 </html>`;
 }
@@ -8794,6 +9489,99 @@ if (path === "/api/whoop/today") {
     return;
   }
 
+  // ── Decision Intelligence endpoints ─────────────────────────────────────
+  if (path === "/api/decisions" && req.method === "GET") {
+    try {
+      const di = getDecisionIntelligence();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(di));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/decisions/add" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.category || !input.action) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: "category y action son requeridos" }));
+        }
+        const entry = logDecision({
+          category:   input.category,
+          action:     input.action,
+          asset:      input.asset      || null,
+          reason:     input.reason     || null,
+          confidence: Number(input.confidence || 50),
+          tags:       Array.isArray(input.tags) ? input.tags : []
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, id: entry.id, date: entry.date }));
+      } catch(e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (path === "/api/decisions/outcome" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.decisionId || !input.outcome) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: "decisionId y outcome son requeridos" }));
+        }
+        if (!["Success","Neutral","Failure"].includes(input.outcome)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: "outcome debe ser Success, Neutral o Failure" }));
+        }
+        const updated = updateDecisionOutcome(input.decisionId, {
+          outcome:        input.outcome,
+          pnl:            input.pnl            !== undefined ? Number(input.pnl)            : null,
+          gainPct:        input.gainPct         !== undefined ? Number(input.gainPct)        : null,
+          subjectiveScore:input.subjectiveScore !== undefined ? Number(input.subjectiveScore): null,
+          outcomeNotes:   input.outcomeNotes    || null
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, updated }));
+      } catch(e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (path === "/api/decisions/patterns" && req.method === "GET") {
+    try {
+      const patterns = readJSONSafe(DECISION_PATTERNS_FILE, null);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, patterns }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/decisions/playbook" && req.method === "GET") {
+    try {
+      const playbook = readJSONSafe(PERSONAL_PLAYBOOK_FILE, null);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, playbook }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(render());
 });
@@ -8899,6 +9687,9 @@ async function boot() {
     // Executive Briefing — on boot + every 15 minutes
     try { buildExecutiveBriefing(); } catch(e) { console.log("buildExecutiveBriefing boot omitido:", e.message); }
     setInterval(() => { try { buildExecutiveBriefing(); } catch(e) {} }, 15 * 60 * 1000);
+
+    // Decision Intelligence — analyze patterns on boot
+    try { analyzeDecisionPatterns(); } catch(e) { console.log("analyzeDecisionPatterns boot omitido:", e.message); }
 
     // Project Memory — update roadmap + log boot event
     try {
