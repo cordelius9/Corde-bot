@@ -23,6 +23,7 @@ whoop_tokens.json
 
 # Backups y parches locales
 dashboard_backup_*.js
+dashboard.backup*.js
 dashboard_FINAL_*.js
 dashboard_OK_*.js
 dashboard_broken_*.js
@@ -92,3 +93,15 @@ dashboard.backup*.js
 cloudflared.log
 server.log
 health_behavior_log.json
+health_daily_snapshots.json
+
+# Autopilot database runtime files (includes all Jarvis private memory)
+# jarvis_private_profile.json, jarvis_health_rules.json, jarvis_daily_questions.json
+# jarvis_risk_rules.json, jarvis_checkins.json — all covered by data/*.json
+data/*.json
+data/*.tmp
+
+# Other runtime/local files
+whoop_today_cache.json
+server.log
+start-with-env.js
