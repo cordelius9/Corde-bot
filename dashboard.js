@@ -1414,6 +1414,37 @@ EDUCATIVO — no es asesoría financiera.`;
     reply = idea.hasIdea
       ? `Paper Mode — ${idea.type}: ${idea.symbol} — ${idea.reason}. Confianza: ${idea.confidence}. Falta para operar real: ${idea.missingData}. Alpaca: pendiente de conexión. NO hay trading real.`
       : "Paper Mode activo. Sin idea de trade destacada ahora. Bot simulado: equity " + money(botEq) + ", P&L " + money(botPnl) + ". Alpaca: pendiente. NO hay trading real.";
+  } else if (q.includes("qué debería hacer") || q.includes("que deberia hacer") || q.includes("qué hago hoy") || q.includes("que hago hoy") || q.includes("executive briefing") || q.includes("briefing ejecutivo") || q.includes("resumen ejecutivo")) {
+    const b = (function(){ try { return readJSONSafe(EXECUTIVE_BRIEFING_FILE, null); } catch(e){ return null; } })();
+    if (b) {
+      reply = `Executive [${b.date}] · ${b.scoreGrade} (${b.score}/100). Foco: ${b.focusToday}. Acción: ${b.nextBestAction}. Riesgo: ${(b.topRisks||[])[0]||"—"}. Oportunidad: ${(b.topOpportunities||[])[0]||"—"}. EDUCATIVO.`;
+    } else {
+      reply = `Sin briefing ejecutivo todavía. Genera con POST /api/executive/run o espera el próximo ciclo (15 min).`;
+    }
+  } else if (q.includes("mayor riesgo") || q.includes("riesgo principal") || q.includes("qué estoy ignorando") || q.includes("que estoy ignorando") || q.includes("qué me debería preocupar") || q.includes("que me deberia preocupar")) {
+    const b = (function(){ try { return readJSONSafe(EXECUTIVE_BRIEFING_FILE, null); } catch(e){ return null; } })();
+    if (b && b.topRisks && b.topRisks.length) {
+      const avoidStr = (b.thingsToAvoid||[]).slice(0,1).join("");
+      reply = `Mayor riesgo: ${b.topRisks[0]}${b.topRisks[1] ? " También: " + b.topRisks[1] + "." : "."} Score de riesgo: ${b.scoreComponents ? b.scoreComponents.risk + "/100" : "—"}.${avoidStr ? " Evitar: " + avoidStr : ""} EDUCATIVO.`;
+    } else {
+      reply = `Sin datos de Executive Briefing. Genera con POST /api/executive/run. El mayor riesgo actual viene del portafolio: ${worst.symbol} (score ${worst.score}/100, ${pct(worst.gainPct)}).`;
+    }
+  } else if (q.includes("mejor oportunidad") || q.includes("oportunidad ahora") || q.includes("cuál es la mejor oportunidad") || q.includes("cual es la mejor oportunidad")) {
+    const b = (function(){ try { return readJSONSafe(EXECUTIVE_BRIEFING_FILE, null); } catch(e){ return null; } })();
+    if (b && b.topOpportunities && b.topOpportunities.length) {
+      reply = `Mejor oportunidad (educativa): ${b.topOpportunities[0]}.${b.topOpportunities[1] ? " También: " + b.topOpportunities[1] + "." : ""} Acción sugerida: ${b.nextBestAction}. EDUCATIVO.`;
+    } else {
+      reply = `Sin oportunidades detectadas en el briefing ejecutivo. Ideas paper: ${best && best.signal ? best.symbol + " — " + best.signal : "sin señales claras"}. EDUCATIVO.`;
+    }
+  } else if (q.includes("en qué me enfoco") || q.includes("en que me enfoco") || q.includes("foco hoy") || q.includes("prioridad hoy") || q.includes("qué es lo más importante") || q.includes("que es lo mas importante")) {
+    const b = (function(){ try { return readJSONSafe(EXECUTIVE_BRIEFING_FILE, null); } catch(e){ return null; } })();
+    if (b) {
+      reply = `Foco hoy: ${b.focusToday}. Acciones recomendadas: ${(b.recommendedActions||[]).slice(0,2).join("; ")}. Evitar: ${(b.thingsToAvoid||[]).slice(0,1).join("")}. Score ejecutivo: ${b.score}/100 (${b.scoreGrade}). EDUCATIVO.`;
+    } else {
+      reply = `Sin briefing ejecutivo. Foco por defecto: monitorear posiciones y revisar régimen de mercado. EDUCATIVO.`;
+    }
+  } else if (q.includes("buenos dias") || q.includes("buenos días") || q.includes("reporte matutino") || q.includes("morning briefing") || q.includes("good morning")) {
+    reply = generateMorningBriefing().slice(0, 2000);
   } else if (q.includes("morning report") || q.includes("reporte diario") || q.includes("reporte mañana") || q.includes("reporte manana")) {
     const nl = computeDailyNewsletter();
     const idea = computeTradeIdea();
@@ -2497,9 +2528,11 @@ const PORTFOLIO_STORE_FILE        = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cor
 const MARKET_BRAIN_FILE           = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_brain.json");
 const MARKET_BRAIN_HISTORY_FILE   = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_brain_history.json");
 const MARKET_WATCHLIST_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_watchlist.json");
-const PROJECT_MEMORY_FILE         = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "project_memory.json");
-const BUILD_LOG_FILE              = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "build_log.json");
-const CORDELIUS_ROADMAP_FILE      = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_roadmap.json");
+const PROJECT_MEMORY_FILE             = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "project_memory.json");
+const BUILD_LOG_FILE                  = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "build_log.json");
+const CORDELIUS_ROADMAP_FILE          = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_roadmap.json");
+const EXECUTIVE_BRIEFING_FILE         = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "executive_briefing.json");
+const EXECUTIVE_BRIEFING_HISTORY_FILE = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "executive_briefing_history.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -2869,6 +2902,11 @@ function runAutoDailySnapshot() {
     try { buildMarketBrain(); } catch(e) {
       console.log("[AutoSnapshot] buildMarketBrain error:", e.message);
     }
+    // Force fresh executive briefing after daily snapshot
+    _lastExecutiveHalfHour = null;
+    try { buildExecutiveBriefing(); } catch(e) {
+      console.log("[AutoSnapshot] buildExecutiveBriefing error:", e.message);
+    }
 
     const cap  = snap && snap.learning && snap.learning.tradingCapacity      ? snap.learning.tradingCapacity      : "—";
     const risk = snap && snap.learning && snap.learning.riskRecommendation   ? snap.learning.riskRecommendation   : "—";
@@ -3057,6 +3095,8 @@ function checkAlerts() {
     const allAlerts = [...newAlerts, ...existing].slice(0, 500);
     writeJSONAtomic(CORDELIUS_ALERTS_FILE, allAlerts);
     console.log("[Alerts] " + newAlerts.length + " new: " + newAlerts.map(a => a.severity + "/" + a.type).join(", "));
+    // Trigger executive briefing with fresh alert data
+    try { buildExecutiveBriefing(); } catch(e2) { console.log("[Alerts] executive error:", e2.message); }
     return { newCount: newAlerts.length, alerts: newAlerts };
   } catch(e) {
     console.log("[Alerts] checkAlerts error:", e.message);
@@ -3210,6 +3250,8 @@ function buildMarketBrain() {
     writeJSONAtomic(MARKET_BRAIN_HISTORY_FILE, updated);
 
     console.log("[MarketBrain] Done — confidence " + confidence + " | regime " + regLabel + " | risks " + topRisks.length + " | opps " + topOpportunities.length);
+    // Trigger executive briefing with fresh market data
+    try { buildExecutiveBriefing(); } catch(e2) { console.log("[MarketBrain] executive error:", e2.message); }
   } catch(e) {
     _lastBrainHourBlock = null; // allow retry next cycle
     console.log("[MarketBrain] Error:", e.message);
@@ -3489,6 +3531,285 @@ function initProjectMemory() {
   }
 }
 
+// ── Executive AI Layer ────────────────────────────────────────────────────────
+// Phase 4A — Transforms Jarvis into an executive operating system.
+// Synthesizes WHOOP + Market Brain + Portfolio + Daily Intelligence +
+// Alerts + Project Memory into one structured executive briefing.
+
+let _lastExecutiveHalfHour = null;
+
+function computeExecutiveScore(sources) {
+  const h       = sources.health   || {};
+  const brain   = sources.brain    || {};
+  const intel   = sources.intel    || {};
+  const alerts  = Array.isArray(sources.alerts) ? sources.alerts : [];
+  const pstate  = sources.portfolio || {};
+
+  // 1. Health (0-100)
+  const healthScore = (h.recovery !== null && h.recovery !== undefined)
+    ? Math.min(100, Math.max(0, h.recovery))
+    : 50;
+
+  // 2. Market (0-100)
+  const reg = ((brain.marketRegime || intel.marketRegime || "NEUTRAL") + "").toUpperCase();
+  const marketScore = /ALCISTA|BULLISH/.test(reg) ? 82 : /BAJISTA|BEARISH|RISK_OFF/.test(reg) ? 28 : 58;
+
+  // 3. Portfolio (0-100)
+  const gainPct    = Number(pstate.gainPct   || (brain.portfolioState && brain.portfolioState.gainPct)   || 0);
+  const cryptoPct  = Number(pstate.cryptoPct || (brain.portfolioState && brain.portfolioState.cryptoPct) || 0);
+  const portScore  = Math.min(100, Math.max(0,
+    65 + (gainPct > 20 ? 12 : gainPct > 5 ? 5 : gainPct < -15 ? -20 : 0)
+       - (cryptoPct > 70 ? 22 : cryptoPct > 50 ? 10 : 0)
+  ));
+
+  // 4. Focus (0-100)
+  const cap = (intel.tradingCapacity || "—") + "";
+  const focusScore = cap === "ALTA" ? 88 : cap === "BAJA" ? 28 : 60;
+
+  // 5. Risk (0-100 — higher = safer)
+  const critCnt = alerts.filter(a => a && a.severity === "CRITICAL" && !a.acknowledged).length;
+  const warnCnt = alerts.filter(a => a && a.severity === "WARNING"  && !a.acknowledged).length;
+  const riskMode = ((intel.riskMode || brain.riskMode || "") + "").toUpperCase();
+  const defensivePenalty = /REDUCIR_RIESGO|DEFENSIVO|RISK_OFF|BEARISH/.test(riskMode) ? 18 : 0;
+  const riskScore = Math.min(100, Math.max(0, 82 - critCnt * 22 - warnCnt * 9 - defensivePenalty));
+
+  // 6. System readiness (0-100)
+  const dataPoints = [
+    h.recovery !== null && h.recovery !== undefined,
+    !!(brain.date),
+    !!(intel.tradingCapacity),
+    alerts.length >= 0,
+    !!(pstate.gainPct !== undefined || (brain.portfolioState && brain.portfolioState.totalMXN))
+  ].filter(Boolean).length;
+  const systemScore = dataPoints * 20;
+
+  const score = Math.round(
+    healthScore * 0.20 + marketScore * 0.20 + portScore * 0.20 +
+    focusScore  * 0.15 + riskScore   * 0.15 + systemScore * 0.10
+  );
+
+  const grade = score >= 90 ? "EXCELLENT" : score >= 75 ? "GOOD" : score >= 60 ? "MODERATE" : score >= 40 ? "CAUTION" : "CRITICAL";
+  const gradeColor = { EXCELLENT: "#00ff99", GOOD: "#7fff7f", MODERATE: "#ffd35c", CAUTION: "#ff8800", CRITICAL: "#ff4d6d" }[grade];
+  const explanation = `Salud ${healthScore} · Mercado ${marketScore} · Portfolio ${portScore} · Foco ${focusScore} · Riesgo ${riskScore} · Sistema ${systemScore}`;
+
+  return { score, grade, gradeColor, components: { health: healthScore, market: marketScore, portfolio: portScore, focus: focusScore, risk: riskScore, systemReadiness: systemScore }, explanation };
+}
+
+function buildExecutiveBriefing() {
+  try {
+    const now      = new Date();
+    const dateKey  = todayDateKey();
+    // Dedup by 30-minute block (allows 2 runs/hour while preventing rapid-fire)
+    const halfHour = dateKey + "H" + now.getHours() + "M" + (now.getMinutes() >= 30 ? "b" : "a");
+    if (_lastExecutiveHalfHour === halfHour) return;
+    _lastExecutiveHalfHour = halfHour;
+    console.log("[Executive] Building briefing — " + halfHour);
+
+    // ── Read all intelligence sources ──
+    const h      = (function(){ try { return computeHealthReadiness(); } catch(e){ return {}; } })();
+    const brain  = readJSONSafe(MARKET_BRAIN_FILE, null) || {};
+    const pv     = (function(){ try { return portfolioValue(); } catch(e){ return null; } })();
+    const pi     = (function(){ try { return computePortfolioIntelligence(); } catch(e){ return null; } })();
+
+    const dailySummaries = readJSONSafe(DAILY_INTELLIGENCE_FILE, []);
+    const todayIntel     = Array.isArray(dailySummaries)
+      ? (dailySummaries.find(s => s && s.date === dateKey) || dailySummaries[0] || null)
+      : null;
+
+    const allAlerts    = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
+    const activeAlerts = Array.isArray(allAlerts) ? allAlerts.filter(a => a && !a.acknowledged) : [];
+
+    const projStatus   = (function(){ try { return getProjectStatus(); } catch(e){ return null; } })();
+
+    // ── Executive Score ──
+    const scoreInput = {
+      health:    h,
+      brain:     brain,
+      intel:     todayIntel || {},
+      alerts:    activeAlerts,
+      portfolio: pi
+        ? { gainPct: pi.totalGainPct, cryptoPct: pi.concentration ? pi.concentration.criptoPct : 0 }
+        : {}
+    };
+    const execScore = computeExecutiveScore(scoreInput);
+
+    // ── Health Summary ──
+    const healthSummary = (h.recovery !== null && h.recovery !== undefined)
+      ? `Recovery ${h.recovery}% · Sleep ${h.sleep != null ? h.sleep + "%" : "—"} · HRV ${h.hrv || "—"} ms · Modo ${h.operatingMode}. ${h.suggestion || ""}`
+      : `WHOOP sin datos. Modo derivado: ${h.operatingMode || "NORMAL"}.`;
+
+    // ── Market Summary ──
+    const marketSummary = brain.date
+      ? `Régimen ${brain.marketRegime} · Riesgo ${brain.riskMode || "—"} · Cripto ${brain.cryptoExposure || "?"}% · Confianza ${brain.confidence || "—"}.`
+      : `Régimen: ${(function(){ try { return marketRegime().label; } catch(e){ return "NEUTRAL"; } })()}.`;
+
+    // ── Portfolio Summary ──
+    const portfolioSummary = pi
+      ? `${money(pi.totalValueMXN)} · ${pct(pi.totalGainPct)} · Cripto ${pi.concentration.criptoPct}% · ${pi.assetCount} activos.`
+      : pv ? `${money(pv.totalValueMXN)} · ${pct(pv.totalGainPct)}.` : "Sin datos.";
+
+    // ── Top Risks (≤5) ──
+    const topRisks = [];
+    if (h.recovery !== null && h.recovery < 40) topRisks.push("Salud baja — recovery " + h.recovery + "%, evitar decisiones de alta convicción.");
+    if (pi && pi.concentration && pi.concentration.alert) topRisks.push("Concentración cripto " + pi.concentration.criptoPct + "% — riesgo de volatilidad.");
+    if (pi && pi.riskAssets && pi.riskAssets.length) topRisks.push("Activos débiles: " + pi.riskAssets.slice(0,3).map(a=>a.symbol+"(s"+a.score+")").join(", ") + ".");
+    activeAlerts.filter(a=>a.severity==="CRITICAL").slice(0,2).forEach(a=>topRisks.push("CRÍTICO: " + (a.title||a.message||"").slice(0,80)));
+    activeAlerts.filter(a=>a.severity==="WARNING").slice(0,1).forEach(a=>topRisks.push("Alerta: " + (a.title||a.message||"").slice(0,80)));
+    if (brain.topRisks) brain.topRisks.filter(r=>!topRisks.some(t=>t.slice(0,20)===r.slice(0,20))).slice(0,2).forEach(r=>topRisks.push(r));
+    if (topRisks.length === 0) topRisks.push("Sin riesgos críticos identificados en este ciclo.");
+
+    // ── Top Opportunities (≤5) ──
+    const topOpportunities = [];
+    if (pi && pi.oppAssets && pi.oppAssets.length) topOpportunities.push("Ganancias destacadas: " + pi.oppAssets.slice(0,2).map(a=>a.symbol+" +"+a.gainPct.toFixed(0)+"%").join(", ") + ".");
+    if (pi && pi.buyDip && pi.buyDip.length) topOpportunities.push("Señales educativas: " + pi.buyDip.slice(0,2).map(a=>a.symbol+" "+a.signal).join(", ") + ".");
+    if (brain.topOpportunities) brain.topOpportunities.filter(o=>!topOpportunities.some(t=>t.slice(0,20)===o.slice(0,20))).slice(0,2).forEach(o=>topOpportunities.push(o));
+    activeAlerts.filter(a=>a.severity==="OPPORTUNITY").slice(0,2).forEach(a=>topOpportunities.push((a.title||a.message||"").slice(0,80)));
+    if (topOpportunities.length === 0) topOpportunities.push("Sin oportunidades claras en este ciclo.");
+
+    // ── Focus Today ──
+    const cap = todayIntel ? (todayIntel.tradingCapacity || "—") : "—";
+    const focusToday = (cap === "BAJA" || h.operatingMode === "CONSERVADOR")
+      ? "Modo observación. No operar. Leer, revisar tesis, descansar."
+      : (cap === "ALTA" && execScore.score >= 70)
+      ? "Capacidad óptima. Revisar señales BUY DIP y watchlist externa."
+      : "Mantener posiciones, monitorear régimen, actualizar tesis.";
+
+    // ── Recommended Actions (≤5) ──
+    const recommendedActions = [];
+    if (pi && pi.riskAssets && pi.riskAssets.length) recommendedActions.push("Revisar tesis de: " + pi.riskAssets.slice(0,2).map(a=>a.symbol).join(", ") + ".");
+    if (pi && pi.buyDip && pi.buyDip.length && execScore.score >= 60) recommendedActions.push("Evaluar (paper): " + pi.buyDip.slice(0,1).map(a=>a.symbol+" — "+a.signal).join(", ") + ".");
+    if (brain.watchlist && brain.watchlist.length) recommendedActions.push("Revisar watchlist: " + brain.watchlist.slice(0,5).join(", ") + ".");
+    if (activeAlerts.some(a=>a.severity==="CRITICAL")) recommendedActions.push("Resolver alertas críticas en panel Autopilot.");
+    if (recommendedActions.length === 0) recommendedActions.push("Monitoreo habitual. Sin acciones urgentes.");
+
+    // ── Things to Avoid (≤4) ──
+    const thingsToAvoid = [];
+    if (h.recovery !== null && h.recovery < 40) thingsToAvoid.push("No tomar decisiones de convicción — recuperación baja.");
+    if (pi && pi.concentration && pi.concentration.criptoPct > 70) thingsToAvoid.push("No aumentar cripto — ya sobre-concentrado.");
+    const rm = (todayIntel ? todayIntel.riskMode : "") || (brain.riskMode || "");
+    if (/REDUCIR_RIESGO|DEFENSIVO|RISK_OFF/.test(rm.toUpperCase())) thingsToAvoid.push("No abrir posiciones nuevas — modo defensivo activo.");
+    if (thingsToAvoid.length === 0) thingsToAvoid.push("Sin restricciones activas en este ciclo.");
+
+    // ── Questions for Pedro (≤4) ──
+    const questionsForPedro = Array.isArray(brain.questionsToAskPedro) ? [...brain.questionsToAskPedro].slice(0,2) : [];
+    if (pi && pi.concentration && pi.concentration.alert && !questionsForPedro.some(q=>q.includes("cripto")))
+      questionsForPedro.push("¿Quieres reducir exposición cripto desde " + pi.concentration.criptoPct + "%?");
+    if (!questionsForPedro.length) questionsForPedro.push("¿Hay algo específico que quieras analizar hoy?");
+
+    // ── Project Priority ──
+    const projectPriority = projStatus && projStatus.ok && projStatus.nextSteps.length
+      ? projStatus.nextSteps.slice(0,2).map(f=>f.id+": "+f.name).join(" → ")
+      : "Ver roadmap: GET /api/project/roadmap";
+
+    // ── Next Best Action ──
+    const nextBestAction = (function(){
+      if (activeAlerts.some(a=>a.severity==="CRITICAL")) return "⚠ Resolver alertas críticas — Autopilot → Alertas.";
+      if (h.recovery !== null && h.recovery < 33) return "Descanso prioritario. No operar hasta recovery >50%.";
+      if (pi && pi.buyDip && pi.buyDip.length && execScore.score >= 65)
+        return "Evaluar (paper): " + pi.buyDip[0].symbol + " — " + pi.buyDip[0].signal + ". EDUCATIVO.";
+      if (pi && pi.riskAssets && pi.riskAssets.length)
+        return "Revisar tesis de " + pi.riskAssets[0].symbol + " — score bajo (" + pi.riskAssets[0].score + "/100).";
+      return "Mantener y monitorear. Sin acción urgente. EDUCATIVO.";
+    })();
+
+    // ── Executive Narrative ──
+    const executiveNarrative = [
+      "Cordelius Executive — " + dateKey + " — " + execScore.grade + " (" + execScore.score + "/100).",
+      healthSummary,
+      marketSummary,
+      portfolioSummary,
+      "Riesgo: " + topRisks[0],
+      "Oportunidad: " + topOpportunities[0],
+      "Foco: " + focusToday,
+      "Acción: " + nextBestAction,
+      "EDUCATIVO — no es asesoría financiera."
+    ].join(" ");
+
+    const briefing = {
+      date:             dateKey,
+      timestamp:        now.toISOString(),
+      halfHour,
+      executiveStatus:  execScore.grade,
+      confidence:       execScore.grade,
+      score:            execScore.score,
+      scoreGrade:       execScore.grade,
+      scoreComponents:  execScore.components,
+      scoreExplanation: execScore.explanation,
+      healthSummary,
+      marketSummary,
+      portfolioSummary,
+      topRisks:         topRisks.slice(0, 5),
+      topOpportunities: topOpportunities.slice(0, 5),
+      focusToday,
+      recommendedActions: recommendedActions.slice(0, 5),
+      thingsToAvoid:    thingsToAvoid.slice(0, 4),
+      questionsForPedro:questionsForPedro.slice(0, 4),
+      projectPriority,
+      nextBestAction,
+      executiveNarrative
+    };
+
+    writeJSONAtomic(EXECUTIVE_BRIEFING_FILE, briefing);
+
+    const history = readJSONSafe(EXECUTIVE_BRIEFING_HISTORY_FILE, []);
+    const updated  = Array.isArray(history) ? history.filter(e => e && e.halfHour !== halfHour) : [];
+    updated.unshift(briefing);
+    if (updated.length > 365) updated.length = 365;
+    writeJSONAtomic(EXECUTIVE_BRIEFING_HISTORY_FILE, updated);
+
+    console.log("[Executive] Done — " + execScore.grade + " " + execScore.score + "/100 | " + halfHour);
+  } catch(e) {
+    _lastExecutiveHalfHour = null;
+    console.log("[Executive] buildExecutiveBriefing error:", e.message);
+  }
+}
+
+function generateMorningBriefing() {
+  try {
+    const b = readJSONSafe(EXECUTIVE_BRIEFING_FILE, null);
+    if (!b) return "Sin briefing ejecutivo disponible. Genera con POST /api/executive/run.";
+    const lines = [
+      "GOOD MORNING PEDRO",
+      "",
+      "▣ ESTADO EJECUTIVO: " + b.executiveStatus + " — " + b.score + "/100",
+      "",
+      "SALUD:",
+      "  " + b.healthSummary,
+      "",
+      "MERCADO:",
+      "  " + b.marketSummary,
+      "",
+      "PORTAFOLIO:",
+      "  " + b.portfolioSummary,
+      "",
+      "RIESGOS:",
+      ...(b.topRisks || []).slice(0,3).map(r => "  • " + r),
+      "",
+      "OPORTUNIDADES:",
+      ...(b.topOpportunities || []).slice(0,3).map(o => "  • " + o),
+      "",
+      "FOCO HOY:",
+      "  " + b.focusToday,
+      "",
+      "SIGUIENTE ACCION:",
+      "  " + b.nextBestAction,
+      "",
+      "EVITAR:",
+      ...(b.thingsToAvoid || []).slice(0,2).map(t => "  • " + t),
+      "",
+      "PRIORIDAD PROYECTO:",
+      "  " + b.projectPriority,
+      "",
+      "═══════════════════════════════════",
+      "EDUCATIVO — No es asesoria financiera.",
+      "Cordelius OS · " + b.date
+    ];
+    return lines.join("\n");
+  } catch(e) {
+    return "Error generando morning briefing: " + e.message;
+  }
+}
+
 // ============================================================
 // JARVIS MEMORY ENGINE — buildJarvisContext / buildMemorySummary
 // Reads and compresses all persistent memory for Claude injection
@@ -3689,6 +4010,31 @@ function buildJarvisContext() {
     ctx.projectMemory = null;
   }
 
+  // 9. Executive Briefing — synthesized executive view (from file, never calls buildExecutiveBriefing directly)
+  try {
+    const b = readJSONSafe(EXECUTIVE_BRIEFING_FILE, null);
+    if (b && b.date) {
+      ctx.executive = {
+        date:             b.date,
+        status:           b.executiveStatus,
+        score:            b.score,
+        grade:            b.scoreGrade,
+        focusToday:       b.focusToday,
+        nextBestAction:   b.nextBestAction,
+        topRisks:         (b.topRisks         || []).slice(0, 3),
+        topOpportunities: (b.topOpportunities || []).slice(0, 3),
+        thingsToAvoid:    (b.thingsToAvoid    || []).slice(0, 2),
+        recommendedActions:(b.recommendedActions||[]).slice(0, 3),
+        projectPriority:  b.projectPriority,
+        scoreExplanation: b.scoreExplanation
+      };
+    } else {
+      ctx.executive = null;
+    }
+  } catch(e) {
+    ctx.executive = null;
+  }
+
   return ctx;
 }
 
@@ -3782,6 +4128,15 @@ function buildMemorySummary() {
       lines.push(`ROADMAP: ${pm.roadmapStats.completed} features completadas · ${pm.roadmapStats.pending} pendientes.`);
       if (pm.nextSteps && pm.nextSteps.length) lines.push(`PRÓXIMO: ${pm.nextSteps.slice(0,2).join(" | ")}.`);
       if (pm.latestBuildLog && pm.latestBuildLog.length) lines.push(`ÚLTIMO BUILD: [${pm.latestBuildLog[0].type}] ${pm.latestBuildLog[0].title} (${pm.latestBuildLog[0].date}).`);
+    }
+
+    // Executive Briefing — single authoritative status line
+    const ex = ctx.executive;
+    if (ex) {
+      lines.push(`EJECUTIVO [${ex.date}]: Score ${ex.score}/100 (${ex.grade}) · Foco: ${ex.focusToday}`);
+      if (ex.topRisks    && ex.topRisks.length)    lines.push(`RIESGO EXEC: ${ex.topRisks.slice(0,2).join(" | ")}`);
+      if (ex.topOpportunities && ex.topOpportunities.length) lines.push(`OPORT EXEC: ${ex.topOpportunities.slice(0,1).join("")}`);
+      lines.push(`ACCION HOY: ${ex.nextBestAction}`);
     }
 
     if (lines.length === 0) return "Sin memoria disponible todavía.";
@@ -4603,6 +4958,95 @@ function renderMarketBrainPanel() {
 </div>`;
 }
 
+function renderExecutivePanel() {
+  const b = readJSONSafe(EXECUTIVE_BRIEFING_FILE, null);
+  const GRADE_BG  = { EXCELLENT: "rgba(0,255,153,.07)", GOOD: "rgba(0,255,153,.05)", MODERATE: "rgba(255,211,92,.06)", CAUTION: "rgba(255,136,0,.07)", CRITICAL: "rgba(255,77,109,.07)" };
+  const GRADE_BR  = { EXCELLENT: "rgba(0,255,153,.22)", GOOD: "rgba(0,255,153,.16)", MODERATE: "rgba(255,211,92,.22)", CAUTION: "rgba(255,136,0,.22)", CRITICAL: "rgba(255,77,109,.22)" };
+  const GRADE_COL = { EXCELLENT: "#00ff99", GOOD: "#7fff7f", MODERATE: "#ffd35c", CAUTION: "#ff8800", CRITICAL: "#ff4d6d" };
+  const SCORE_BAR_COL = { EXCELLENT: "#00ff99", GOOD: "#7fff7f", MODERATE: "#ffd35c", CAUTION: "#ff8800", CRITICAL: "#ff4d6d" };
+
+  if (!b || !b.date) {
+    return `<div style="background:rgba(129,140,248,.04);border:1px solid rgba(129,140,248,.15);border-radius:22px;padding:20px 24px;margin:0 0 14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div><span style="font-size:13px;font-weight:900;color:#818cf8;letter-spacing:.07em">▣ CORDELIUS EXECUTIVE</span>
+          <span style="margin-left:10px;color:#9fb3c8;font-size:12px">Sin briefing todavía — generando…</span></div>
+        <button onclick="runExecutiveReview()" style="background:rgba(129,140,248,.14);color:#818cf8;border:1px solid rgba(129,140,248,.32);border-radius:99px;padding:6px 18px;font-size:12px;font-weight:800;cursor:pointer">Run Executive Review ▸</button>
+      </div>
+    </div>`;
+  }
+
+  const grade = b.scoreGrade || "MODERATE";
+  const gc    = GRADE_COL[grade] || "#ffd35c";
+  const gbg   = GRADE_BG[grade]  || "rgba(255,211,92,.06)";
+  const gbr   = GRADE_BR[grade]  || "rgba(255,211,92,.22)";
+  const sc    = SCORE_BAR_COL[grade] || "#ffd35c";
+  const score = b.score || 0;
+
+  const compRows = b.scoreComponents ? Object.entries(b.scoreComponents).map(([k, v]) => {
+    const lab = { health: "Salud", market: "Mercado", portfolio: "Portfolio", focus: "Foco", risk: "Riesgo", systemReadiness: "Sistema" }[k] || k;
+    const barW = Math.round(v) + "%";
+    const barC = v >= 75 ? "#00ff99" : v >= 55 ? "#ffd35c" : "#ff4d6d";
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+      <span style="width:68px;font-size:10px;color:#9fb3c8">${lab}</span>
+      <div style="flex:1;height:5px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden"><div style="width:${barW};height:100%;background:${barC};border-radius:3px"></div></div>
+      <span style="width:28px;text-align:right;font-size:10px;color:${barC};font-weight:700">${v}</span>
+    </div>`;
+  }).join("") : "";
+
+  const riskRows  = (b.topRisks||[]).slice(0,3).map(r => `<div style="font-size:12px;color:#ff9999;padding:2px 0">⚑ ${esc((r||"").slice(0,80))}</div>`).join("");
+  const oppRows   = (b.topOpportunities||[]).slice(0,3).map(o => `<div style="font-size:12px;color:#b8ffd9;padding:2px 0">★ ${esc((o||"").slice(0,80))}</div>`).join("");
+  const avoidRows = (b.thingsToAvoid||[]).slice(0,2).map(t => `<span style="background:rgba(255,136,0,.1);color:#ff8800;border-radius:6px;padding:2px 8px;font-size:10px;margin:2px;display:inline-block">✗ ${esc((t||"").slice(0,60))}</span>`).join("");
+
+  const brAge = b.timestamp ? Math.round((Date.now() - new Date(b.timestamp).getTime()) / 60000) : null;
+  const ageStr = brAge !== null ? (brAge < 60 ? brAge + " min" : Math.floor(brAge/60) + "h") : "—";
+
+  return `<div style="background:${gbg};border:1px solid ${gbr};border-radius:22px;padding:20px 24px;margin:0 0 14px">
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:14px">
+      <div style="text-align:center">
+        <div style="font-size:42px;font-weight:900;color:${gc};line-height:1">${score}</div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;color:${gc};text-transform:uppercase">${esc(grade)}</div>
+      </div>
+      <div>
+        <div style="font-size:13px;font-weight:900;color:#dce7f7;letter-spacing:.06em">▣ CORDELIUS EXECUTIVE</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc(b.date)} · hace ${ageStr}</div>
+        <div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc((b.scoreExplanation||"").slice(0,80))}</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="background:${gc}22;color:${gc};border:1px solid ${gc}44;border-radius:99px;padding:3px 12px;font-size:11px;font-weight:900">${esc(grade)}</span>
+      <button onclick="runExecutiveReview()" style="background:rgba(129,140,248,.14);color:#818cf8;border:1px solid rgba(129,140,248,.32);border-radius:99px;padding:5px 16px;font-size:11px;font-weight:800;cursor:pointer">↺ Run Review</button>
+      <a href="/api/executive" target="_blank" style="font-size:11px;color:#818cf8;text-decoration:none">JSON →</a>
+    </div>
+  </div>
+
+  <!-- Score breakdown + focus + action -->
+  <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:14px;margin-bottom:14px">
+    <div>
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:8px">Score Breakdown</div>
+      ${compRows}
+    </div>
+    <div>
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#ffd35c;text-transform:uppercase;margin-bottom:6px">Foco Hoy</div>
+      <div style="font-size:13px;color:#dce7f7;line-height:1.4;margin-bottom:10px">${esc(b.focusToday||"—")}</div>
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#00ff99;text-transform:uppercase;margin-bottom:6px">⚡ Siguiente Acción</div>
+      <div style="font-size:12px;color:#b8ffd9;font-weight:600">${esc((b.nextBestAction||"—").slice(0,120))}</div>
+      ${avoidRows ? `<div style="margin-top:8px">${avoidRows}</div>` : ""}
+    </div>
+    <div>
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#ff8888;text-transform:uppercase;margin-bottom:5px">Riesgos</div>
+      ${riskRows || '<div style="color:#9fb3c8;font-size:12px">—</div>'}
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:#b8ffd9;text-transform:uppercase;margin-top:10px;margin-bottom:5px">Oportunidades</div>
+      ${oppRows || '<div style="color:#9fb3c8;font-size:12px">—</div>'}
+    </div>
+  </div>
+
+  <!-- Project priority -->
+  ${b.projectPriority ? `<div style="padding-top:10px;border-top:1px solid rgba(255,255,255,.06);font-size:11px;color:#9fb3c8"><b style="color:#818cf8">Proyecto:</b> ${esc((b.projectPriority||"").slice(0,120))}</div>` : ""}
+</div>`;
+}
+
 function renderBuildMemoryPanel() {
   const status  = (function(){ try { return getProjectStatus(); } catch(e){ return null; } })();
   const roadmap = readJSONSafe(CORDELIUS_ROADMAP_FILE, _ROADMAP_SEED);
@@ -4864,6 +5308,7 @@ function renderAutopilotPanel() {
         </div>
       </div>
     </div>
+    ${renderExecutivePanel()}
     ${renderBuildMemoryPanel()}
     ${renderDailyLearningPanel()}
     ${renderAlertsPanel()}
@@ -7125,6 +7570,22 @@ async function ackAlert(alertId) {
     }
   } catch(e) {}
 }
+async function runExecutiveReview() {
+  try {
+    var btn = event && event.target ? event.target : null;
+    if (btn) { btn.textContent = '⟳ Analizando…'; btn.disabled = true; }
+    var r = await fetch('/api/executive/run', { method: 'POST' });
+    if (r.ok) {
+      if (btn) btn.textContent = '✓ Listo';
+      setTimeout(function(){ location.reload(); }, 800);
+    } else {
+      if (btn) { btn.textContent = '↺ Run Review'; btn.disabled = false; }
+    }
+  } catch(e) {
+    var btn2 = event && event.target ? event.target : null;
+    if (btn2) { btn2.textContent = '↺ Run Review'; btn2.disabled = false; }
+  }
+}
 function openBuildLogEntry() {
   var modal = document.getElementById('build-log-modal');
   if (modal) modal.style.display = 'flex';
@@ -8105,6 +8566,74 @@ if (path === "/api/whoop/today") {
     }
   }
 
+  // ---- Executive AI API ----
+  if (path === "/api/executive" && req.method === "GET") {
+    try {
+      const b = readJSONSafe(EXECUTIVE_BRIEFING_FILE, null);
+      if (!b) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, available: false, message: "Sin briefing todavía. POST /api/executive/run para generar." }));
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, available: true, briefing: b }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/executive/history" && req.method === "GET") {
+    try {
+      const hist = readJSONSafe(EXECUTIVE_BRIEFING_HISTORY_FILE, []);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, count: (hist||[]).length, history: (Array.isArray(hist) ? hist : []).slice(0, 48) }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/executive/run" && req.method === "POST") {
+    try {
+      _lastExecutiveHalfHour = null; // force fresh
+      buildExecutiveBriefing();
+      const b = readJSONSafe(EXECUTIVE_BRIEFING_FILE, null);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, briefing: b }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/executive/score" && req.method === "GET") {
+    try {
+      const b = readJSONSafe(EXECUTIVE_BRIEFING_FILE, null);
+      if (b && b.score != null) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({
+          ok: true, score: b.score, grade: b.scoreGrade,
+          components: b.scoreComponents, explanation: b.scoreExplanation,
+          date: b.date, timestamp: b.timestamp
+        }));
+      }
+      // Compute on the fly if no briefing exists yet
+      const h    = (function(){ try { return computeHealthReadiness(); } catch(e){ return {}; } })();
+      const brain= readJSONSafe(MARKET_BRAIN_FILE, null) || {};
+      const intel= (function(){
+        const arr = readJSONSafe(DAILY_INTELLIGENCE_FILE, []);
+        return Array.isArray(arr) ? (arr.find(s=>s&&s.date===todayDateKey())||arr[0]||{}) : {};
+      })();
+      const alts = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
+      const sc   = computeExecutiveScore({ health: h, brain, intel, alerts: Array.isArray(alts)?alts:[], portfolio: {} });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, score: sc.score, grade: sc.grade, components: sc.components, explanation: sc.explanation, date: todayDateKey(), live: true }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   // ---- Project Memory API ----
   if (path === "/api/project/status" && req.method === "GET") {
     try {
@@ -8366,6 +8895,10 @@ async function boot() {
     // Market Brain — on boot + every 15 minutes
     try { buildMarketBrain(); } catch(e) { console.log("buildMarketBrain boot omitido:", e.message); }
     setInterval(() => { try { buildMarketBrain(); } catch(e) {} }, 15 * 60 * 1000);
+
+    // Executive Briefing — on boot + every 15 minutes
+    try { buildExecutiveBriefing(); } catch(e) { console.log("buildExecutiveBriefing boot omitido:", e.message); }
+    setInterval(() => { try { buildExecutiveBriefing(); } catch(e) {} }, 15 * 60 * 1000);
 
     // Project Memory — update roadmap + log boot event
     try {
