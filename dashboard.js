@@ -1472,6 +1472,33 @@ EDUCATIVO — no es asesoría financiera.`;
     const idea = computeTradeIdea();
     const nl = computeDailyNewsletter();
     reply = `Resumen del día — ${nl.date}. Portafolio: ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). Estado físico: modo ${h.operatingMode}${h.configured ? "" : " (sin WHOOP)"}. Diario: ${jd.count} entradas${jd.topMood ? ", mood " + jd.topMood : ""}. ${idea.hasIdea ? "Idea paper: " + idea.type + " " + idea.symbol + "." : "Sin idea paper activa."} NO es asesoría financiera.`;
+  } else if (q.includes("construimos") || q.includes("construiste") || q.includes("qué hay nuevo") || q.includes("que hay nuevo") || q.includes("qué cambi") || q.includes("que cambi") || q.includes("build log") || q.includes("cambios recientes")) {
+    const status = (function(){ try { return getProjectStatus(); } catch(e){ return null; } })();
+    if (status && status.ok && status.recentLog.length > 0) {
+      const recStr = status.recentLog.slice(0, 4).map(e => `${e.date} [${e.type}] ${e.title}`).join("; ");
+      reply = `Build log reciente: ${recStr}. Total: ${status.buildLogTotal} entradas. Hoy: ${status.todayBuildCount}. Fase actual: ${status.currentPhase}.`;
+    } else {
+      reply = `Cordelius v${_PROJECT_MEMORY_SEED.version} · Fase ${_PROJECT_MEMORY_SEED.currentPhase}. Build log: sin entradas todavía — usa POST /api/project/log para registrar cambios.`;
+    }
+  } else if (q.includes("cuánto lleva") || q.includes("cuanto lleva") || q.includes("días activo") || q.includes("dias activo") || q.includes("cuándo empezó") || q.includes("cuando empezo") || q.includes("cuándo nació") || q.includes("cuando nacio")) {
+    const age = getProjectAge();
+    reply = `Cordelius OS lleva ${age.days} días activo, desde el ${age.startLabel}. Versión actual: ${(readJSONSafe(PROJECT_MEMORY_FILE, _PROJECT_MEMORY_SEED)).version || "—"}. Fase: ${_PROJECT_MEMORY_SEED.currentPhase}.`;
+  } else if (q.includes("qué falta") || q.includes("que falta") || q.includes("pendiente") || q.includes("siguiente fase") || q.includes("que queda") || q.includes("qué queda") || q.includes("próximo") || q.includes("proximo") || q.includes("roadmap")) {
+    const status = (function(){ try { return getProjectStatus(); } catch(e){ return null; } })();
+    if (status && status.ok) {
+      const nexts = status.nextSteps.map(f => `${f.id}: ${f.name}${f.priority ? " [" + f.priority + "]" : ""}`).join("; ");
+      const pending = (status.pendingModules || []).slice(0, 4).join(", ");
+      reply = `Pendiente: ${nexts || pending || "sin pendientes registrados"}. Total: ${status.roadmapStats.pending} features por implementar. Roadmap completo: GET /api/project/roadmap.`;
+    } else {
+      reply = `Próximas features: ${_PROJECT_MEMORY_SEED.pendingModules.slice(0,3).join(", ")}. Ver roadmap completo: GET /api/project/roadmap.`;
+    }
+  } else if (q.includes("status del proyecto") || q.includes("estado del proyecto") || q.includes("resumen del proyecto") || q.includes("project status") || q.includes("cómo va cordelius") || q.includes("como va cordelius")) {
+    const status = (function(){ try { return getProjectStatus(); } catch(e){ return null; } })();
+    if (status && status.ok) {
+      reply = `Cordelius OS v${status.version} · ${status.daysActive}d activo · Fase: ${status.currentPhase}. Features: ${status.roadmapStats.completed} completadas / ${status.roadmapStats.active} activas / ${status.roadmapStats.pending} pendientes. Módulos activos: ${(status.activeModules||[]).length}. Build log: ${status.buildLogTotal} entradas. EDUCATIVO.`;
+    } else {
+      reply = `Cordelius OS — proyecto educativo de seguimiento de portafolio. Corre en Termux/Android. Paper trading — sin dinero real. Revisa GET /api/project/status para detalle.`;
+    }
   } else if (q.includes("market brain") || q.includes("brain") || q.includes("cerebro") || q.includes("escaneo") || q.includes("scan completo")) {
     if (_brain && _brain.date) {
       reply = `Cordelius Market Brain [${_brain.hourBlock}] — Régimen: ${_brain.marketRegime} · Riesgo: ${_brain.riskMode || "—"} · Cripto: ${_brain.cryptoExposure}% · Confianza: ${_brain.confidence}. ` +
@@ -2470,6 +2497,9 @@ const PORTFOLIO_STORE_FILE        = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cor
 const MARKET_BRAIN_FILE           = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_brain.json");
 const MARKET_BRAIN_HISTORY_FILE   = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_brain_history.json");
 const MARKET_WATCHLIST_FILE       = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "market_watchlist.json");
+const PROJECT_MEMORY_FILE         = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "project_memory.json");
+const BUILD_LOG_FILE              = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "build_log.json");
+const CORDELIUS_ROADMAP_FILE      = AUTOPILOT_PATH.join(AUTOPILOT_DATA_DIR, "cordelius_roadmap.json");
 
 function ensureDataDir() {
   if (!AUTOPILOT_FS.existsSync(AUTOPILOT_DATA_DIR)) {
@@ -3204,6 +3234,261 @@ function removeWatchlistSymbol(sym) {
   return true;
 }
 
+// ── Project Memory / Build Log ────────────────────────────────────────────────
+
+const PROJECT_START_DATE = "2026-06-01"; // date of first git commit
+
+const _ROADMAP_SEED = {
+  lastUpdated: new Date().toISOString(),
+  phases: [
+    {
+      id: "P1", name: "Fundación — Dashboard + Telegram Bot", status: "COMPLETE",
+      features: [
+        { id: "P1a", name: "dashboard.js — servidor HTTP, portafolio, bot ficticio", status: "COMPLETE" },
+        { id: "P1b", name: "bot.js rewrite — ANTHROPIC_API_KEY, modelo correcto", status: "COMPLETE" },
+        { id: "P1c", name: "run-telegram.sh — auto-restart loop Jarvis", status: "COMPLETE" }
+      ]
+    },
+    {
+      id: "M5-M9", name: "Cordelius OS — UI, Intelligence, Automatización, Health", status: "COMPLETE",
+      features: [
+        { id: "M5", name: "UI Cordelius OS — Jarvis brain 16 nodos, Daily Brief", status: "COMPLETE" },
+        { id: "M6", name: "Market Intelligence — Quiver, radar externo, newsletter", status: "COMPLETE" },
+        { id: "M7", name: "Automatización — scripts, morning report, autopilot panel", status: "COMPLETE" },
+        { id: "M8", name: "Personal OS — Health Readiness, WHOOP placeholder", status: "COMPLETE" },
+        { id: "M9", name: "Home portal, módulos Trading/Health/Journal/Intelligence/Autopilot", status: "COMPLETE" }
+      ]
+    },
+    {
+      id: "F2", name: "Fixes & Polish", status: "COMPLETE",
+      features: [
+        { id: "F2a", name: "Intel: deduplicación por hash + filtros de mood", status: "COMPLETE" },
+        { id: "F2b", name: "bot.js: ANTHROPIC_API_KEY + claude-haiku-4-5-20251001", status: "COMPLETE" },
+        { id: "F2c", name: "Intel panel: contadores, clear, filtros", status: "COMPLETE" },
+        { id: "F2d", name: ".gitignore: limpieza de duplicados", status: "COMPLETE" }
+      ]
+    },
+    {
+      id: "P2", name: "Autonomous Intelligence", status: "COMPLETE",
+      features: [
+        { id: "P2A", name: "Daily Intelligence Engine — snapshot automático diario", status: "COMPLETE" },
+        { id: "P2B", name: "Telegram Alerts Engine — alertas proactivas con dedup", status: "COMPLETE" }
+      ]
+    },
+    {
+      id: "P3", name: "Runtime Control & Market Brain", status: "ACTIVE",
+      features: [
+        { id: "P3A", name: "Runtime Portfolio Editor — CRUD sin tocar código", status: "COMPLETE" },
+        { id: "P3B", name: "Continuous Market Intelligence Brain — scan 15 min", status: "COMPLETE" },
+        { id: "P3C", name: "Project Memory / Build Log — historial de desarrollo", status: "ACTIVE" }
+      ]
+    },
+    {
+      id: "F3", name: "Live Data & Alertas Push", status: "PENDING",
+      features: [
+        { id: "F3a", name: "Quiver Quant live API — congreso + insiders", status: "PENDING", priority: "HIGH" },
+        { id: "F3b", name: "Alertas Telegram push (TELEGRAM_CHAT_ID)", status: "PENDING", priority: "HIGH" },
+        { id: "F3c", name: "Alpaca Paper Trading integration", status: "PENDING", priority: "MEDIUM" }
+      ]
+    },
+    {
+      id: "F4", name: "Cloud & Producción", status: "PENDING",
+      features: [
+        { id: "F4a", name: "Cloud deploy — Railway / Render / VPS", status: "PENDING", priority: "MEDIUM" },
+        { id: "F4b", name: "Termux:Boot — auto-inicio en Android", status: "PENDING", priority: "LOW" },
+        { id: "F4c", name: "WHOOP OAuth2 — conexión real", status: "PENDING", priority: "HIGH" }
+      ]
+    }
+  ]
+};
+
+const _PROJECT_MEMORY_SEED = {
+  projectName:      "Cordelius OS",
+  startDate:        PROJECT_START_DATE,
+  currentPhase:     "P3 — Runtime Control & Market Brain",
+  currentPhaseId:   "P3",
+  version:          "3.2.0",
+  description:      "Dashboard educativo de seguimiento de portafolio personal. Corre en Termux (Android). Paper trading — sin dinero real.",
+  completedModules: [
+    "Fundación (P1) — Dashboard + Telegram Bot",
+    "Cordelius OS UI (M5-M9) — Home, Trading, Health, Intelligence, Autopilot, Journal",
+    "Market Intelligence (M6) — Quiver, radar externo, newsletter",
+    "Automatización (M7) — scripts, morning report",
+    "Health OS (M8) — readiness, WHOOP placeholder",
+    "Fixes F2 — Intel dedup, bot.js rewrite, .gitignore",
+    "Autonomous Intelligence (P2A) — daily snapshot engine",
+    "Telegram Alerts Engine (P2B) — push con dedup",
+    "Runtime Portfolio Editor (P3A) — CRUD en vivo",
+    "Continuous Market Intelligence Brain (P3B) — scan 15 min",
+    "Project Memory / Build Log (P3C)"
+  ],
+  activeModules:    [
+    "dashboard.js — servidor HTTP principal (puerto 3000)",
+    "bot.js — Telegram Jarvis Bot (auto-restart via run-telegram.sh)",
+    "Market Brain — scan cada 15 min en data/market_brain.json",
+    "Daily Learning — snapshot diario en data/daily_learning.json",
+    "Portfolio Editor — CRUD en data/cordelius_portfolio.json",
+    "Alerts Engine — evaluación cada 5 min, max 10/día"
+  ],
+  pendingModules:   [
+    "F3a — Quiver Quant live (QUIVER_API_KEY endpoints)",
+    "F3b — Telegram CHAT_ID para push real",
+    "F3c — Alpaca Paper Trading",
+    "F4a — Cloud deploy (Railway/Render/VPS)",
+    "F4b — Termux:Boot auto-inicio",
+    "F4c — WHOOP OAuth2 real"
+  ],
+  lastUpdated:      new Date().toISOString()
+};
+
+function getProjectAge() {
+  try {
+    const mem   = readJSONSafe(PROJECT_MEMORY_FILE, _PROJECT_MEMORY_SEED);
+    const start = new Date((mem.startDate || PROJECT_START_DATE) + "T00:00:00");
+    const now   = new Date();
+    const days  = Math.floor((now - start) / (1000 * 60 * 60 * 24));
+    return { days, startDate: mem.startDate || PROJECT_START_DATE, startLabel: start.toLocaleDateString("es-MX", { year: "numeric", month: "long", day: "numeric" }) };
+  } catch(e) {
+    return { days: 0, startDate: PROJECT_START_DATE, startLabel: PROJECT_START_DATE };
+  }
+}
+
+function appendBuildLog(entry) {
+  try {
+    const log = readJSONSafe(BUILD_LOG_FILE, []);
+    const safe = Array.isArray(log) ? log : [];
+    const now  = new Date();
+    const record = {
+      id:          "bl_" + now.getTime().toString(36),
+      timestamp:   now.toISOString(),
+      date:        todayDateKey(),
+      type:        (entry.type  || "NOTE").toUpperCase().slice(0, 20),
+      phase:       (entry.phase || "").slice(0, 20),
+      title:       (entry.title || "").slice(0, 120),
+      description: (entry.description || "").slice(0, 600),
+      files:       Array.isArray(entry.files) ? entry.files.slice(0, 10).map(f => String(f).slice(0, 80)) : [],
+      tags:        Array.isArray(entry.tags)  ? entry.tags.slice(0, 8).map(t => String(t).slice(0, 30))   : []
+    };
+    safe.unshift(record);
+    if (safe.length > 500) safe.length = 500;
+    writeJSONAtomic(BUILD_LOG_FILE, safe);
+    return record;
+  } catch(e) {
+    console.log("[BuildLog] appendBuildLog error:", e.message);
+    return null;
+  }
+}
+
+function getProjectStatus() {
+  try {
+    const mem      = readJSONSafe(PROJECT_MEMORY_FILE, _PROJECT_MEMORY_SEED);
+    const log      = readJSONSafe(BUILD_LOG_FILE, []);
+    const roadmap  = readJSONSafe(CORDELIUS_ROADMAP_FILE, _ROADMAP_SEED);
+    const age      = getProjectAge();
+    const safeLog  = Array.isArray(log) ? log : [];
+    const today    = todayDateKey();
+
+    const todayEntries = safeLog.filter(e => e && e.date === today);
+    const recentLog    = safeLog.slice(0, 5);
+
+    const allFeatures = (roadmap.phases || []).flatMap(p => (p.features || []).map(f => ({ ...f, phaseId: p.id, phaseName: p.name })));
+    const completed   = allFeatures.filter(f => f.status === "COMPLETE").length;
+    const active      = allFeatures.filter(f => f.status === "ACTIVE").length;
+    const pending     = allFeatures.filter(f => f.status === "PENDING").length;
+
+    const nextPending = (roadmap.phases || [])
+      .filter(p => p.status === "PENDING" || p.status === "ACTIVE")
+      .flatMap(p => (p.features || []).filter(f => f.status === "PENDING"))
+      .slice(0, 3);
+
+    return {
+      ok:              true,
+      projectName:     mem.projectName     || "Cordelius OS",
+      version:         mem.version         || "—",
+      startDate:       age.startDate,
+      daysActive:      age.days,
+      currentPhase:    mem.currentPhase    || "—",
+      currentPhaseId:  mem.currentPhaseId  || "—",
+      description:     mem.description     || "",
+      completedModules:Array.isArray(mem.completedModules) ? mem.completedModules : [],
+      activeModules:   Array.isArray(mem.activeModules)    ? mem.activeModules    : [],
+      pendingModules:  Array.isArray(mem.pendingModules)   ? mem.pendingModules   : [],
+      buildLogTotal:   safeLog.length,
+      todayBuildCount: todayEntries.length,
+      recentLog:       recentLog,
+      roadmapStats:    { completed, active, pending, total: completed + active + pending },
+      nextSteps:       nextPending,
+      lastUpdated:     mem.lastUpdated || null
+    };
+  } catch(e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function updateRoadmapProgress() {
+  try {
+    const existing = readJSONSafe(CORDELIUS_ROADMAP_FILE, null);
+    if (!existing || !existing.phases) {
+      writeJSONAtomic(CORDELIUS_ROADMAP_FILE, { ..._ROADMAP_SEED, lastUpdated: new Date().toISOString() });
+      return;
+    }
+    existing.lastUpdated = new Date().toISOString();
+    for (const phase of existing.phases) {
+      const allFeat = phase.features || [];
+      const doneCount = allFeat.filter(f => f.status === "COMPLETE").length;
+      const activeCount = allFeat.filter(f => f.status === "ACTIVE").length;
+      if (doneCount === allFeat.length && allFeat.length > 0) phase.status = "COMPLETE";
+      else if (doneCount > 0 || activeCount > 0) phase.status = "ACTIVE";
+    }
+    writeJSONAtomic(CORDELIUS_ROADMAP_FILE, existing);
+  } catch(e) {
+    console.log("[ProjectMemory] updateRoadmapProgress error:", e.message);
+  }
+}
+
+function buildProjectMemorySummary() {
+  try {
+    const status = getProjectStatus();
+    if (!status.ok) return "Sin memoria de proyecto disponible.";
+    const lines = [];
+    lines.push(`PROYECTO: ${status.projectName} v${status.version} · ${status.daysActive} días activo (desde ${status.startDate}).`);
+    lines.push(`FASE ACTUAL: ${status.currentPhase}.`);
+    lines.push(`MÓDULOS: ${status.roadmapStats.completed} completados · ${status.roadmapStats.active} activos · ${status.roadmapStats.pending} pendientes.`);
+    if (status.nextSteps.length > 0) {
+      lines.push(`PRÓXIMOS PASOS: ${status.nextSteps.slice(0,2).map(f => f.id + " " + f.name).join(" | ")}.`);
+    }
+    if (status.recentLog.length > 0) {
+      const rl = status.recentLog[0];
+      lines.push(`ÚLTIMO BUILD LOG: [${rl.type}] ${rl.title} (${rl.date}).`);
+    }
+    if (status.todayBuildCount > 0) {
+      lines.push(`HOY: ${status.todayBuildCount} entradas de build log registradas.`);
+    }
+    return lines.join("\n");
+  } catch(e) {
+    return "Error en buildProjectMemorySummary: " + e.message;
+  }
+}
+
+function initProjectMemory() {
+  try {
+    const existing = readJSONSafe(PROJECT_MEMORY_FILE, null);
+    if (!existing || !existing.projectName) {
+      writeJSONAtomic(PROJECT_MEMORY_FILE, { ..._PROJECT_MEMORY_SEED, lastUpdated: new Date().toISOString() });
+    }
+    const existingRoadmap = readJSONSafe(CORDELIUS_ROADMAP_FILE, null);
+    if (!existingRoadmap || !existingRoadmap.phases) {
+      writeJSONAtomic(CORDELIUS_ROADMAP_FILE, { ..._ROADMAP_SEED, lastUpdated: new Date().toISOString() });
+    }
+    const existingLog = readJSONSafe(BUILD_LOG_FILE, null);
+    if (!Array.isArray(existingLog)) {
+      writeJSONAtomic(BUILD_LOG_FILE, []);
+    }
+  } catch(e) {
+    console.log("[ProjectMemory] initProjectMemory error:", e.message);
+  }
+}
+
 // ============================================================
 // JARVIS MEMORY ENGINE — buildJarvisContext / buildMemorySummary
 // Reads and compresses all persistent memory for Claude injection
@@ -3383,6 +3668,27 @@ function buildJarvisContext() {
     ctx.marketBrain = null;
   }
 
+  // 8. Project Memory — development history + current build status
+  try {
+    const status = getProjectStatus();
+    if (status.ok) {
+      ctx.projectMemory = {
+        daysActive:     status.daysActive,
+        startDate:      status.startDate,
+        currentPhase:   status.currentPhase,
+        version:        status.version,
+        roadmapStats:   status.roadmapStats,
+        nextSteps:      status.nextSteps.slice(0, 2).map(f => f.id + ": " + f.name),
+        latestBuildLog: status.recentLog.slice(0, 3).map(e => ({ date: e.date, type: e.type, title: e.title })),
+        todayBuildCount:status.todayBuildCount
+      };
+    } else {
+      ctx.projectMemory = null;
+    }
+  } catch(e) {
+    ctx.projectMemory = null;
+  }
+
   return ctx;
 }
 
@@ -3467,6 +3773,15 @@ function buildMemorySummary() {
       if (mb.topOpportunities && mb.topOpportunities.length) lines.push(`OPORTUNIDADES BRAIN: ${mb.topOpportunities.slice(0,2).join(" | ")}`);
       if (mb.tomorrowPrep) lines.push(`PLAN MAÑANA: ${mb.tomorrowPrep}`);
       if (mb.questions && mb.questions.length) lines.push(`PREGUNTAS PENDIENTES: ${mb.questions.slice(0,2).join(" / ")}`);
+    }
+
+    // Project Memory
+    const pm = ctx.projectMemory;
+    if (pm) {
+      lines.push(`PROYECTO: Cordelius OS v${pm.version} · ${pm.daysActive}d activo · Fase ${pm.currentPhase}.`);
+      lines.push(`ROADMAP: ${pm.roadmapStats.completed} features completadas · ${pm.roadmapStats.pending} pendientes.`);
+      if (pm.nextSteps && pm.nextSteps.length) lines.push(`PRÓXIMO: ${pm.nextSteps.slice(0,2).join(" | ")}.`);
+      if (pm.latestBuildLog && pm.latestBuildLog.length) lines.push(`ÚLTIMO BUILD: [${pm.latestBuildLog[0].type}] ${pm.latestBuildLog[0].title} (${pm.latestBuildLog[0].date}).`);
     }
 
     if (lines.length === 0) return "Sin memoria disponible todavía.";
@@ -4288,6 +4603,105 @@ function renderMarketBrainPanel() {
 </div>`;
 }
 
+function renderBuildMemoryPanel() {
+  const status  = (function(){ try { return getProjectStatus(); } catch(e){ return null; } })();
+  const roadmap = readJSONSafe(CORDELIUS_ROADMAP_FILE, _ROADMAP_SEED);
+  if (!status || !status.ok) {
+    return `<div style="background:rgba(129,140,248,.04);border:1px solid rgba(129,140,248,.15);border-radius:20px;padding:18px 22px;margin:0 0 14px">
+      <div style="font-size:12px;font-weight:900;color:#818cf8;letter-spacing:.08em">⬟ CORDELIUS BUILD MEMORY</div>
+      <div style="color:#9fb3c8;font-size:13px;margin-top:6px">Inicializando memoria del proyecto…</div>
+    </div>`;
+  }
+  const age = getProjectAge();
+
+  // Phase status chips
+  const phaseChips = (roadmap.phases || []).map(ph => {
+    const sc = ph.status === "COMPLETE" ? "#00ff99" : ph.status === "ACTIVE" ? "#ffd35c" : "#9fb3c8";
+    const bg = ph.status === "COMPLETE" ? "rgba(0,255,153,.08)" : ph.status === "ACTIVE" ? "rgba(255,211,92,.08)" : "rgba(120,140,160,.05)";
+    return `<div style="background:${bg};border:1px solid ${sc}33;border-radius:10px;padding:8px 12px;min-width:0">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:${sc};text-transform:uppercase">${ph.status === "COMPLETE" ? "✓" : ph.status === "ACTIVE" ? "●" : "○"} ${esc(ph.id)}</div>
+      <div style="font-size:11px;color:#c8d8e8;margin-top:2px;line-height:1.3">${esc((ph.name||"").slice(0,40))}</div>
+      <div style="font-size:10px;color:${sc};margin-top:3px">${(ph.features||[]).filter(f=>f.status==="COMPLETE").length}/${(ph.features||[]).length} features</div>
+    </div>`;
+  }).join("");
+
+  // Recent build log
+  const logRows = (status.recentLog || []).slice(0, 4).map(e => {
+    const tc = { FEATURE: "#00ff99", FIX: "#ffd35c", REFACTOR: "#818cf8", NOTE: "#9fb3c8", DEPLOY: "#f472b6" }[e.type] || "#9fb3c8";
+    return `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+      <span style="background:${tc}22;color:${tc};border-radius:6px;padding:1px 7px;font-size:10px;font-weight:900;white-space:nowrap;margin-top:1px">${esc(e.type)}</span>
+      <div>
+        <div style="font-size:12px;color:#dce7f7">${esc((e.title||"").slice(0,70))}</div>
+        <div style="font-size:10px;color:#9fb3c8">${esc(e.date)} · ${esc((e.phase||""))}</div>
+      </div>
+    </div>`;
+  }).join("") || '<div style="color:#9fb3c8;font-size:12px">Sin entradas todavía.</div>';
+
+  // Next steps
+  const nextRows = (status.nextSteps || []).slice(0, 3).map(f =>
+    `<div style="font-size:12px;color:#9fb3c8;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.03)">
+      <span style="color:#ffd35c;font-weight:700">${esc(f.id)}</span> ${esc((f.name||"").slice(0,60))}${f.priority ? ' <span style="color:#818cf8;font-size:10px">['+esc(f.priority)+']</span>' : ""}
+    </div>`
+  ).join("") || '<div style="color:#9fb3c8;font-size:12px">—</div>';
+
+  return `<div style="background:rgba(129,140,248,.04);border:1px solid rgba(129,140,248,.15);border-radius:20px;padding:20px 22px;margin:0 0 14px">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+    <div>
+      <span style="font-size:13px;font-weight:900;color:#818cf8;letter-spacing:.07em">⬟ CORDELIUS BUILD MEMORY</span>
+      <span style="margin-left:10px;font-size:11px;color:#9fb3c8">v${esc(status.version)} · ${esc(String(age.days))} días activo desde ${esc(status.startDate)}</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <span style="background:rgba(0,255,153,.08);color:#00ff99;border:1px solid rgba(0,255,153,.2);border-radius:99px;padding:2px 10px;font-size:11px;font-weight:900">${esc(status.roadmapStats.completed)} ✓</span>
+      <span style="background:rgba(255,211,92,.08);color:#ffd35c;border:1px solid rgba(255,211,92,.2);border-radius:99px;padding:2px 10px;font-size:11px;font-weight:900">${esc(String(status.roadmapStats.pending))} pend.</span>
+      <a href="/api/project/status" target="_blank" style="font-size:11px;color:#818cf8;text-decoration:none">JSON →</a>
+    </div>
+  </div>
+
+  <div style="margin-bottom:10px">
+    <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:7px">Roadmap de fases</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">${phaseChips}</div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px">
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:6px">Build Log reciente</div>
+      ${logRows}
+      <div style="margin-top:8px;display:flex;gap:6px">
+        <button onclick="openBuildLogEntry()" style="background:rgba(129,140,248,.12);color:#818cf8;border:1px solid rgba(129,140,248,.3);border-radius:99px;padding:5px 14px;font-size:11px;cursor:pointer;font-weight:800">+ Nueva entrada</button>
+        <a href="/api/project/roadmap" target="_blank" style="padding:5px 12px;border-radius:99px;border:1px solid rgba(129,140,248,.2);color:#9fb3c8;font-size:11px;text-decoration:none">Roadmap →</a>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:10px;font-weight:900;letter-spacing:.1em;color:#9fb3c8;text-transform:uppercase;margin-bottom:6px">Próximos pasos</div>
+      ${nextRows}
+      <div style="margin-top:10px;font-size:11px;color:#9fb3c8">Fase actual: <b style="color:#ffd35c">${esc(status.currentPhase)}</b></div>
+      <div style="font-size:11px;color:#9fb3c8">Log total: <b style="color:#818cf8">${esc(String(status.buildLogTotal))}</b> entradas</div>
+    </div>
+  </div>
+</div>
+
+<!-- Build Log Entry Modal -->
+<div id="build-log-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.75);align-items:center;justify-content:center">
+  <div style="background:#0b1220;border:1px solid rgba(129,140,248,.3);border-radius:22px;padding:24px;width:min(420px,92vw)">
+    <div style="font-size:13px;font-weight:900;color:#818cf8;margin-bottom:14px">⬟ Nueva entrada de Build Log</div>
+    <select id="bl-type" style="width:100%;padding:8px 12px;background:#060c18;border:1px solid rgba(129,140,248,.25);border-radius:10px;color:#dce7f7;font-size:13px;margin-bottom:10px">
+      <option value="FEATURE">FEATURE</option>
+      <option value="FIX">FIX</option>
+      <option value="REFACTOR">REFACTOR</option>
+      <option value="NOTE">NOTE</option>
+      <option value="DEPLOY">DEPLOY</option>
+    </select>
+    <input id="bl-phase" placeholder="Fase (ej. P3C)" style="width:100%;padding:8px 12px;background:#060c18;border:1px solid rgba(129,140,248,.25);border-radius:10px;color:#dce7f7;font-size:13px;margin-bottom:10px;box-sizing:border-box">
+    <input id="bl-title" placeholder="Título corto *" style="width:100%;padding:8px 12px;background:#060c18;border:1px solid rgba(129,140,248,.25);border-radius:10px;color:#dce7f7;font-size:13px;margin-bottom:10px;box-sizing:border-box">
+    <textarea id="bl-description" placeholder="Descripción (opcional)" style="width:100%;padding:8px 12px;background:#060c18;border:1px solid rgba(129,140,248,.25);border-radius:10px;color:#dce7f7;font-size:13px;margin-bottom:14px;box-sizing:border-box;height:70px;resize:vertical"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="document.getElementById('build-log-modal').style.display='none'" style="padding:8px 18px;border-radius:10px;border:1px solid rgba(120,160,210,.2);background:transparent;color:#9fb3c8;font-size:13px;cursor:pointer">Cancelar</button>
+      <button onclick="submitBuildLogEntry()" style="padding:8px 18px;border-radius:10px;border:none;background:linear-gradient(90deg,#818cf8,#6366f1);color:#fff;font-size:13px;font-weight:900;cursor:pointer">Guardar</button>
+    </div>
+  </div>
+</div>`;
+}
+
 function renderAlertsPanel() {
   const alerts  = readJSONSafe(CORDELIUS_ALERTS_FILE, []);
   const unread  = alerts.filter(a => a && !a.acknowledged).length;
@@ -4450,6 +4864,7 @@ function renderAutopilotPanel() {
         </div>
       </div>
     </div>
+    ${renderBuildMemoryPanel()}
     ${renderDailyLearningPanel()}
     ${renderAlertsPanel()}
   </div>`;
@@ -6710,6 +7125,33 @@ async function ackAlert(alertId) {
     }
   } catch(e) {}
 }
+function openBuildLogEntry() {
+  var modal = document.getElementById('build-log-modal');
+  if (modal) modal.style.display = 'flex';
+}
+async function submitBuildLogEntry() {
+  var title = (document.getElementById('bl-title') || {}).value || '';
+  if (!title.trim()) { alert('El título es obligatorio.'); return; }
+  var entry = {
+    type:        ((document.getElementById('bl-type') || {}).value || 'NOTE'),
+    phase:       ((document.getElementById('bl-phase') || {}).value || '').trim(),
+    title:       title.trim(),
+    description: ((document.getElementById('bl-description') || {}).value || '').trim()
+  };
+  try {
+    var r = await fetch('/api/project/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry)
+    });
+    if (r.ok) {
+      document.getElementById('build-log-modal').style.display = 'none';
+      setTimeout(function(){ location.reload(); }, 500);
+    } else {
+      alert('Error al guardar.');
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
 async function runMarketBrainScan() {
   try {
     var btn = event && event.target ? event.target : null;
@@ -7663,6 +8105,83 @@ if (path === "/api/whoop/today") {
     }
   }
 
+  // ---- Project Memory API ----
+  if (path === "/api/project/status" && req.method === "GET") {
+    try {
+      const status = getProjectStatus();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(status));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/project/memory" && req.method === "GET") {
+    try {
+      const mem  = readJSONSafe(PROJECT_MEMORY_FILE, _PROJECT_MEMORY_SEED);
+      const age  = getProjectAge();
+      const summary = buildProjectMemorySummary();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, daysActive: age.days, memory: mem, summary }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/project/log" && req.method === "GET") {
+    try {
+      const log = readJSONSafe(BUILD_LOG_FILE, []);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, total: (log||[]).length, log: (Array.isArray(log) ? log : []).slice(0, 50) }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
+  if (path === "/api/project/log" && req.method === "POST") {
+    let body = "";
+    req.on("data", c => body += c);
+    req.on("end", () => {
+      try {
+        const input = body ? JSON.parse(body) : {};
+        if (!input.title || !String(input.title).trim()) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ ok: false, error: "title requerido" }));
+        }
+        const record = appendBuildLog({
+          type:        input.type        || "NOTE",
+          phase:       input.phase       || "",
+          title:       input.title,
+          description: input.description || "",
+          files:       input.files       || [],
+          tags:        input.tags        || []
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, record }));
+      } catch(e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (path === "/api/project/roadmap" && req.method === "GET") {
+    try {
+      updateRoadmapProgress();
+      const roadmap = readJSONSafe(CORDELIUS_ROADMAP_FILE, _ROADMAP_SEED);
+      const age     = getProjectAge();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, daysActive: age.days, roadmap }));
+    } catch(e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  }
+
   // ---- Market Brain API ----
   if (path === "/api/market/brain" && req.method === "GET") {
     try {
@@ -7751,6 +8270,9 @@ if (path === "/api/whoop/today") {
 });
 
 async function boot() {
+  // Initialize project memory files if they don't exist
+  try { initProjectMemory(); } catch(e) { console.log("initProjectMemory omitido:", e.message); }
+
   // Load persistent portfolio store before serving any requests
   try { loadPortfolioStore(); } catch(e) { console.log("loadPortfolioStore omitido:", e.message); }
 
@@ -7844,6 +8366,18 @@ async function boot() {
     // Market Brain — on boot + every 15 minutes
     try { buildMarketBrain(); } catch(e) { console.log("buildMarketBrain boot omitido:", e.message); }
     setInterval(() => { try { buildMarketBrain(); } catch(e) {} }, 15 * 60 * 1000);
+
+    // Project Memory — update roadmap + log boot event
+    try {
+      updateRoadmapProgress();
+      const age = getProjectAge();
+      // Only log boot once per day to avoid noise
+      const existingLog = readJSONSafe(BUILD_LOG_FILE, []);
+      const todayBoots  = (Array.isArray(existingLog) ? existingLog : []).filter(e => e && e.date === todayDateKey() && e.type === "BOOT");
+      if (todayBoots.length === 0) {
+        appendBuildLog({ type: "BOOT", phase: "runtime", title: "Cordelius OS arrancó · día " + age.days + " activo", description: "Boot automático registrado.", tags: ["boot","auto"] });
+      }
+    } catch(e) { console.log("ProjectMemory boot omitido:", e.message); }
 
   }, 500);
 }
