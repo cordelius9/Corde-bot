@@ -4635,7 +4635,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
-.mod{display:none}.mod.active-mod{display:block}
+.mod{display:none!important}.mod.active-mod{display:block!important}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
