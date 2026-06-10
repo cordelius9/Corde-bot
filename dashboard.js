@@ -4542,8 +4542,15 @@ function render() {
 <title>${esc(CORDA_APP_NAME)}</title>
 <style>
 :root{--bg:#02040a;--panel:rgba(7,16,30,.72);--line:rgba(120,160,210,.16);--muted:#9fb3c8;--green:#00ff99;--red:#ff4d6d;--blue:#3b9dff;--gold:#ffd35c;--text:#eaf6ff}
+html{scroll-behavior:smooth}
 *{box-sizing:border-box}
 body{margin:0;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#02040a;padding:0 18px 120px;overflow-x:hidden}
+.sidebar{display:none;position:fixed;left:0;top:0;width:196px;height:100vh;background:rgba(3,8,18,.96);border-right:1px solid rgba(120,160,210,.13);padding:22px 12px;flex-direction:column;gap:4px;overflow-y:auto;z-index:40;backdrop-filter:blur(20px)}
+.sidebar-brand{padding:0 4px 16px;border-bottom:1px solid rgba(120,160,210,.1);margin-bottom:8px;text-align:center}
+.sidebar-btn{display:block;width:100%;text-align:left;border-radius:12px;padding:10px 13px;font-size:13px;font-weight:700;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--muted);transition:.18s}
+.sidebar-btn:hover,.sidebar-btn.nav-active{background:rgba(59,157,255,.1);border-color:rgba(59,157,255,.25);color:var(--text)}
+.sidebar-btn[data-mod="alfredo"].nav-active{background:rgba(255,211,92,.1);border-color:rgba(255,211,92,.3);color:#ffd35c}
+@media(min-width:900px){.sidebar{display:flex}body{padding-left:210px}.app-nav{display:none!important}}
 body:before{content:"";position:fixed;inset:0;z-index:-4;background:radial-gradient(circle at 16% 12%,rgba(0,255,153,.18),transparent 30%),radial-gradient(circle at 84% 10%,rgba(59,157,255,.20),transparent 32%),radial-gradient(circle at 50% 100%,rgba(255,211,92,.10),transparent 34%),linear-gradient(135deg,#02040a,#06101f 52%,#02040a)}
 body:after{content:"";position:fixed;inset:0;z-index:-3;background-image:linear-gradient(rgba(120,160,210,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,210,.05) 1px,transparent 1px);background-size:36px 36px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.9),rgba(0,0,0,.08))}
 .particles{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none}
@@ -4651,6 +4658,20 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .news-item[open] .ni-caret{transform:rotate(180deg)}
 #research-result{animation:fade .3s ease}
 </style></head><body>
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <div style="font-size:28px;margin-bottom:4px">◎</div>
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;color:#ffd35c">CORDELIUS</div>
+    <div style="font-size:9px;color:#5a6674;margin-top:2px">Personal OS</div>
+  </div>
+  <button data-mod="alfredo" class="sidebar-btn nav-mod" onclick="showMod('alfredo')" style="color:#ffd35c;border-color:rgba(255,211,92,.2);background:rgba(255,211,92,.07)">⚡ Jarvis</button>
+  <button data-mod="home" class="sidebar-btn nav-mod" onclick="showMod('home')">◻ Home</button>
+  <button data-mod="trading" class="sidebar-btn nav-mod" onclick="showMod('trading')">◈ Trading</button>
+  <button data-mod="health" class="sidebar-btn nav-mod" onclick="showMod('health')">◉ Health</button>
+  <button data-mod="journal" class="sidebar-btn nav-mod" onclick="showMod('journal')">◇ Journal</button>
+  <button data-mod="intelligence" class="sidebar-btn nav-mod" onclick="showMod('intelligence')">◎ Intelligence</button>
+  <button data-mod="autopilot" class="sidebar-btn nav-mod" onclick="showMod('autopilot')">⊕ Autopilot</button>
+</aside>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
 
 <button class="brain-float" onclick="toggleJarvis()" title="Jarvis AI — Cordelius">
