@@ -5090,16 +5090,15 @@ function validModName(name) {
   return ['home','trading','health','journal','intelligence','alfredo','autopilot'].indexOf(name) !== -1;
 }
 function showMod(name) {
-  name = validModName(name) ? name : 'home';
+  name = validModName(name) ? name : 'alfredo';
   var mod = document.getElementById('mod-' + name);
-  if (!mod) name = 'home';
+  if (!mod) name = 'alfredo';
 
   document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
   document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
   mod = document.getElementById('mod-' + name);
   if (mod) mod.classList.add('active-mod');
-  var btn = document.querySelector('[data-mod="' + name + '"]');
-  if (btn) btn.classList.add('nav-active');
+  document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b){ b.classList.add('nav-active'); });
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
 
   if (window.location.hash !== '#' + name) {
