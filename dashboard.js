@@ -4772,6 +4772,36 @@ ${renderHomePortal(pv, reg)}
   <div style="font-size:13px;color:#9fb3c8">Abre cada activo del portafolio para ver minigrafica, precio, señales y enlace a TradingView.</div>
 </div>
 
+<div style="max-width:1280px;margin:18px auto 8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+  <div>
+    <h2 style="margin:0;font-size:20px;background:linear-gradient(90deg,#fff,#9bd3ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">BBVA — Gráfica BMV</h2>
+    <div style="font-size:12px;color:#9fb3c8;margin-top:2px">Símbolo: <code style="color:#3b9dff">${esc(topTV)}</code> · TradingView</div>
+  </div>
+  <a class="btn" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(topTV)}" target="_blank" rel="noopener" style="font-size:12px;padding:8px 14px">Abrir en TradingView ↗</a>
+</div>
+<div class="panel" style="max-width:1280px;margin:0 auto 14px;padding:0;overflow:hidden">
+  <details>
+    <summary style="list-style:none;cursor:pointer;padding:14px 18px;background:rgba(59,157,255,.06);user-select:none;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:13px;font-weight:700">Mostrar gráfica interactiva BBVA (BMV)</span>
+      <span class="btn" style="font-size:12px;padding:5px 12px">Cargar ▾</span>
+    </summary>
+    <div class="tv-embed" id="bbva-chart-container" style="height:460px">
+      <iframe id="bbva-tv-frame" src="" style="width:100%;height:100%;border:none" allowtransparency="true" scrolling="no"></iframe>
+    </div>
+  </details>
+</div>
+<script>
+(function(){
+  var det = document.querySelector('#bbva-chart-container')?.closest('details');
+  if (det) det.addEventListener('toggle', function(){
+    if (det.open) {
+      var fr = document.getElementById('bbva-tv-frame');
+      if (fr && !fr.src) fr.src = 'https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&locale=es&timezone=America%2FMexico_City&hide_top_toolbar=0&hide_side_toolbar=1&allow_symbol_change=0';
+    }
+  });
+})();
+</script>
+
 
 <a id="brain"></a><h2>Jarvis Score · Cordelius Brain</h2>${brainHtml()}
 
