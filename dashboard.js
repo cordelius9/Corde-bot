@@ -4792,7 +4792,8 @@ ${renderHomePortal(pv, reg)}
 </div>
 <script>
 (function(){
-  var det = document.querySelector('#bbva-chart-container')?.closest('details');
+  var _bbvaEl = document.querySelector('#bbva-chart-container');
+  var det = _bbvaEl ? _bbvaEl.closest('details') : null;
   if (det) det.addEventListener('toggle', function(){
     if (det.open) {
       var fr = document.getElementById('bbva-tv-frame');
@@ -5104,11 +5105,12 @@ function showMod(name) {
   if (window.location.hash !== '#' + name) {
     try { history.replaceState(null, '', '#' + name); } catch(e) { window.location.hash = name; }
   }
-  if (name === 'health') loadHealthOS();
-  if (name === 'journal') loadJournalAuto();
-  if (name === 'intelligence') loadIntelligenceFeed();
-  if (name === 'alfredo') loadJarvisContext();
-  if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); }
+  try { window.scrollTo(0, 0); } catch(e) {}
+  if (name === 'health') { try { loadHealthOS(); } catch(e) {} }
+  if (name === 'journal') { try { loadJournalAuto(); } catch(e) {} }
+  if (name === 'intelligence') { try { loadIntelligenceFeed(); } catch(e) {} }
+  if (name === 'alfredo') { try { loadJarvisContext(); } catch(e) {} }
+  if (name === 'autopilot') { try { loadAutopilotDatabase(); } catch(e) {} try { loadOpportunityEngine(); } catch(e) {} }
 }
 function healthSet(id, value) {
   var el = document.getElementById(id);
@@ -5419,22 +5421,25 @@ async function researchTicker() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', function() {
+function _cordeliusInit() {
   var saved = '';
-  var hashMod = (window.location.hash || '').replace('#', '');
+  var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
-
   var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'alfredo');
   showMod(activeMod);
-  loadJournalAuto();
-  loadJarvisContext();
-  loadIntelligenceFeed();
-  loadOpportunityEngine();
-});
+  try { loadJournalAuto(); } catch(e) {}
+  try { loadJarvisContext(); } catch(e) {}
+  try { loadIntelligenceFeed(); } catch(e) {}
+  try { loadOpportunityEngine(); } catch(e) {}
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _cordeliusInit);
+} else {
+  _cordeliusInit();
+}
 window.addEventListener('hashchange', function() {
   var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
   showMod(validModName(hashMod) ? hashMod : 'alfredo');
-
 });
 function getAdminToken(){try{return sessionStorage.getItem('corde_admin_token')||'';}catch(e){return '';}}
 function saveAdminToken(){var v=(document.getElementById('corde-admin-token-input')||{}).value||'';try{sessionStorage.setItem('corde_admin_token',v);}catch(e){}var st=document.getElementById('corde-admin-token-status');if(st){st.textContent=v?'Configurado (sesión)':'No configurado';st.style.color=v?'#4ade80':'';}};
@@ -5443,7 +5448,7 @@ function authHeaders(extra){var t=getAdminToken();var h=Object.assign({},extra||
 async function secureFetch(url,opts){var o=Object.assign({},opts||{});o.headers=authHeaders(o.headers||{});return fetch(url,o);}
 async function cordeliusMutate(url){await secureFetch(url,{method:'GET'});location.reload();}
 async function cordeliusFormPost(form,redirect){var p=new URLSearchParams(new FormData(form));await secureFetch(form.action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});location.href=redirect||'/';}
-document.addEventListener('DOMContentLoaded',function(){var t=getAdminToken();var st=document.getElementById('corde-admin-token-status');if(st&&t){st.textContent='Configurado (sesión)';st.style.color='#4ade80';}});
+(function(){function _ai(){var t=getAdminToken();var st=document.getElementById('corde-admin-token-status');if(st&&t){st.textContent='Configurado (sesión)';st.style.color='#4ade80';}}if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',_ai);}else{_ai();}})();
 </script>
 </html>`;
 }
@@ -5728,6 +5733,14 @@ const server = http.createServer(async (req, res) => {
     const alerts = loadAlerts();
     const active = alerts.filter(a => !a.acknowledged);
     return sendJSON(res, { ok: true, ts: Date.now(), total: alerts.length, active: active.length, alerts });
+  }
+  if (path === "/api/ui-diagnostics") {
+    return sendJSON(res, { ok: true, ts: Date.now(),
+      modules: ["home","trading","health","journal","intelligence","alfredo","autopilot"],
+      defaultMod: "alfredo", ssrActiveMod: "alfredo",
+      cssHideRule: ".mod{display:none!important}", cssShowRule: ".mod.active-mod{display:block!important}",
+      note: "mod-alfredo carries active-mod in SSR. JS readyState-safe init overrides on load."
+    });
   }
   if (req.method === "POST" && path === "/api/alerts/dry-run") {
     return sendJSON(res, checkAlertsDryRun());
