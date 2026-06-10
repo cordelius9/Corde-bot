@@ -8,7 +8,7 @@ const bot = token ? new TelegramBot(token, { polling: true }) : null;
 const DASHBOARD_PORT = process.env.PORT || 3000;
 
 const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_API_KEY
+  apiKey: process.env.ANTHROPIC_API_KEY
 });
 
 function localGet(path) {
@@ -64,7 +64,7 @@ if (bot) bot.on('message', async (msg) => {
     if (/^\/(opportunities|research|queue)\b/i.test(userText)) return;
 
     const response = await anthropic.messages.create({
-      model: "claude-haiku-4-5",
+      model: process.env.CLAUDE_MODEL_BOT || "claude-haiku-4-5-20251001",
       max_tokens: 500,
       messages: [
         {
