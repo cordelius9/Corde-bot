@@ -4446,6 +4446,83 @@ function renderHealthOSPanel() {
   </section>`;
 }
 
+function renderJarvisCommandCenter(pv) {
+  const h = computeHealthReadiness();
+  const opp = getOpportunityState();
+  const queue = loadJSON(RESEARCH_QUEUE_FILE, []);
+  const activeAlerts = loadAlerts().filter(a => !a.acknowledged);
+  const recovPct = h.recovery !== null ? h.recovery : null;
+  const healthColor = recovPct === null ? "#9fb3c8" : recovPct >= 75 ? "#00ff99" : recovPct >= 50 ? "#ffd35c" : "#ff4d6d";
+  const healthVal = h.connected ? (recovPct !== null ? `${recovPct}%` : "—") : "OFFLINE";
+  const tradingColor = pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  const topOpp = (opp.topOpportunities || [])[0];
+  const oppColor = topOpp ? "#00ff99" : "#9fb3c8";
+  const alertColor = activeAlerts.length === 0 ? "#00ff99" : activeAlerts.some(a => a.severity === "CRITICAL") ? "#ff4d6d" : "#ffd35c";
+  const tile = (label, value, sub, color, mod) =>
+    `<div onclick="showMod('${mod}')" style="cursor:pointer;background:${color}08;border:1px solid ${color}22;border-radius:18px;padding:16px;transition:.2s" onmouseover="this.style.borderColor='${color}55'" onmouseout="this.style.borderColor='${color}22'">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:${color};margin-bottom:6px">${esc(label)}</div>
+      <div style="font-size:18px;font-weight:900;color:#eaf6ff;line-height:1.1">${esc(value)}</div>
+      <div style="font-size:11px;color:#9fb3c8;margin-top:4px">${esc(sub)}</div>
+    </div>`;
+  return `<div style="max-width:1280px;margin:0 auto 16px">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:10px">Command Center · Estado del sistema</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px">
+      ${tile("Health", healthVal, h.operatingMode || "NORMAL", healthColor, "health")}
+      ${tile("Trading", money(pv.totalValueMXN), pct(pv.totalGainPct), tradingColor, "trading")}
+      ${tile("Research", queue.length > 0 ? queue[0] : "Cola vacía", `${queue.length} en cola`, queue.length > 0 ? "#ffd35c" : "#9fb3c8", "autopilot")}
+      ${tile("Oportunidades", topOpp ? `${topOpp.symbol} ${topOpp.score}/100` : "Sin opp.", topOpp ? (topOpp.signal || "—") : "Ejecutar engine", oppColor, "autopilot")}
+      ${tile("Alertas", activeAlerts.length === 0 ? "Todo OK" : `${activeAlerts.length} activas`, activeAlerts.length > 0 ? esc(activeAlerts[0].title.length > 28 ? activeAlerts[0].title.slice(0,28)+"…" : activeAlerts[0].title) : "Sin alertas", alertColor, "autopilot")}
+    </div>
+  </div>`;
+}
+function renderJarvisTopPriorities(pv) {
+  const activeAlerts = loadAlerts().filter(a => !a.acknowledged);
+  const h = computeHealthReadiness();
+  const opp = getOpportunityState();
+  const items = [];
+  const crit = activeAlerts.find(a => a.severity === "CRITICAL");
+  if (crit) items.push({ label: "Alerta crítica", detail: crit.title, color: "#ff4d6d", mod: "autopilot" });
+  if (h.recovery !== null && h.recovery < 50) items.push({ label: "Modo defensivo HOY", detail: `Recovery ${h.recovery}% — evita decisiones de alto impacto. Educativo.`, color: "#ffd35c", mod: "health" });
+  const sorted = (pv.assets || []).slice().sort((a, b) => a.score - b.score);
+  const worst = sorted[0];
+  if (worst && worst.score < 45) items.push({ label: `Revisar ${worst.symbol}`, detail: `Score ${worst.score}/100 · ${pct(worst.gainPct)} · riesgo ${worst.risk}`, color: "#ff4d6d", mod: "trading" });
+  const topOpp = (opp.topOpportunities || [])[0];
+  if (topOpp && topOpp.score >= 60) items.push({ label: `Investigar ${topOpp.symbol}`, detail: `Score ${topOpp.score}/100 · ${topOpp.signal || "—"} · educativo`, color: "#00ff99", mod: "autopilot" });
+  const cryptoPct = pv.totalValueMXN > 0 ? (pv.assets || []).filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0) / pv.totalValueMXN * 100 : 0;
+  if (cryptoPct > 70) items.push({ label: "Concentración cripto alta", detail: `${cryptoPct.toFixed(1)}% en cripto — diversificación. Educativo.`, color: "#ffd35c", mod: "trading" });
+  const warn = activeAlerts.find(a => a.severity === "WARNING" && (!crit || a.id !== crit.id));
+  if (warn) items.push({ label: "Aviso activo", detail: warn.title, color: "#ffd35c", mod: "autopilot" });
+  const top3 = items.slice(0, 3);
+  if (!top3.length) return `<div style="max-width:1280px;margin:0 auto 16px;padding:14px 18px;background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.14);border-radius:18px"><div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99;margin-bottom:6px">Top Prioridades Hoy</div><div style="color:#9fb3c8;font-size:13px">Sistema en buen estado. Sin prioridades urgentes hoy. (Educativo)</div></div>`;
+  return `<div style="max-width:1280px;margin:0 auto 16px;padding:16px 20px;background:rgba(255,211,92,.03);border:1px solid rgba(255,211,92,.15);border-radius:18px">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#ffd35c;margin-bottom:4px">Top Prioridades Hoy</div>
+    ${top3.map((item, i) => `<div onclick="showMod('${item.mod}')" style="cursor:pointer;display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:${i > 0 ? "1px solid rgba(120,160,210,.08)" : "none"}"><span style="min-width:22px;height:22px;border-radius:50%;background:${item.color}18;border:1px solid ${item.color}44;display:grid;place-items:center;font-size:11px;font-weight:900;color:${item.color};flex-shrink:0">${i + 1}</span><div><div style="font-size:13px;font-weight:700;color:#eaf6ff">${esc(item.label)}</div><div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc(item.detail)}</div></div></div>`).join("")}
+    <div style="font-size:11px;color:#5a6674;margin-top:8px">Educativo — no es consejo financiero ni médico.</div>
+  </div>`;
+}
+function renderJarvisChangelog(pv) {
+  if (portfolioHistory.length < 2) return `<div style="max-width:1280px;margin:0 auto 16px;padding:14px 18px;background:rgba(59,157,255,.04);border:1px solid rgba(59,157,255,.12);border-radius:18px"><div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Qué Cambió</div><div style="color:#9fb3c8;font-size:13px">Recolectando historial. Visible con 2+ snapshots.</div></div>`;
+  const prev = portfolioHistory[portfolioHistory.length - 2];
+  const curr = portfolioHistory[portfolioHistory.length - 1];
+  const prevVal = prev.total || 1;
+  const currVal = curr.total || pv.totalValueMXN || 0;
+  const deltaMXN = currVal - prevVal;
+  const deltaPct = prevVal !== 0 ? (deltaMXN / prevVal) * 100 : 0;
+  const deltaColor = deltaMXN >= 0 ? "#00ff99" : "#ff4d6d";
+  const sign = deltaMXN >= 0 ? "+" : "";
+  const todayAlerts = loadAlerts().filter(a => a.date === todayKey());
+  const tsLabel = curr.t ? new Date(curr.t).toLocaleString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  return `<div style="max-width:1280px;margin:0 auto 16px;padding:16px 20px;background:rgba(59,157,255,.03);border:1px solid rgba(59,157,255,.12);border-radius:18px">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Qué Cambió · vs snapshot anterior</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end">
+      <div><div style="font-size:11px;color:#9fb3c8">Portafolio ahora</div><div style="font-size:22px;font-weight:900;color:#eaf6ff">${money(currVal)}</div></div>
+      <div><div style="font-size:11px;color:#9fb3c8">Cambio</div><div style="font-size:22px;font-weight:900;color:${deltaColor}">${sign}${money(Math.abs(deltaMXN))} (${sign}${deltaPct.toFixed(2)}%)</div></div>
+      <div><div style="font-size:11px;color:#9fb3c8">Alertas hoy</div><div style="font-size:22px;font-weight:900;color:${todayAlerts.length > 0 ? "#ffd35c" : "#00ff99"}">${todayAlerts.length}</div></div>
+    </div>
+    <div style="font-size:10px;color:#5a6674;margin-top:8px">Snapshot: ${tsLabel} · ${portfolioHistory.length} puntos históricos</div>
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -4612,13 +4689,14 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
     <div><h1 id="brand-title">Cordelius</h1><div id="module-subtitle" class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
 
   </div>
-  <nav style="display:flex;flex-wrap:wrap;gap:6px">
+  <nav class="app-nav" style="display:flex;flex-wrap:wrap;gap:6px">
+    <button data-mod="alfredo" class="nav-mod" onclick="showMod('alfredo')" style="border-color:rgba(255,211,92,.4);background:rgba(255,211,92,.07)">⚡ Jarvis</button>
     <button data-mod="home" class="nav-mod" onclick="showMod('home')">Home</button>
-    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">Cordelius Trading</button>
-    <button data-mod="health" class="nav-mod" onclick="showMod('health')">Cordelius Health</button>
-    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">Cordelius Journal</button>
-    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">Cordelius Intelligence</button>
-    <button data-mod="alfredo" class="nav-mod" onclick="showMod('alfredo')">Jarvis</button><button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">Cordelius Autopilot</button>
+    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">Trading</button>
+    <button data-mod="health" class="nav-mod" onclick="showMod('health')">Health</button>
+    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">Journal</button>
+    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">Intelligence</button>
+    <button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">Autopilot</button>
   </nav>
 </header>
 
@@ -4810,7 +4888,10 @@ ${(function(){
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
 <div id="mod-alfredo" class="mod">
-<h2>Jarvis — Personal OS</h2>
+<h2>Jarvis — Command Center</h2>
+${renderJarvisCommandCenter(pv)}
+${renderJarvisTopPriorities(pv)}
+${renderJarvisChangelog(pv)}
 <div class="panel" style="max-width:960px;margin:0 auto 12px;padding:18px 20px;border-color:rgba(255,211,92,.18);background:rgba(255,211,92,.04)">
   <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Context Engine</div>
   <div id="alfredo-context-line" style="font-size:18px;font-weight:800;color:#fff;margin-bottom:8px">Conecto salud, trading, journal e inteligencia sin inventar datos.</div>
@@ -5293,7 +5374,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var hashMod = (window.location.hash || '').replace('#', '');
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
 
-  var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'home');
+  var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'alfredo');
   showMod(activeMod);
   loadJournalAuto();
   loadJarvisContext();
@@ -5302,7 +5383,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 window.addEventListener('hashchange', function() {
   var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
-  showMod(validModName(hashMod) ? hashMod : 'home');
+  showMod(validModName(hashMod) ? hashMod : 'alfredo');
 
 });
 function getAdminToken(){try{return sessionStorage.getItem('corde_admin_token')||'';}catch(e){return '';}}
