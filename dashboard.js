@@ -4446,6 +4446,83 @@ function renderHealthOSPanel() {
   </section>`;
 }
 
+function renderJarvisCommandCenter(pv) {
+  const h = computeHealthReadiness();
+  const opp = getOpportunityState();
+  const queue = loadJSON(RESEARCH_QUEUE_FILE, []);
+  const activeAlerts = loadAlerts().filter(a => !a.acknowledged);
+  const recovPct = h.recovery !== null ? h.recovery : null;
+  const healthColor = recovPct === null ? "#9fb3c8" : recovPct >= 75 ? "#00ff99" : recovPct >= 50 ? "#ffd35c" : "#ff4d6d";
+  const healthVal = h.connected ? (recovPct !== null ? `${recovPct}%` : "—") : "OFFLINE";
+  const tradingColor = pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d";
+  const topOpp = (opp.topOpportunities || [])[0];
+  const oppColor = topOpp ? "#00ff99" : "#9fb3c8";
+  const alertColor = activeAlerts.length === 0 ? "#00ff99" : activeAlerts.some(a => a.severity === "CRITICAL") ? "#ff4d6d" : "#ffd35c";
+  const tile = (label, value, sub, color, mod) =>
+    `<div onclick="showMod('${mod}')" style="cursor:pointer;background:${color}08;border:1px solid ${color}22;border-radius:18px;padding:16px;transition:.2s" onmouseover="this.style.borderColor='${color}55'" onmouseout="this.style.borderColor='${color}22'">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:${color};margin-bottom:6px">${esc(label)}</div>
+      <div style="font-size:18px;font-weight:900;color:#eaf6ff;line-height:1.1">${esc(value)}</div>
+      <div style="font-size:11px;color:#9fb3c8;margin-top:4px">${esc(sub)}</div>
+    </div>`;
+  return `<div style="max-width:1280px;margin:0 auto 16px">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:10px">Command Center · Estado del sistema</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px">
+      ${tile("Health", healthVal, h.operatingMode || "NORMAL", healthColor, "health")}
+      ${tile("Trading", money(pv.totalValueMXN), pct(pv.totalGainPct), tradingColor, "trading")}
+      ${tile("Research", queue.length > 0 ? queue[0] : "Cola vacía", `${queue.length} en cola`, queue.length > 0 ? "#ffd35c" : "#9fb3c8", "autopilot")}
+      ${tile("Oportunidades", topOpp ? `${topOpp.symbol} ${topOpp.score}/100` : "Sin opp.", topOpp ? (topOpp.signal || "—") : "Ejecutar engine", oppColor, "autopilot")}
+      ${tile("Alertas", activeAlerts.length === 0 ? "Todo OK" : `${activeAlerts.length} activas`, activeAlerts.length > 0 ? esc(activeAlerts[0].title.length > 28 ? activeAlerts[0].title.slice(0,28)+"…" : activeAlerts[0].title) : "Sin alertas", alertColor, "autopilot")}
+    </div>
+  </div>`;
+}
+function renderJarvisTopPriorities(pv) {
+  const activeAlerts = loadAlerts().filter(a => !a.acknowledged);
+  const h = computeHealthReadiness();
+  const opp = getOpportunityState();
+  const items = [];
+  const crit = activeAlerts.find(a => a.severity === "CRITICAL");
+  if (crit) items.push({ label: "Alerta crítica", detail: crit.title, color: "#ff4d6d", mod: "autopilot" });
+  if (h.recovery !== null && h.recovery < 50) items.push({ label: "Modo defensivo HOY", detail: `Recovery ${h.recovery}% — evita decisiones de alto impacto. Educativo.`, color: "#ffd35c", mod: "health" });
+  const sorted = (pv.assets || []).slice().sort((a, b) => a.score - b.score);
+  const worst = sorted[0];
+  if (worst && worst.score < 45) items.push({ label: `Revisar ${worst.symbol}`, detail: `Score ${worst.score}/100 · ${pct(worst.gainPct)} · riesgo ${worst.risk}`, color: "#ff4d6d", mod: "trading" });
+  const topOpp = (opp.topOpportunities || [])[0];
+  if (topOpp && topOpp.score >= 60) items.push({ label: `Investigar ${topOpp.symbol}`, detail: `Score ${topOpp.score}/100 · ${topOpp.signal || "—"} · educativo`, color: "#00ff99", mod: "autopilot" });
+  const cryptoPct = pv.totalValueMXN > 0 ? (pv.assets || []).filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0) / pv.totalValueMXN * 100 : 0;
+  if (cryptoPct > 70) items.push({ label: "Concentración cripto alta", detail: `${cryptoPct.toFixed(1)}% en cripto — diversificación. Educativo.`, color: "#ffd35c", mod: "trading" });
+  const warn = activeAlerts.find(a => a.severity === "WARNING" && (!crit || a.id !== crit.id));
+  if (warn) items.push({ label: "Aviso activo", detail: warn.title, color: "#ffd35c", mod: "autopilot" });
+  const top3 = items.slice(0, 3);
+  if (!top3.length) return `<div style="max-width:1280px;margin:0 auto 16px;padding:14px 18px;background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.14);border-radius:18px"><div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99;margin-bottom:6px">Top Prioridades Hoy</div><div style="color:#9fb3c8;font-size:13px">Sistema en buen estado. Sin prioridades urgentes hoy. (Educativo)</div></div>`;
+  return `<div style="max-width:1280px;margin:0 auto 16px;padding:16px 20px;background:rgba(255,211,92,.03);border:1px solid rgba(255,211,92,.15);border-radius:18px">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#ffd35c;margin-bottom:4px">Top Prioridades Hoy</div>
+    ${top3.map((item, i) => `<div onclick="showMod('${item.mod}')" style="cursor:pointer;display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:${i > 0 ? "1px solid rgba(120,160,210,.08)" : "none"}"><span style="min-width:22px;height:22px;border-radius:50%;background:${item.color}18;border:1px solid ${item.color}44;display:grid;place-items:center;font-size:11px;font-weight:900;color:${item.color};flex-shrink:0">${i + 1}</span><div><div style="font-size:13px;font-weight:700;color:#eaf6ff">${esc(item.label)}</div><div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc(item.detail)}</div></div></div>`).join("")}
+    <div style="font-size:11px;color:#5a6674;margin-top:8px">Educativo — no es consejo financiero ni médico.</div>
+  </div>`;
+}
+function renderJarvisChangelog(pv) {
+  if (portfolioHistory.length < 2) return `<div style="max-width:1280px;margin:0 auto 16px;padding:14px 18px;background:rgba(59,157,255,.04);border:1px solid rgba(59,157,255,.12);border-radius:18px"><div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:4px">Qué Cambió</div><div style="color:#9fb3c8;font-size:13px">Recolectando historial. Visible con 2+ snapshots.</div></div>`;
+  const prev = portfolioHistory[portfolioHistory.length - 2];
+  const curr = portfolioHistory[portfolioHistory.length - 1];
+  const prevVal = prev.total || 1;
+  const currVal = curr.total || pv.totalValueMXN || 0;
+  const deltaMXN = currVal - prevVal;
+  const deltaPct = prevVal !== 0 ? (deltaMXN / prevVal) * 100 : 0;
+  const deltaColor = deltaMXN >= 0 ? "#00ff99" : "#ff4d6d";
+  const sign = deltaMXN >= 0 ? "+" : "";
+  const todayAlerts = loadAlerts().filter(a => a.date === todayKey());
+  const tsLabel = curr.t ? new Date(curr.t).toLocaleString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  return `<div style="max-width:1280px;margin:0 auto 16px;padding:16px 20px;background:rgba(59,157,255,.03);border:1px solid rgba(59,157,255,.12);border-radius:18px">
+    <div style="font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">Qué Cambió · vs snapshot anterior</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end">
+      <div><div style="font-size:11px;color:#9fb3c8">Portafolio ahora</div><div style="font-size:22px;font-weight:900;color:#eaf6ff">${money(currVal)}</div></div>
+      <div><div style="font-size:11px;color:#9fb3c8">Cambio</div><div style="font-size:22px;font-weight:900;color:${deltaColor}">${sign}${money(Math.abs(deltaMXN))} (${sign}${deltaPct.toFixed(2)}%)</div></div>
+      <div><div style="font-size:11px;color:#9fb3c8">Alertas hoy</div><div style="font-size:22px;font-weight:900;color:${todayAlerts.length > 0 ? "#ffd35c" : "#00ff99"}">${todayAlerts.length}</div></div>
+    </div>
+    <div style="font-size:10px;color:#5a6674;margin-top:8px">Snapshot: ${tsLabel} · ${portfolioHistory.length} puntos históricos</div>
+  </div>`;
+}
+
 function render() {
   const pv = portfolioValue();
   const reg = marketRegime();
@@ -4465,8 +4542,15 @@ function render() {
 <title>${esc(CORDA_APP_NAME)}</title>
 <style>
 :root{--bg:#02040a;--panel:rgba(7,16,30,.72);--line:rgba(120,160,210,.16);--muted:#9fb3c8;--green:#00ff99;--red:#ff4d6d;--blue:#3b9dff;--gold:#ffd35c;--text:#eaf6ff}
+html{scroll-behavior:smooth}
 *{box-sizing:border-box}
 body{margin:0;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#02040a;padding:0 18px 120px;overflow-x:hidden}
+.sidebar{display:none;position:fixed;left:0;top:0;width:196px;height:100vh;background:rgba(3,8,18,.96);border-right:1px solid rgba(120,160,210,.13);padding:22px 12px;flex-direction:column;gap:4px;overflow-y:auto;z-index:40;backdrop-filter:blur(20px)}
+.sidebar-brand{padding:0 4px 16px;border-bottom:1px solid rgba(120,160,210,.1);margin-bottom:8px;text-align:center}
+.sidebar-btn{display:block;width:100%;text-align:left;border-radius:12px;padding:10px 13px;font-size:13px;font-weight:700;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--muted);transition:.18s}
+.sidebar-btn:hover,.sidebar-btn.nav-active{background:rgba(59,157,255,.1);border-color:rgba(59,157,255,.25);color:var(--text)}
+.sidebar-btn[data-mod="alfredo"].nav-active{background:rgba(255,211,92,.1);border-color:rgba(255,211,92,.3);color:#ffd35c}
+@media(min-width:900px){.sidebar{display:flex}body{padding-left:210px}.app-nav{display:none!important}}
 body:before{content:"";position:fixed;inset:0;z-index:-4;background:radial-gradient(circle at 16% 12%,rgba(0,255,153,.18),transparent 30%),radial-gradient(circle at 84% 10%,rgba(59,157,255,.20),transparent 32%),radial-gradient(circle at 50% 100%,rgba(255,211,92,.10),transparent 34%),linear-gradient(135deg,#02040a,#06101f 52%,#02040a)}
 body:after{content:"";position:fixed;inset:0;z-index:-3;background-image:linear-gradient(rgba(120,160,210,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,210,.05) 1px,transparent 1px);background-size:36px 36px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.9),rgba(0,0,0,.08))}
 .particles{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none}
@@ -4551,7 +4635,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
-.mod{display:none}.mod.active-mod{display:block}
+.mod{display:none!important}.mod.active-mod{display:block!important}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
@@ -4574,6 +4658,20 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .news-item[open] .ni-caret{transform:rotate(180deg)}
 #research-result{animation:fade .3s ease}
 </style></head><body>
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <div style="font-size:28px;margin-bottom:4px">◎</div>
+    <div style="font-size:10px;font-weight:900;letter-spacing:.14em;color:#ffd35c">CORDELIUS</div>
+    <div style="font-size:9px;color:#5a6674;margin-top:2px">Personal OS</div>
+  </div>
+  <button data-mod="alfredo" class="sidebar-btn nav-mod" onclick="showMod('alfredo')" style="color:#ffd35c;border-color:rgba(255,211,92,.2);background:rgba(255,211,92,.07)">⚡ Jarvis</button>
+  <button data-mod="home" class="sidebar-btn nav-mod" onclick="showMod('home')">◻ Home</button>
+  <button data-mod="trading" class="sidebar-btn nav-mod" onclick="showMod('trading')">◈ Trading</button>
+  <button data-mod="health" class="sidebar-btn nav-mod" onclick="showMod('health')">◉ Health</button>
+  <button data-mod="journal" class="sidebar-btn nav-mod" onclick="showMod('journal')">◇ Journal</button>
+  <button data-mod="intelligence" class="sidebar-btn nav-mod" onclick="showMod('intelligence')">◎ Intelligence</button>
+  <button data-mod="autopilot" class="sidebar-btn nav-mod" onclick="showMod('autopilot')">⊕ Autopilot</button>
+</aside>
 <div class="particles">${Array.from({ length: 18 }).map((_, i) => `<i style="left:${(i * 5.5 + 3) % 100}%;animation-duration:${9 + (i % 7)}s;animation-delay:${(i % 9)}s"></i>`).join("")}</div>
 
 <button class="brain-float" onclick="toggleJarvis()" title="Jarvis AI — Cordelius">
@@ -4612,13 +4710,14 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
     <div><h1 id="brand-title">Cordelius</h1><div id="module-subtitle" class="subtitle">Personal OS · Trading · Health · Intelligence · Autopilot</div></div>
 
   </div>
-  <nav style="display:flex;flex-wrap:wrap;gap:6px">
+  <nav class="app-nav" style="display:flex;flex-wrap:wrap;gap:6px">
+    <button data-mod="alfredo" class="nav-mod" onclick="showMod('alfredo')" style="border-color:rgba(255,211,92,.4);background:rgba(255,211,92,.07)">⚡ Jarvis</button>
     <button data-mod="home" class="nav-mod" onclick="showMod('home')">Home</button>
-    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">Cordelius Trading</button>
-    <button data-mod="health" class="nav-mod" onclick="showMod('health')">Cordelius Health</button>
-    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">Cordelius Journal</button>
-    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">Cordelius Intelligence</button>
-    <button data-mod="alfredo" class="nav-mod" onclick="showMod('alfredo')">Jarvis</button><button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">Cordelius Autopilot</button>
+    <button data-mod="trading" class="nav-mod" onclick="showMod('trading')">Trading</button>
+    <button data-mod="health" class="nav-mod" onclick="showMod('health')">Health</button>
+    <button data-mod="journal" class="nav-mod" onclick="showMod('journal')">Journal</button>
+    <button data-mod="intelligence" class="nav-mod" onclick="showMod('intelligence')">Intelligence</button>
+    <button data-mod="autopilot" class="nav-mod" onclick="showMod('autopilot')">Autopilot</button>
   </nav>
 </header>
 
@@ -4672,6 +4771,36 @@ ${renderHomePortal(pv, reg)}
   <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Gráficas por activo</div>
   <div style="font-size:13px;color:#9fb3c8">Abre cada activo del portafolio para ver minigrafica, precio, señales y enlace a TradingView.</div>
 </div>
+
+<div style="max-width:1280px;margin:18px auto 8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+  <div>
+    <h2 style="margin:0;font-size:20px;background:linear-gradient(90deg,#fff,#9bd3ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">BBVA — Gráfica BMV</h2>
+    <div style="font-size:12px;color:#9fb3c8;margin-top:2px">Símbolo: <code style="color:#3b9dff">${esc(topTV)}</code> · TradingView</div>
+  </div>
+  <a class="btn" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(topTV)}" target="_blank" rel="noopener" style="font-size:12px;padding:8px 14px">Abrir en TradingView ↗</a>
+</div>
+<div class="panel" style="max-width:1280px;margin:0 auto 14px;padding:0;overflow:hidden">
+  <details>
+    <summary style="list-style:none;cursor:pointer;padding:14px 18px;background:rgba(59,157,255,.06);user-select:none;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:13px;font-weight:700">Mostrar gráfica interactiva BBVA (BMV)</span>
+      <span class="btn" style="font-size:12px;padding:5px 12px">Cargar ▾</span>
+    </summary>
+    <div class="tv-embed" id="bbva-chart-container" style="height:460px">
+      <iframe id="bbva-tv-frame" src="" style="width:100%;height:100%;border:none" allowtransparency="true" scrolling="no"></iframe>
+    </div>
+  </details>
+</div>
+<script>
+(function(){
+  var det = document.querySelector('#bbva-chart-container')?.closest('details');
+  if (det) det.addEventListener('toggle', function(){
+    if (det.open) {
+      var fr = document.getElementById('bbva-tv-frame');
+      if (fr && !fr.src) fr.src = 'https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(topTV)}&interval=D&theme=dark&style=1&locale=es&timezone=America%2FMexico_City&hide_top_toolbar=0&hide_side_toolbar=1&allow_symbol_change=0';
+    }
+  });
+})();
+</script>
 
 
 <a id="brain"></a><h2>Jarvis Score · Cordelius Brain</h2>${brainHtml()}
@@ -4810,7 +4939,10 @@ ${(function(){
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
 <div id="mod-alfredo" class="mod">
-<h2>Jarvis — Personal OS</h2>
+<h2>Jarvis — Command Center</h2>
+${renderJarvisCommandCenter(pv)}
+${renderJarvisTopPriorities(pv)}
+${renderJarvisChangelog(pv)}
 <div class="panel" style="max-width:960px;margin:0 auto 12px;padding:18px 20px;border-color:rgba(255,211,92,.18);background:rgba(255,211,92,.04)">
   <div style="font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Context Engine</div>
   <div id="alfredo-context-line" style="font-size:18px;font-weight:800;color:#fff;margin-bottom:8px">Conecto salud, trading, journal e inteligencia sin inventar datos.</div>
@@ -4958,16 +5090,15 @@ function validModName(name) {
   return ['home','trading','health','journal','intelligence','alfredo','autopilot'].indexOf(name) !== -1;
 }
 function showMod(name) {
-  name = validModName(name) ? name : 'home';
+  name = validModName(name) ? name : 'alfredo';
   var mod = document.getElementById('mod-' + name);
-  if (!mod) name = 'home';
+  if (!mod) name = 'alfredo';
 
   document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
   document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
   mod = document.getElementById('mod-' + name);
   if (mod) mod.classList.add('active-mod');
-  var btn = document.querySelector('[data-mod="' + name + '"]');
-  if (btn) btn.classList.add('nav-active');
+  document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b){ b.classList.add('nav-active'); });
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
 
   if (window.location.hash !== '#' + name) {
@@ -5293,7 +5424,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var hashMod = (window.location.hash || '').replace('#', '');
   try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
 
-  var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'home');
+  var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'alfredo');
   showMod(activeMod);
   loadJournalAuto();
   loadJarvisContext();
@@ -5302,7 +5433,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 window.addEventListener('hashchange', function() {
   var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
-  showMod(validModName(hashMod) ? hashMod : 'home');
+  showMod(validModName(hashMod) ? hashMod : 'alfredo');
 
 });
 function getAdminToken(){try{return sessionStorage.getItem('corde_admin_token')||'';}catch(e){return '';}}
