@@ -4938,7 +4938,7 @@ ${(function(){
 </div></details>
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
-<div id="mod-alfredo" class="mod">
+<div id="mod-alfredo" class="mod active-mod">
 <h2>Jarvis — Command Center</h2>
 ${renderJarvisCommandCenter(pv)}
 ${renderJarvisTopPriorities(pv)}
