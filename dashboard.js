@@ -34,6 +34,7 @@ const RESEARCH_QUEUE_FILE = "data/research_queue.json";
 
 const POSITION_LEDGER_FILE = "data/position_ledger.json";
 const CHANGE_LEDGER_FILE   = "data/change_ledger.json";
+const ALERTS_FILE          = "data/cordelius_alerts.json";
 
 const WHOOP_TOKEN_FILE = "whoop_tokens.json";
 const WHOOP_CACHE_MS = 5 * 60 * 1000;
@@ -3472,6 +3473,107 @@ function renderOpportunityEnginePanel() {
   </div>`;
 }
 
+function loadAlerts() {
+  return loadJSON(ALERTS_FILE, []);
+}
+function saveAlerts(arr) {
+  saveJSON(ALERTS_FILE, arr.slice(-50));
+}
+function alertId() {
+  return "alert_" + Math.random().toString(36).slice(2, 8) + "_" + Math.random().toString(36).slice(2, 6);
+}
+function buildAlerts(pv, h) {
+  const candidates = [];
+  const today = todayKey();
+  const ts = Date.now();
+  const mk = (type, severity, title, message, source, dedupeKey) =>
+    ({ id: alertId(), timestamp: new Date(ts).toISOString(), date: today,
+       type, severity, title, message, source, dedupeKey, sentToTelegram: false, acknowledged: false });
+  const cryptoAssets = (pv.assets || []).filter(a => a.type === "crypto");
+  const cryptoPct = pv.totalValueMXN > 0 ? cryptoAssets.reduce((s, a) => s + a.valueMXN, 0) / pv.totalValueMXN * 100 : 0;
+  if (cryptoPct > 70) candidates.push(mk("CONCENTRACION", "WARNING",
+    `Concentración cripto elevada: ${cryptoPct.toFixed(1)}%`,
+    `Tu exposición cripto (${cryptoPct.toFixed(1)}%) supera el 70%. Alta volatilidad — considera revisar diversificación. (No consejo financiero.)`,
+    "portfolio", "port_crypto_conc"));
+  for (const a of (pv.assets || [])) {
+    if (a.score < 30) candidates.push(mk("SCORE_CRITICO", "CRITICAL",
+      `${a.symbol} score crítico: ${a.score}/100`,
+      `${esc(a.name || a.symbol)} tiene score ${a.score}/100. Evalúa tu tesis de inversión. (No consejo financiero.)`,
+      "portfolio", `score_critico_${a.symbol}`));
+    if (a.gainPct < -15 && a.risk === "ALTO") candidates.push(mk("DRAWDOWN", "WARNING",
+      `${a.symbol} en caída: ${a.gainPct.toFixed(1)}%`,
+      `${esc(a.name || a.symbol)} tiene pérdida de ${a.gainPct.toFixed(1)}% (score ${a.score}/100). Evalúa tu tesis. (No consejo financiero.)`,
+      "portfolio", `drawdown_${a.symbol}`));
+    if (a.gainPct > 80 && a.ind && a.ind.momentum > 0) candidates.push(mk("TOMA_GANANCIA", "OPPORTUNITY",
+      `${a.symbol} ganancia: +${a.gainPct.toFixed(1)}%`,
+      `${esc(a.name || a.symbol)} con +${a.gainPct.toFixed(1)}% (score ${a.score}/100). Considera evaluar take-profit parcial. (No consejo financiero.)`,
+      "portfolio", `takegain_${a.symbol}`));
+  }
+  if (h.connected && h.recovery !== null && h.recovery < 50) {
+    candidates.push(mk("HEALTH_LOW", "INFO",
+      `Capacidad de trading BAJA hoy`,
+      `Recovery ${h.recovery}%, modo ${h.operatingMode}. Portafolio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}). Modo defensivo recomendado. Educativo — no consejo financiero ni médico.`,
+      "health", "health_low_trading"));
+    const riskyAsset = (pv.assets || []).find(a => Math.abs(a.gainPct) > 15 || a.score < 40);
+    if (riskyAsset) candidates.push(mk("HEALTH_CROSSOVER", "WARNING",
+      `Recovery bajo + posición volátil: ${riskyAsset.symbol}`,
+      `Recovery ${h.recovery}% (bajo) y ${riskyAsset.symbol} con variación notable (${riskyAsset.gainPct.toFixed(1)}%). Modo defensivo educativo.`,
+      "crossover", "health_crossover"));
+  }
+  return candidates;
+}
+function checkAlertsDryRun() {
+  const pv = portfolioValue();
+  const h = computeHealthReadiness();
+  const existing = loadAlerts();
+  const todayExisting = existing.filter(a => a.date === todayKey());
+  const candidates = buildAlerts(pv, h);
+  const newAlerts = candidates.filter(c => !todayExisting.find(e => e.dedupeKey === c.dedupeKey));
+  if (!newAlerts.length) return { ok: true, generated: 0, total: existing.length, message: "Sin alertas nuevas para hoy." };
+  const merged = [...existing, ...newAlerts].slice(-50);
+  saveAlerts(merged);
+  return { ok: true, generated: newAlerts.length, total: merged.length, newAlerts, message: `${newAlerts.length} alerta(s) nueva(s) generadas.` };
+}
+function renderAlertsPanel() {
+  const alerts = loadAlerts();
+  const active = alerts.filter(a => !a.acknowledged);
+  const sevColor = { CRITICAL: "#ff4d6d", WARNING: "#ffd35c", OPPORTUNITY: "#00ff99", INFO: "#3b9dff" };
+  const fmtTs = ts => { try { return new Date(ts).toLocaleString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch(e) { return "—"; } };
+  const rows = active.slice(0, 10).map(a => {
+    const color = sevColor[a.severity] || "#9fb3c8";
+    return `<div style="border:1px solid ${color}28;border-radius:14px;padding:13px 16px;background:${color}06;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start">
+      <span style="width:8px;height:8px;border-radius:50%;background:${color};flex:0 0 auto;margin-top:4px"></span>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">
+          <div style="font-size:13px;font-weight:700;color:${color}">${esc(a.title)}</div>
+          <span style="font-size:10px;font-weight:900;border:1px solid ${color}44;border-radius:99px;padding:2px 8px;color:${color};white-space:nowrap">${esc(a.severity)}</span>
+        </div>
+        <div style="font-size:12px;color:#9fb3c8;margin-top:4px">${esc(a.message)}</div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <span style="font-size:10px;color:#5a6674">${esc(fmtTs(a.timestamp))}</span>
+          <span style="font-size:10px;color:#5a6674;border:1px solid rgba(120,160,210,.1);border-radius:6px;padding:1px 6px">${esc(a.type)}</span>
+          <form method="POST" action="/alerts/dismiss" onsubmit="event.preventDefault();secureFetch('/alerts/dismiss',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'id='+encodeURIComponent('${esc(a.id)}')}).then(()=>location.reload())" style="margin:0">
+            <button type="submit" style="background:rgba(255,255,255,.06);border:1px solid rgba(120,160,210,.2);color:#9fb3c8;border-radius:8px;padding:2px 9px;cursor:pointer;font-size:11px">Dismiss</button>
+          </form>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+  return `<div style="max-width:1280px;margin:16px auto 0">
+    <div class="panel" style="border:1px solid rgba(255,211,92,.18);background:rgba(255,211,92,.03);padding:18px 20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+        <div>
+          <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">ALERTS · Bitácora de eventos</div>
+          <div style="font-size:12px;color:#9fb3c8;margin-top:3px">${active.length} activas · ${alerts.length} total · <code style="font-size:10px;color:#3b9dff">GET /api/alerts</code></div>
+        </div>
+        <button onclick="secureFetch('/api/alerts/dry-run',{method:'POST'}).then(()=>location.reload())" class="btn" style="font-size:12px;padding:7px 14px">Evaluar alertas</button>
+      </div>
+      ${active.length ? rows : '<div class="muted" style="font-size:12px">Sin alertas activas. Usa "Evaluar alertas" para generar.</div>'}
+      <div style="margin-top:10px;font-size:11px;color:#5a6674">Educativo. No es consejo financiero ni médico. Telegram: pendiente Slice E.</div>
+    </div>
+  </div>`;
+}
+
 function renderLedgerPanel() {
   const positions = loadJSON(POSITION_LEDGER_FILE, []);
   const changes   = loadJSON(CHANGE_LEDGER_FILE, []);
@@ -4826,6 +4928,8 @@ ${renderAutopilotPanel()}
 
 ${renderLedgerPanel()}
 
+${renderAlertsPanel()}
+
 <h2>System</h2>
 <div class="grid">
   <div class="card"><div class="label">App</div><div class="big green">${esc(CORDA_APP_NAME)}</div></div>
@@ -5302,6 +5406,19 @@ function handleHealthBehavior(req, res) {
   });
 }
 
+async function handleAlertDismiss(req, res) {
+  const body = await readRequestBody(req);
+  const payload = parseBodyPayload(body);
+  const id = String(payload.id || "").trim();
+  if (!id) return sendJSON(res, { ok: false, error: "id requerido" }, 400);
+  const alerts = loadAlerts();
+  const idx = alerts.findIndex(a => a.id === id);
+  if (idx === -1) return sendJSON(res, { ok: false, error: "not found" }, 404);
+  alerts[idx].acknowledged = true;
+  saveAlerts(alerts);
+  return sendJSON(res, { ok: true, id });
+}
+
 function readRequestBody(req) {
   return new Promise(resolve => {
     let body = "";
@@ -5330,6 +5447,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && path === "/intel/clear") return handleIntelClear(req, res);
   if (req.method === "POST" && path === "/api/journal") return handleJournal(req, res);
   if (req.method === "POST" && path === "/api/health/behavior") return handleHealthBehavior(req, res);
+  if (req.method === "POST" && path === "/alerts/dismiss") return handleAlertDismiss(req, res);
   if (path === "/toggle-thinking") {
     settings.thinkingEnabled = !settings.thinkingEnabled;
     settings.autoRefreshSeconds = settings.thinkingEnabled ? 60 : 120;
@@ -5474,6 +5592,14 @@ const server = http.createServer(async (req, res) => {
     const positions = loadJSON(POSITION_LEDGER_FILE, []);
     const changes   = loadJSON(CHANGE_LEDGER_FILE, []);
     return sendJSON(res, { ok: true, ts: Date.now(), positionCount: positions.length, changeCount: changes.length, positions, changes });
+  }
+  if (path === "/api/alerts") {
+    const alerts = loadAlerts();
+    const active = alerts.filter(a => !a.acknowledged);
+    return sendJSON(res, { ok: true, ts: Date.now(), total: alerts.length, active: active.length, alerts });
+  }
+  if (req.method === "POST" && path === "/api/alerts/dry-run") {
+    return sendJSON(res, checkAlertsDryRun());
   }
   if (path === "/api/daily-scan") {
     res.writeHead(200, { "Content-Type": "application/json" });
