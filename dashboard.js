@@ -32,6 +32,9 @@ const OPPORTUNITY_HISTORY_FILE = "data/opportunity_history.json";
 const STOCK_RESEARCH_CACHE_FILE = "data/stock_research_cache.json";
 const RESEARCH_QUEUE_FILE = "data/research_queue.json";
 
+const POSITION_LEDGER_FILE = "data/position_ledger.json";
+const CHANGE_LEDGER_FILE   = "data/change_ledger.json";
+
 const WHOOP_TOKEN_FILE = "whoop_tokens.json";
 const WHOOP_CACHE_MS = 5 * 60 * 1000;
 
@@ -3469,6 +3472,71 @@ function renderOpportunityEnginePanel() {
   </div>`;
 }
 
+function renderLedgerPanel() {
+  const positions = loadJSON(POSITION_LEDGER_FILE, []);
+  const changes   = loadJSON(CHANGE_LEDGER_FILE, []);
+  const latest    = positions.length ? positions[positions.length - 1] : null;
+  const latestChg = changes.length  ? changes[changes.length - 1]      : null;
+  const combined  = [
+    ...positions.map(e => ({ ...e, _src: "position" })),
+    ...changes.map(e =>   ({ ...e, _src: "change" }))
+  ].sort((a, b) => b.ts - a.ts).slice(0, 10);
+  const fmtTs = ts => { try { return new Date(ts).toLocaleString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch(e) { return "—"; } };
+  const latestRow = latest
+    ? `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:6px">
+        <b style="color:#00ff99">${money(latest.totalValueMXN)}</b>
+        <span class="${latest.totalGainPct >= 0 ? "green" : "red"}">${pct(latest.totalGainPct)}</span>
+        <span style="font-size:11px;color:#9fb3c8">${esc(fmtTs(latest.ts))}</span>
+      </div>`
+    : '<div class="muted" style="font-size:12px;margin-top:6px">Sin snapshots todavía.</div>';
+  const latestChgRow = latestChg
+    ? `<div style="font-size:12px;color:#9fb3c8;margin-top:6px">${esc(latestChg.summary || latestChg.note || latestChg.type || "—")} · ${esc(fmtTs(latestChg.ts))}</div>`
+    : '<div class="muted" style="font-size:12px;margin-top:6px">Sin eventos todavía.</div>';
+  const activityRows = combined.map(e => {
+    const isPos = e._src === "position";
+    const dot   = isPos ? "#3b9dff" : "#818cf8";
+    const title = isPos ? "Portfolio snapshot" : (e.type === "manual_note" ? "Nota manual" : e.type === "snapshot_saved" ? "Snapshot guardado" : esc(e.type || "evento"));
+    const detail = isPos
+      ? `${money(e.totalValueMXN)} · ${pct(e.totalGainPct)}`
+      : esc(e.summary || e.note || "—");
+    return `<div style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid rgba(120,160,210,.06)">
+      <span style="width:7px;height:7px;border-radius:50%;background:${dot};margin-top:4px;flex:0 0 auto"></span>
+      <div>
+        <div style="font-size:12px;font-weight:700;color:${dot}">${title}</div>
+        <div style="font-size:11px;color:#9fb3c8">${detail}</div>
+        <div style="font-size:10px;color:#5a6674">${esc(fmtTs(e.ts))}</div>
+      </div>
+    </div>`;
+  }).join("");
+  return `<div style="max-width:1280px;margin:16px auto 0">
+    <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.03);padding:18px 20px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:12px">POSITION LEDGER · Bitácora de portafolio</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px">
+        <div style="background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);border-radius:12px;padding:12px 14px">
+          <div class="label">Snapshots</div>
+          <div class="big" style="font-size:26px;color:#3b9dff">${positions.length}</div>
+          <div class="muted" style="font-size:11px">posiciones</div>
+        </div>
+        <div style="background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.15);border-radius:12px;padding:12px 14px">
+          <div class="label">Eventos</div>
+          <div class="big" style="font-size:26px;color:#818cf8">${changes.length}</div>
+          <div class="muted" style="font-size:11px">change ledger</div>
+        </div>
+        <div style="background:rgba(0,255,153,.04);border:1px solid rgba(0,255,153,.12);border-radius:12px;padding:12px 14px">
+          <div class="label">Último snapshot</div>
+          ${latestRow}
+        </div>
+        <div style="background:rgba(129,140,248,.04);border:1px solid rgba(129,140,248,.12);border-radius:12px;padding:12px 14px">
+          <div class="label">Último evento</div>
+          ${latestChgRow}
+        </div>
+      </div>
+      ${combined.length ? `<div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#9fb3c8;margin-bottom:8px">Actividad reciente · ${combined.length} entradas</div><div>${activityRows}</div>` : '<div class="muted" style="font-size:12px">Sin actividad registrada.</div>'}
+      <div style="margin-top:10px;font-size:11px;color:#5a6674">Solo lectura · <code style="color:#3b9dff;font-size:10px">GET /api/ledger</code></div>
+    </div>
+  </div>`;
+}
+
 function renderAutopilotPanel() {
   const statusCards = [
     { label: "SERVIDOR",     value: "ON",       sub: "Cordelius OS",      bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
@@ -4756,6 +4824,8 @@ ${renderMorningReport()}
 
 ${renderAutopilotPanel()}
 
+${renderLedgerPanel()}
+
 <h2>System</h2>
 <div class="grid">
   <div class="card"><div class="label">App</div><div class="big green">${esc(CORDA_APP_NAME)}</div></div>
@@ -5399,6 +5469,11 @@ const server = http.createServer(async (req, res) => {
   }
   if (path === "/api/jarvis/memory") {
     return sendJSON(res, buildMemorySummary());
+  }
+  if (path === "/api/ledger") {
+    const positions = loadJSON(POSITION_LEDGER_FILE, []);
+    const changes   = loadJSON(CHANGE_LEDGER_FILE, []);
+    return sendJSON(res, { ok: true, ts: Date.now(), positionCount: positions.length, changeCount: changes.length, positions, changes });
   }
   if (path === "/api/daily-scan") {
     res.writeHead(200, { "Content-Type": "application/json" });
