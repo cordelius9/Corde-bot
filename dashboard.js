@@ -2112,7 +2112,7 @@ function renderIntelPanel() {
     return '<div class="news-card intel-item" data-mood="' + moodKey + '">'
       + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
       + '<div><b class="' + moodClass + '">' + esc(x.mood) + '</b><div class="muted" style="font-size:12px">' + esc(x.time) + '</div></div>'
-      + (hashVal ? '<form method="POST" action="/intel/delete" style="margin:0">'
+      + (hashVal ? '<form method="POST" action="/intel/delete" style="margin:0" onsubmit="event.preventDefault();cordeliusFormPost(this,\'/#intel\')">'
         + '<input type="hidden" name="id" value="' + hashVal + '">'
         + '<button type="submit" style="background:rgba(255,77,109,.15);border:1px solid rgba(255,77,109,.35);color:#ff4d6d;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:12px" title="Borrar este analisis">&#x2715;</button>'
         + '</form>' : '')
@@ -2124,7 +2124,7 @@ function renderIntelPanel() {
   }).join("") || '<div class="msg muted">Todavia no hay analisis pegado. Pega texto de Grok, X o noticias.</div>';
 
   const clearBtn = count > 0
-    ? '<form method="POST" action="/intel/clear" onsubmit="return confirm(\'Borrar todos los analisis Intel? Esta accion no se puede deshacer.\')" style="margin:0">'
+    ? '<form method="POST" action="/intel/clear" onsubmit="event.preventDefault();if(confirm(\'Borrar todos los analisis Intel? Esta accion no se puede deshacer.\'))cordeliusFormPost(this,\'/#intel\')" style="margin:0">'
       + '<button type="submit" style="background:rgba(255,77,109,.12);border:1px solid rgba(255,77,109,.3);color:#ff4d6d;border-radius:8px;padding:5px 14px;cursor:pointer;font-size:13px">Limpiar todo</button>'
       + '</form>'
     : '';
@@ -2145,7 +2145,7 @@ function renderIntelPanel() {
     + '</script>';
 
   return '<div class="panel">'
-    + '<form method="POST" action="/intel">'
+    + '<form method="POST" action="/intel" onsubmit="event.preventDefault();cordeliusFormPost(this,\'/#intel\')">'
     + '<textarea name="intel" style="width:100%;min-height:150px;border-radius:18px;background:#07111f;color:#e5f2ff;border:1px solid rgba(120,160,210,.25);padding:14px;font-size:15px" placeholder="Pega aqui analisis de Grok, X, noticias, China, IA, cripto, cobre, politica, etc..."></textarea>'
     + '<div style="margin-top:12px"><button class="btn">Guardar analisis</button></div>'
     + '</form>'
@@ -3872,6 +3872,7 @@ function alfredoDailyContext(h, pv, reg) {
 function renderHomePortal(pv, reg) {
   const h = computeHealthReadiness();
   const jd = computeJournalData();
+  const nl = computeDailyNewsletter();
   const ctx = alfredoDailyContext(h, pv, reg);
   const bbva = (pv.assets || []).find(a => a.symbol === "BBVA");
   const modules = [
@@ -4028,7 +4029,7 @@ function renderJournalModule() {
       <!-- Write form -->
       <div class="panel" style="border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04);padding:18px 20px">
         <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Nueva entrada</div>
-        <form method="POST" action="/api/journal">
+        <form method="POST" action="/api/journal" onsubmit="event.preventDefault();cordeliusFormPost(this,'/')">
           <textarea name="text" rows="5" placeholder="¿Cómo te sientes hoy? ¿Qué pasó? ¿Qué aprendiste?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
           <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
             <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
@@ -4083,7 +4084,7 @@ function renderJournalModule() {
       </summary>
       <div style="padding:16px 0">
         <div class="panel" style="padding:18px 20px;border:1px solid rgba(129,140,248,.2);background:rgba(129,140,248,.04)">
-          <form method="POST" action="/api/journal">
+          <form method="POST" action="/api/journal" onsubmit="event.preventDefault();cordeliusFormPost(this,'/')">
             <textarea name="text" rows="4" placeholder="¿Algo extra que quieras anotar hoy?" style="width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:12px;padding:12px;color:#eaf6ff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
             <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
               <select name="mood" style="background:rgba(0,0,0,.3);border:1px solid rgba(129,140,248,.2);border-radius:10px;padding:8px 12px;color:#eaf6ff;font-size:13px">
@@ -4427,7 +4428,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
         `<button onclick="setJarvisQ('${q}')" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
       ).join("")}
     </div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Jarvis..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <form class="chatbox" method="POST" action="/ask" onsubmit="event.preventDefault();cordeliusFormPost(this,'/')"><input name="q" placeholder="Pregúntale a Jarvis..." autocomplete="off"><button class="btn">Preguntar</button></form>
     <div style="max-height:300px;overflow-y:auto;margin-top:12px">
       ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
     </div>
@@ -4520,7 +4521,7 @@ ${renderHomePortal(pv, reg)}
         `<button onclick="document.querySelector('[name=q]').value='${q}'" class="btn" style="font-size:12px;padding:7px 12px;border-color:rgba(59,157,255,.3)">${esc(q)}</button>`
       ).join("")}
     </div>
-    <form class="chatbox" method="POST" action="/ask"><input name="q" placeholder="Pregúntale a Jarvis..." autocomplete="off"><button class="btn">Preguntar</button></form>
+    <form class="chatbox" method="POST" action="/ask" onsubmit="event.preventDefault();cordeliusFormPost(this,'/')"><input name="q" placeholder="Pregúntale a Jarvis..." autocomplete="off"><button class="btn">Preguntar</button></form>
     <div style="max-height:480px;overflow-y:auto;margin-top:12px">
       ${chatHtml || '<div class="msg muted">Sin preguntas todavia.</div>'}
     </div>
@@ -4739,7 +4740,7 @@ ${renderMorningReport()}
   if (btn) {
     btn.addEventListener("click", async function(){
       btn.textContent = "Guardando...";
-      await fetch("/api/autopilot/snapshot", { method: "POST" });
+      await secureFetch("/api/autopilot/snapshot", { method: "POST" });
       btn.textContent = "Guardado ✅";
       await loadAutopilotMemoryPanel();
       setTimeout(function(){ btn.textContent = "Guardar snapshot"; }, 1200);
@@ -4763,6 +4764,15 @@ ${renderAutopilotPanel()}
   <div class="card"><div class="label">Quiver</div><div class="big ${QUIVER_API_KEY ? "green" : "yellow"}">${QUIVER_API_KEY ? "OK" : "PENDIENTE"}</div></div>
   <div class="card"><div class="label">WHOOP</div><div class="big ${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "ON" : "PENDIENTE"}</div></div>
   <div class="card"><div class="label">Journal</div><div class="big" style="color:#818cf8">${journalEntries.length} entradas</div></div>
+  <div class="card" style="grid-column:span 2">
+    <div class="label">Admin Token</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+      <input id="corde-admin-token-input" type="password" placeholder="Token de sesión" style="background:rgba(0,0,0,.3);border:1px solid rgba(120,160,210,.25);border-radius:10px;padding:6px 10px;color:#eaf6ff;font-size:13px;width:200px">
+      <button onclick="saveAdminToken()" class="btn" style="font-size:12px;padding:5px 12px">Guardar</button>
+      <button onclick="clearAdminToken()" class="btn" style="font-size:12px;padding:5px 12px;border-color:rgba(255,77,109,.3);color:#ff4d6d">Limpiar</button>
+      <span id="corde-admin-token-status" style="font-size:12px;color:#9fb3c8">No configurado</span>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -4939,7 +4949,7 @@ function renderRadarSvg(data) { var labels = ['recovery','sleep','hrv','nervousS
 function renderSparklineSvg(values, color) { var nums = (values || []).filter(function(v){ return typeof v === 'number' && Number.isFinite(v); }); if (nums.length < 2) return '<div class="muted" style="padding:12px">Recolectando datos.</div>'; var min = Math.min.apply(null, nums), max = Math.max.apply(null, nums), span = max - min || 1; var pts = nums.map(function(v, i){ return (i * 180 / (nums.length - 1)) + ',' + (34 - ((v - min) / span * 28)); }).join(' '); return '<svg viewBox="0 0 180 42" width="100%" height="42"><polyline points="'+pts+'" fill="none" stroke="'+(color||'#00ff99')+'" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'; }
 function renderHealthScoreCard(label, value) { return '<div class="health-os-metric"><div class="health-os-label">'+escapeHtml(label)+'</div><div class="health-os-value" style="color:'+scoreColor(value)+'">'+fmtNum(value, '')+'</div></div>'; }
 function renderBehaviorChips(behaviors) { var items = [['sauna','Sauna'],['cannabis','Cannabis'],['training','Training'],['stress','High Stress'],['lateCaffeine','Late Caffeine'],['alcohol','Alcohol']]; return items.map(function(x){ var on = behaviors && behaviors[x[0]]; return '<button class="health-os-chip '+(on?'active':'')+'" data-health-behavior="'+escapeHtml(x[0])+'" onclick="toggleHealthBehavior(this.dataset.healthBehavior)">'+escapeHtml(x[1])+'</button>'; }).join(''); }
-async function toggleHealthBehavior(key) { try { var response = await fetch('/api/health/behavior', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ behavior:key }) }); if (response.ok) await loadHealthOS(); } catch(e) {} }
+async function toggleHealthBehavior(key) { try { var response = await secureFetch('/api/health/behavior', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ behavior:key }) }); if (response.ok) await loadHealthOS(); } catch(e) {} }
 function applyHealthOS(snapshot, insights, behaviors) { var latest = (snapshot && snapshot.latest) || {}; var scores = latest.scores || (snapshot && snapshot.scores) || {}; healthSet('health-os-updated', latest.ts ? new Date(latest.ts).toLocaleString('es-MX') : new Date().toLocaleString('es-MX')); healthSet('health-os-recovery', fmtPct(latest.recovery)); healthSet('health-os-sleep', fmtPct(latest.sleep)); healthSet('health-os-strain', fmtNum(latest.strain, '')); healthSet('health-os-hrv', fmtNum(latest.hrv, ' ms')); healthSet('health-os-rhr', fmtNum(latest.restingHeartRate, ' bpm')); healthSet('health-os-readiness', fmtPct(scores.readiness)); healthSet('health-os-score', fmtNum(scores.healthScore, '')); healthSet('health-os-status', scores.status || '—'); healthSet('health-os-mode', latest.operatingMode || 'NORMAL'); var badge = document.getElementById('health-os-whoop-badge'); if (badge) badge.textContent = latest.connected ? 'WHOOP LIVE' : 'WHOOP FALLBACK'; var scoreEl = document.getElementById('health-os-score'); if (scoreEl) scoreEl.style.color = scoreColor(scores.healthScore); var d1 = document.getElementById('health-os-donut-recovery'); if (d1) d1.innerHTML = renderDonut('Recovery', latest.recovery, '%'); var d2 = document.getElementById('health-os-donut-sleep'); if (d2) d2.innerHTML = renderDonut('Sleep', latest.sleep, '%'); var d3 = document.getElementById('health-os-donut-strain'); if (d3) d3.innerHTML = renderDonut('Strain', Math.min(100, Number(latest.strain || 0) * 5), ''); var radar = document.getElementById('health-os-radar'); if (radar) radar.innerHTML = renderRadarSvg(scores.radar || {}); var scoreList = document.getElementById('health-os-score-list'); if (scoreList) scoreList.innerHTML = [['Mental Clarity', scores.mentalClarity], ['Energy', scores.energy], ['Nervous System', scores.nervousSystem], ['Overtrading Risk', 100 - (scores.overtradingRisk || 0)], ['Stress Load', 100 - (scores.stressLoad || 0)], ['Recovery Priority', 100 - (scores.recoveryPriority || 0)]].map(function(x){ return renderHealthScoreCard(x[0], x[1]); }).join(''); healthSet('health-os-energy-physical', fmtNum(scores.physicalEnergy, '')); healthSet('health-os-energy-mental', fmtNum(scores.mentalEnergy, '')); healthSet('health-os-energy-focus', fmtNum(scores.focusCapacity, '')); healthSet('health-os-energy-deepwork', fmtNum(scores.deepWorkCapacity, '')); healthSet('health-os-energy-trading', fmtNum(scores.tradingCapacity, '')); healthSet('health-os-ai', (insights && insights.alfredoHealthAI) || (snapshot && snapshot.alfredoHealthAI) || 'Sin insight todavía.'); var history = document.getElementById('health-os-history'); if (history) { var h = (snapshot && snapshot.history) || []; var row = function(label, field, color) { var vals = h.map(function(x){ return x[field]; }); var last = vals.filter(function(v){return typeof v === 'number';}).slice(-1)[0]; return '<div class="health-os-history-row"><b>'+label+'</b><div class="health-os-trend">'+renderSparklineSvg(vals.slice(-30), color)+'</div><span>'+fmtNum(last, field === 'strain' ? '' : (field === 'hrv' ? ' ms' : '%'))+'</span></div>'; }; history.innerHTML = row('Recovery 7d / 30d','recovery','#f472b6') + row('Sleep 7d / 30d','sleep','#818cf8') + row('HRV 7d / 30d','hrv','#00ff99') + row('Strain 7d / 30d','strain','#ffd35c'); } var corr = document.getElementById('health-os-correlations'); if (corr) { var c = (snapshot && snapshot.correlations) || {}; corr.innerHTML = c.ready ? (c.items || []).map(function(i){ return '<div class="health-os-risk"><b>'+escapeHtml(i.label)+'</b><br><span class="muted">Delta: '+(i.value == null ? 'insuficiente' : i.value)+'</span></div>'; }).join('') : '<div class="muted">Recolectando datos. Se activará con 3+ días de snapshots.</div>'; } var beh = document.getElementById('health-os-behaviors'); if (beh) beh.innerHTML = renderBehaviorChips((behaviors && behaviors.behaviors) || {}); var risk = document.getElementById('health-os-trading-risk'); if (risk) risk.innerHTML = 'Recovery &lt; 50 ⇒ DEFENSIVE / reducir riesgo educativo.<br>Recovery &gt; 80 ⇒ NORMAL.<br>Strain alto ⇒ bajar agresividad.<br>Overtrading Risk actual: <b style="color:'+scoreColor(100 - (scores.overtradingRisk || 0))+'">'+fmtNum(scores.overtradingRisk, '')+'</b>. No operar impulsivo.'; }
 async function loadHealthOS() { if (!document.getElementById('health-os-score')) return; try { var responses = await Promise.all([fetch('/api/health/snapshot', { cache:'no-store' }), fetch('/api/health/insights', { cache:'no-store' }), fetch('/api/health/behaviors/today', { cache:'no-store' })]); var snapshot = responses[0].ok ? await responses[0].json() : null; var insights = responses[1].ok ? await responses[1].json() : null; var behaviors = responses[2].ok ? await responses[2].json() : null; if (!snapshot || !snapshot.ok) { var fallback = await fetch('/api/whoop/today', { cache:'no-store' }); var whoop = fallback.ok ? await fallback.json() : {}; snapshot = { ok:true, latest: whoop, scores: {}, history: [] }; } applyHealthOS(snapshot, insights, behaviors); } catch(e) { healthSet('health-os-ai', 'No se pudo cargar Health OS. Revisa /api/health/snapshot.'); } }
 
@@ -4973,7 +4983,7 @@ async function saveAutopilotSnapshot() {
   var box = document.getElementById('autopilot-db-progress');
   if (box) box.textContent = 'Guardando snapshot local...';
   try {
-    var response = await fetch('/api/autopilot/snapshot', { method:'POST', cache:'no-store' });
+    var response = await secureFetch('/api/autopilot/snapshot', { method:'POST', cache:'no-store' });
     var data = response.ok ? await response.json() : null;
     if (box) box.textContent = data && data.ok ? 'Snapshot guardado. Operating mode: ' + (data.operatingMode || 'NORMAL') : 'No se pudo guardar snapshot.';
     await loadAutopilotDatabase();
@@ -5013,7 +5023,7 @@ async function loadOpportunityEngine() {
 async function runOpportunityEngine() {
   var box = document.getElementById('opportunity-research-result');
   if (box) box.textContent = 'Ejecutando Opportunity Engine...';
-  try { var r = await fetch('/api/opportunities/run', { method:'POST', cache:'no-store' }); var d = r.ok ? await r.json() : null; if (d) renderOpportunityLists(d); if (box) box.textContent = d && d.ok ? 'Engine actualizado: '+((d.topOpportunities||[])[0] ? (d.topOpportunities[0].symbol + ' ' + d.topOpportunities[0].score + '/100') : 'sin oportunidades') : 'No se pudo ejecutar.'; } catch(e) { if (box) box.textContent = 'Error ejecutando opportunities.'; }
+  try { var r = await secureFetch('/api/opportunities/run', { method:'POST', cache:'no-store' }); var d = r.ok ? await r.json() : null; if (d) renderOpportunityLists(d); if (box) box.textContent = d && d.ok ? 'Engine actualizado: '+((d.topOpportunities||[])[0] ? (d.topOpportunities[0].symbol + ' ' + d.topOpportunities[0].score + '/100') : 'sin oportunidades') : 'No se pudo ejecutar.'; } catch(e) { if (box) box.textContent = 'Error ejecutando opportunities.'; }
 }
 async function analyzeOpportunitySymbol() {
   var input = document.getElementById('opportunity-research-symbol');
@@ -5121,6 +5131,14 @@ window.addEventListener('hashchange', function() {
   showMod(validModName(hashMod) ? hashMod : 'home');
 
 });
+function getAdminToken(){try{return sessionStorage.getItem('corde_admin_token')||'';}catch(e){return '';}}
+function saveAdminToken(){var v=(document.getElementById('corde-admin-token-input')||{}).value||'';try{sessionStorage.setItem('corde_admin_token',v);}catch(e){}var st=document.getElementById('corde-admin-token-status');if(st){st.textContent=v?'Configurado (sesión)':'No configurado';st.style.color=v?'#4ade80':'';}};
+function clearAdminToken(){try{sessionStorage.removeItem('corde_admin_token');}catch(e){}var st=document.getElementById('corde-admin-token-status');if(st){st.textContent='No configurado';st.style.color='';}}
+function authHeaders(extra){var t=getAdminToken();var h=Object.assign({},extra||{});if(t)h['X-Admin-Token']=t;return h;}
+async function secureFetch(url,opts){var o=Object.assign({},opts||{});o.headers=authHeaders(o.headers||{});return fetch(url,o);}
+async function cordeliusMutate(url){await secureFetch(url,{method:'GET'});location.reload();}
+async function cordeliusFormPost(form,redirect){var p=new URLSearchParams(new FormData(form));await secureFetch(form.action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});location.href=redirect||'/';}
+document.addEventListener('DOMContentLoaded',function(){var t=getAdminToken();var st=document.getElementById('corde-admin-token-status');if(st&&t){st.textContent='Configurado (sesión)';st.style.color='#4ade80';}});
 </script>
 </html>`;
 }
