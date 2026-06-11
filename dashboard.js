@@ -509,6 +509,31 @@ function miniSpark(symbol, color = "#3b9dff") {
   return spark(vals, { color, height: 115, showTable: false });
 }
 
+// ---- QUOTES REALES — Finnhub /quote para tickers USD ----
+// El boot y el interval ya invocaban refreshQuotes(); la función no existía y los
+// precios quedaban congelados en valueManual + pseudo-quotes seeded.
+let quotesLastFetch = 0;
+let quotesLastError = null;
+async function refreshQuotes() {
+  if (!FINNHUB_API_KEY) { quotesLastError = "no_api_key"; return; }
+  const targets = PORTFOLIO.filter(a => a.currency === "USD" && a.liveTicker && (a.type === "stock" || a.type === "etf"));
+  let okCount = 0;
+  for (const a of targets) {
+    const q = await apiGet(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(a.liveTicker)}&token=${FINNHUB_API_KEY}`);
+    if (q && Number.isFinite(q.c) && q.c > 0) {
+      quotes[a.symbol] = { price: q.c, value: q.c * a.units, day: Number.isFinite(q.dp) ? q.dp : 0, ok: true, source: "finnhub", t: Date.now() };
+      okCount++;
+    }
+  }
+  if (okCount > 0) { quotesLastFetch = Date.now(); quotesLastError = null; }
+  else quotesLastError = "api_unavailable";
+}
+function quotesFreshness() {
+  if (!FINNHUB_API_KEY) return "SIMULATED";
+  if (!quotesLastFetch) return "FALLBACK";
+  return Date.now() - quotesLastFetch > 30 * 60 * 1000 ? "STALE" : "LIVE";
+}
+
 async function fetchNews() {
   let out = [];
   if (FINNHUB_API_KEY) {
