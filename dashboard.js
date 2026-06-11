@@ -3240,10 +3240,14 @@ function computeHealthCorrelations(history, behaviorsByDate) {
     { label: "Sauna vs Recovery", value: notReady ? null : metric("sauna", "recovery") }, { label: "Cannabis vs Sleep", value: notReady ? null : metric("cannabis", "sleep") }, { label: "Cannabis vs HRV", value: notReady ? null : metric("cannabis", "hrv") }, { label: "Stress vs Recovery", value: notReady ? null : metric("stress", "recovery") }, { label: "Training vs Sleep", value: notReady ? null : metric("training", "sleep") }
   ] };
 }
-function buildHealthInsight(whoop, scores) {
+function buildHealthInsight(whoop, scores, fresh = whoop.connected === true) {
   const recovery = whoop.recovery ?? "—", sleep = whoop.sleep ?? "—", strain = whoop.strain ?? "—", hrv = whoop.hrv ?? "—";
+  const noData = [whoop.recovery, whoop.sleep, whoop.strain, whoop.hrv].every(v => v == null);
+  if (noData) return `Sin lectura WHOOP disponible hoy (tokens pendientes o cache vacío). No se muestran números inventados; conecta WHOOP para ver recovery, sleep, HRV y strain reales. Educativo. No es asesoría médica ni financiera.`;
+  const recDate = whoop.date || (whoop.timestamp ? String(whoop.timestamp).slice(0, 10) : null);
+  const lead = fresh ? "Hoy tu lectura WHOOP-first marca" : `Última lectura WHOOP registrada${recDate ? ` (${recDate})` : ""} — no es de hoy — marca`;
   const social = Math.round(clamp((scores.energy * 0.45) + (scores.mentalClarity * 0.35) + (100 - scores.stressLoad) * 0.2));
-  return `Hoy tu lectura WHOOP-first marca recovery ${recovery}%, sleep ${sleep}%, HRV ${hrv} ms y strain ${strain}. El Health Score está en ${scores.healthScore}/100 (${scores.status}) con modo ${whoop.operatingMode || whoop.mode || "NORMAL"}. Esto sugiere energía física ${scores.physicalEnergy}/100, claridad mental ${scores.mentalClarity}/100 y sistema nervioso ${scores.nervousSystem}/100. Qué hacer: prioriza decisiones simples, bloques de trabajo claros y recuperación si el score baja. Qué evitar: sobreoperar, perseguir movimientos, estudiar sin pausas o cargar más estrés si el overtrading risk está alto (${scores.overtradingRisk}/100). Capacidad educativa de trading: ${scores.tradingCapacity}/100; capacidad de estudio profundo: ${scores.deepWorkCapacity}/100; capacidad social estimada: ${social}/100. Riesgo de burnout: ${scores.stressLoad >= 70 || scores.recoveryPriority >= 70 ? "elevado" : "controlado"}. Educativo. No es asesoría médica ni financiera.`;
+  return `${lead} recovery ${recovery}%, sleep ${sleep}%, HRV ${hrv} ms y strain ${strain}. El Health Score está en ${scores.healthScore}/100 (${scores.status}) con modo ${whoop.operatingMode || whoop.mode || "NORMAL"}. Esto sugiere energía física ${scores.physicalEnergy}/100, claridad mental ${scores.mentalClarity}/100 y sistema nervioso ${scores.nervousSystem}/100. Qué hacer: prioriza decisiones simples, bloques de trabajo claros y recuperación si el score baja. Qué evitar: sobreoperar, perseguir movimientos, estudiar sin pausas o cargar más estrés si el overtrading risk está alto (${scores.overtradingRisk}/100). Capacidad educativa de trading: ${scores.tradingCapacity}/100; capacidad de estudio profundo: ${scores.deepWorkCapacity}/100; capacidad social estimada: ${social}/100. Riesgo de burnout: ${scores.stressLoad >= 70 || scores.recoveryPriority >= 70 ? "elevado" : "controlado"}. Educativo. No es asesoría médica ni financiera.`;
 }
 
 function saveJournalEntry(entry) {
@@ -6400,7 +6404,12 @@ if (path === "/api/whoop/today") {
   }
   if (path === "/api/health/insights") {
     try {
-      const history = loadJSON(HEALTH_SNAPSHOT_FILE, []); const latest = Array.isArray(history) && history.length ? history[history.length - 1] : healthSnapshotRecord({}); const ai = buildHealthInsight(latest, latest.scores || computeHealthScores(latest));
+      const history = loadJSON(HEALTH_SNAPSHOT_FILE, []);
+      const byTime = (Array.isArray(history) ? history.slice() : []).sort((a, b) =>
+        (a.ts || (a.timestamp ? Date.parse(a.timestamp) : 0)) - (b.ts || (b.timestamp ? Date.parse(b.timestamp) : 0)));
+      const latest = byTime.length ? byTime[byTime.length - 1] : healthSnapshotRecord({});
+      const recDate = latest.date || (latest.timestamp ? String(latest.timestamp).slice(0, 10) : "");
+      const ai = buildHealthInsight(latest, latest.scores || computeHealthScores(latest), recDate === todayKey());
       res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:true, ts: Date.now(), alfredoHealthAI: ai, scores: latest.scores || computeHealthScores(latest), educationalNote:"Educativo. No es asesoría médica ni financiera." }));
     } catch(e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:false, error:"health_insights_crash", message:e.message })); }
   }
