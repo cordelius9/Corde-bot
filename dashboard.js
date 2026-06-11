@@ -5488,6 +5488,7 @@ ${renderAlertsPanel()}
       <button onclick="saveAdminToken()" class="btn" style="font-size:12px;padding:5px 12px">Guardar</button>
       <button onclick="clearAdminToken()" class="btn" style="font-size:12px;padding:5px 12px;border-color:rgba(255,77,109,.3);color:#ff4d6d">Limpiar</button>
       <span id="corde-admin-token-status" style="font-size:12px;color:#9fb3c8">No configurado</span>
+      <a href="/logout" style="font-size:12px;color:#ff4d6d;text-decoration:none;border:1px solid rgba(255,77,109,.25);border-radius:10px;padding:5px 12px">Cerrar sesión</a>
     </div>
   </div>
 </div>
@@ -6183,7 +6184,9 @@ function sendJSON(res, data, status = 200) {
 const CORDELIUS_ACCESS_KEY = process.env.CORDELIUS_ACCESS_KEY || "";
 
 const ENDPOINT_PERMISSIONS = {
-  "/": "publicRead",
+  "/": "privateRead",            // dashboard HTML: público requiere sesión (login wall)
+  "/login": "publicRead",
+  "/logout": "publicRead",
   "/health": "publicRead",
   "/healthz": "publicRead",
   "/api/ui-diagnostics": "publicRead",
@@ -6264,10 +6267,11 @@ const ENDPOINT_PERMISSIONS = {
 };
 const MUTATION_LEVELS = ["mutateLocal", "mutateProtected", "dangerous"];
 
-const securityStats = { publicRequestSeen: false, blockedMutations: 0, publicMutationsAllowed: 0, lastBlockedPath: null, lastBlockedAt: null };
+const securityStats = { publicRequestSeen: false, blockedMutations: 0, blockedReads: 0, publicMutationsAllowed: 0, lastBlockedPath: null, lastBlockedAt: null };
 
 function endpointPermission(req, path) {
   let level = ENDPOINT_PERMISSIONS[path];
+  if (path === "/login" || path === "/logout") return "publicRead"; // auth: el POST /login ES el login
   // Rutas dual GET/POST: el POST escribe aunque el GET solo lea.
   if (req.method !== "GET" && req.method !== "HEAD" && !MUTATION_LEVELS.includes(level)) level = "mutateProtected";
   if (!level) level = "privateRead"; // GET desconocido: clasificar conservador
@@ -6290,25 +6294,152 @@ function accessKeyValid(req) {
   return crypto.timingSafeEqual(a, b);
 }
 
-// Devuelve true si el request puede continuar; si no, responde 401/403 JSON y devuelve false.
+// ── SESSION GATE — login wall con cookie HttpOnly firmada (12h) ──
+const SESSION_COOKIE = "cordelius_session";
+const SESSION_TTL_MS = 12 * 3600 * 1000;
+
+function parseCookies(req) {
+  const out = {};
+  String(req.headers.cookie || "").split(";").forEach(p => {
+    const i = p.indexOf("=");
+    if (i > 0) out[p.slice(0, i).trim()] = p.slice(i + 1).trim();
+  });
+  return out;
+}
+// Secreto derivado de la access key (las sesiones sobreviven reinicios;
+// si la key cambia, todas las sesiones se invalidan). Nunca se loguea.
+function sessionSecret() {
+  return crypto.createHash("sha256").update("cordelius-session-v1:" + CORDELIUS_ACCESS_KEY).digest();
+}
+function makeSessionToken() {
+  const exp = Date.now() + SESSION_TTL_MS;
+  const sig = crypto.createHmac("sha256", sessionSecret()).update("v1." + exp).digest("hex");
+  return "v1." + exp + "." + sig;
+}
+function sessionTokenValid(tok) {
+  if (!CORDELIUS_ACCESS_KEY || !tok) return false;
+  const p = String(tok).split(".");
+  if (p.length !== 3 || p[0] !== "v1") return false;
+  const exp = Number(p[1]);
+  if (!Number.isFinite(exp) || exp < Date.now()) return false;
+  const expect = crypto.createHmac("sha256", sessionSecret()).update("v1." + exp).digest("hex");
+  const a = Buffer.from(p[2]), b = Buffer.from(expect);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function hasValidSession(req) {
+  return sessionTokenValid(parseCookies(req)[SESSION_COOKIE]);
+}
+// Autenticado para acceso público: header X-Cordelius-Key válido o cookie de sesión.
+function publicAuthed(req) {
+  return accessKeyValid(req) || hasValidSession(req);
+}
+
+// Rate limit naive para POST /login: 15 intentos fallidos / 10 min (por proceso).
+const loginFailTimes = [];
+function loginRateLimited() {
+  const now = Date.now();
+  while (loginFailTimes.length && now - loginFailTimes[0] > 10 * 60 * 1000) loginFailTimes.shift();
+  return loginFailTimes.length >= 15;
+}
+
+function renderLoginWall(opts = {}) {
+  const locked = !CORDELIUS_ACCESS_KEY;
+  const body = locked
+    ? `<div class="lw-msg">🔒 Private dashboard locked.<br><span>Configura <b>CORDELIUS_ACCESS_KEY</b> localmente en el servidor para habilitar el acceso remoto.</span></div>`
+    : `<form method="POST" action="/login" autocomplete="off">
+        <input type="password" name="key" placeholder="Access key" autofocus autocomplete="current-password">
+        <button type="submit">Entrar</button>
+        ${opts.error ? `<div class="lw-err">${esc(opts.error)}</div>` : ""}
+      </form>`;
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cordelius · Acceso</title><style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#eaf6ff;background:radial-gradient(circle at 20% 15%,rgba(0,255,153,.12),transparent 32%),radial-gradient(circle at 80% 12%,rgba(59,157,255,.14),transparent 34%),#02040a}
+.lw{width:min(380px,calc(100vw - 40px));background:rgba(7,16,30,.92);border:1px solid rgba(0,255,153,.22);border-radius:24px;padding:34px 30px;text-align:center;box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 50px rgba(0,255,153,.07)}
+.lw-logo{font-size:34px;margin-bottom:8px}
+h1{font-size:20px;margin:0 0 4px;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.lw-sub{color:#9fb3c8;font-size:12px;margin-bottom:22px}
+input{width:100%;box-sizing:border-box;background:rgba(0,0,0,.35);border:1px solid rgba(120,160,210,.25);border-radius:12px;padding:13px 14px;color:#eaf6ff;font-size:15px;margin-bottom:12px;outline:none}
+input:focus{border-color:rgba(0,255,153,.5)}
+button{width:100%;border:1px solid rgba(0,255,153,.4);background:rgba(0,255,153,.1);color:#00ff99;border-radius:12px;padding:12px;font-size:15px;font-weight:900;cursor:pointer}
+button:hover{background:rgba(0,255,153,.18)}
+.lw-err{color:#ff4d6d;font-size:12px;margin-top:10px}
+.lw-msg{font-size:15px;line-height:1.6}.lw-msg span{font-size:12px;color:#9fb3c8}
+.lw-foot{margin-top:18px;font-size:10px;color:#5a6674}
+</style></head><body><div class="lw">
+<div class="lw-logo">◎</div><h1>Cordelius</h1><div class="lw-sub">Personal OS · acceso privado</div>
+${body}
+<div class="lw-foot">Sesión de 12h · cookie HttpOnly · educativo, no asesoría</div>
+</div></body></html>`;
+}
+
+function sendLoginWall(res, opts = {}, status = 200) {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(renderLoginWall(opts));
+}
+
+function handleLogin(req, res) {
+  let body = "";
+  req.on("data", c => body += c);
+  req.on("end", () => {
+    if (!CORDELIUS_ACCESS_KEY) return sendLoginWall(res, {}, 200);
+    if (loginRateLimited()) return sendLoginWall(res, { error: "Demasiados intentos. Espera unos minutos." }, 429);
+    const key = new URLSearchParams(body).get("key") || "";
+    const a = crypto.createHash("sha256").update(key).digest();
+    const b = crypto.createHash("sha256").update(CORDELIUS_ACCESS_KEY).digest();
+    if (!key || !crypto.timingSafeEqual(a, b)) {
+      loginFailTimes.push(Date.now());
+      securityStats.blockedMutations++;
+      return sendLoginWall(res, { error: "Access key incorrecta." }, 401);
+    }
+    res.writeHead(302, {
+      "Set-Cookie": `${SESSION_COOKIE}=${makeSessionToken()}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; SameSite=Lax; Secure`,
+      Location: "/"
+    });
+    res.end();
+  });
+}
+
+function handleLogout(req, res) {
+  res.writeHead(302, {
+    "Set-Cookie": `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure`,
+    Location: "/login"
+  });
+  res.end();
+}
+
+// Devuelve true si el request puede continuar; si no, responde (login wall o JSON) y devuelve false.
 function enforceEndpointPermission(req, res, path) {
   const level = endpointPermission(req, path);
   const isPublic = requestIsPublic(req);
   if (isPublic) securityStats.publicRequestSeen = true;
 
-  if (!MUTATION_LEVELS.includes(level)) return true; // publicRead/privateRead: pasar (auditado)
-  if (!isPublic) return true;                        // mutaciones desde localhost: permitidas
+  if (level === "publicRead") return true;
+  if (!isPublic) return true; // localhost: todo permitido sin login
 
+  const authed = publicAuthed(req);
+
+  if (level === "privateRead") {
+    if (authed) return true;
+    securityStats.blockedReads++;
+    if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
+      sendLoginWall(res, {}, 200); // login wall en vez del dashboard
+      return false;
+    }
+    sendJSON(res, { ok: false, error: "unauthorized", reason: "Endpoint privado: requiere sesión (cookie " + SESSION_COOKIE + ") o header X-Cordelius-Key.", howTo: CORDELIUS_ACCESS_KEY ? "Inicia sesión en /login con tu access key." : "El servidor no tiene CORDELIUS_ACCESS_KEY configurada; el acceso remoto privado está deshabilitado." }, 401);
+    return false;
+  }
+
+  // Mutaciones desde público
   if (!CORDELIUS_ACCESS_KEY) {
     securityStats.blockedMutations++;
     securityStats.lastBlockedPath = path; securityStats.lastBlockedAt = Date.now();
-    sendJSON(res, { ok: false, error: "mutation_blocked", reason: "CORDELIUS_ACCESS_KEY no está configurada en el servidor; las mutaciones públicas están bloqueadas por seguridad.", howTo: "Define CORDELIUS_ACCESS_KEY en el entorno del servidor y manda el header X-Cordelius-Key desde el cliente." }, 403);
+    sendJSON(res, { ok: false, error: "mutation_blocked", reason: "CORDELIUS_ACCESS_KEY no está configurada en el servidor; las mutaciones públicas están bloqueadas por seguridad.", howTo: "Define CORDELIUS_ACCESS_KEY en el entorno del servidor (manual, nunca via Claude) y reinicia." }, 403);
     return false;
   }
-  if (!accessKeyValid(req)) {
+  if (!authed) {
     securityStats.blockedMutations++;
     securityStats.lastBlockedPath = path; securityStats.lastBlockedAt = Date.now();
-    sendJSON(res, { ok: false, error: "unauthorized", reason: "Header X-Cordelius-Key ausente o inválido para una mutación vía túnel público.", howTo: "Guarda tu access key en System → Admin Token (se envía automáticamente) o manda X-Cordelius-Key." }, 401);
+    sendJSON(res, { ok: false, error: "unauthorized", reason: "Mutación vía túnel público sin sesión ni X-Cordelius-Key válido.", howTo: "Inicia sesión en /login, o guarda tu access key en System → Access Key." }, 401);
     return false;
   }
   securityStats.publicMutationsAllowed++;
@@ -6322,6 +6453,11 @@ function buildSecurityAudit() {
   return {
     ok: true, ts: Date.now(),
     securityLayer: true,
+    sessionGate: true,
+    dashboardProtected: true,
+    privateReadProtected: true,
+    sessionCookieName: SESSION_COOKIE,
+    sessionTTLHours: SESSION_TTL_MS / 3600000,
     accessKeyConfigured: !!CORDELIUS_ACCESS_KEY,
     publicTunnelRisk: securityStats.publicRequestSeen,
     totals: {
@@ -6334,19 +6470,22 @@ function buildSecurityAudit() {
     },
     endpoints: byLevel,
     enforcement: {
+      dashboard: "'/' desde público sin sesión → login wall (nunca el dashboard). Localhost entra directo.",
+      privateRead: "Desde público requiere sesión (cookie HttpOnly firmada, 12h) o X-Cordelius-Key; sin auth → 401 JSON.",
       mutations: CORDELIUS_ACCESS_KEY
-        ? "Públicas requieren X-Cordelius-Key válido; localhost libre."
+        ? "Públicas requieren sesión válida o X-Cordelius-Key; localhost libre."
         : "BLOQUEADAS en público (no hay CORDELIUS_ACCESS_KEY); localhost libre.",
-      privateRead: "Clasificado pero NO bloqueado: '/' server-renderiza los mismos datos, bloquear solo las APIs sería teatro de seguridad.",
+      session: "Cookie " + SESSION_COOKIE + " = v1.<exp>.<HMAC-SHA256> derivada de la access key; HttpOnly, SameSite=Lax, Secure, 12h. Login con rate limit (15 fallos/10min).",
       unknownPaths: "GET desconocido → privateRead; método con escritura desconocido → mutateProtected (gate aplica)."
     },
     riskNotes: [
-      "La página '/' expone datos personales a cualquiera con la URL del Quick Tunnel. Mitigación recomendada: gate de sesión/login en '/' o Cloudflare Access.",
       securityStats.publicRequestSeen ? "Se han observado requests con headers de proxy/túnel: el servidor ES alcanzable públicamente." : "Aún no se observan requests públicos desde el arranque.",
-      !CORDELIUS_ACCESS_KEY ? "CORDELIUS_ACCESS_KEY no configurada: las mutaciones públicas quedan totalmente bloqueadas (modo más restrictivo)." : "Access key configurada (valor nunca expuesto).",
+      !CORDELIUS_ACCESS_KEY ? "CORDELIUS_ACCESS_KEY no configurada: acceso remoto privado deshabilitado y mutaciones públicas bloqueadas (modo más restrictivo)." : "Access key configurada (valor nunca expuesto).",
+      "La sesión autoriza también mutaciones: CSRF mitigado con SameSite=Lax, no eliminado. No abras el dashboard desde enlaces de terceros.",
+      "La URL del Quick Tunnel sigue siendo alcanzable; el login wall protege el contenido, no oculta el servicio.",
       "Trading real: no existe ninguna ruta que ejecute órdenes; todo es paper/educativo."
     ],
-    stats: { blockedMutations: securityStats.blockedMutations, publicMutationsAllowed: securityStats.publicMutationsAllowed, lastBlockedPath: securityStats.lastBlockedPath, lastBlockedAt: securityStats.lastBlockedAt ? new Date(securityStats.lastBlockedAt).toISOString() : null }
+    stats: { blockedMutations: securityStats.blockedMutations, blockedReads: securityStats.blockedReads, publicMutationsAllowed: securityStats.publicMutationsAllowed, lastBlockedPath: securityStats.lastBlockedPath, lastBlockedAt: securityStats.lastBlockedAt ? new Date(securityStats.lastBlockedAt).toISOString() : null }
   };
 }
 
@@ -6354,6 +6493,9 @@ const server = http.createServer(async (req, res) => {
   const path = req.url.split("?")[0];
   if (!enforceEndpointPermission(req, res, path)) return;
   if (path === "/api/security/audit") return sendJSON(res, buildSecurityAudit());
+  if (path === "/login" && req.method === "POST") return handleLogin(req, res);
+  if (path === "/login") return requestIsPublic(req) && !publicAuthed(req) ? sendLoginWall(res) : (res.writeHead(302, { Location: "/" }), res.end());
+  if (path === "/logout") return handleLogout(req, res);
   if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && path === "/intel") return handleIntel(req, res);
   if (req.method === "POST" && path === "/intel/delete") return handleIntelDelete(req, res);
@@ -6551,11 +6693,16 @@ const server = http.createServer(async (req, res) => {
       },
       security: (() => { try { const a = buildSecurityAudit(); return {
         securityLayer: true,
+        sessionGate: true,
+        dashboardProtected: a.dashboardProtected,
+        privateReadProtected: a.privateReadProtected,
+        sessionCookieName: a.sessionCookieName,
         publicTunnelRisk: a.publicTunnelRisk,
         accessKeyConfigured: a.accessKeyConfigured,
         protectedMutationEndpoints: a.totals.protectedMutationEndpoints,
         unprotectedMutationEndpoints: a.totals.unprotectedMutationEndpoints,
-        blockedMutations: a.stats.blockedMutations
+        blockedMutations: a.stats.blockedMutations,
+        blockedReads: a.stats.blockedReads
       }; } catch (e) { return { securityLayer: false, error: e.message }; } })(),
       commandCenter: {
         commandPalette: true,
