@@ -14,6 +14,12 @@ const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLI
 const ALPACA_PAPER = process.env.ALPACA_PAPER !== "false";
 const ALPACA_CONFIGURED = !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY);
 
+const SERVER_STARTED_AT = Date.now();
+const GIT_COMMIT = (() => {
+  try { return require("child_process").execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim(); }
+  catch (e) { return "unknown"; }
+})();
+
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
 const CHAT_FILE = "alfredo_chat_history.json";
@@ -5085,7 +5091,7 @@ ${renderAlertsPanel()}
 
 
 <div class="disclaimer">Cordelius es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
-<div id="_corde_debug" style="position:fixed;bottom:8px;right:8px;z-index:99999;background:rgba(0,0,0,.85);color:#00ff99;font-size:10px;padding:5px 9px;border-radius:8px;font-family:monospace;pointer-events:none;border:1px solid rgba(0,255,153,.3)">STACKED MODE ACTIVE · hash=</div>
+<div id="_corde_debug" data-commit="${GIT_COMMIT}" style="position:fixed;bottom:8px;right:8px;z-index:99999;background:rgba(0,0,0,.85);color:#00ff99;font-size:10px;padding:5px 9px;border-radius:8px;font-family:monospace;pointer-events:none;border:1px solid rgba(0,255,153,.3)">STACKED · ${GIT_COMMIT}</div>
 </body>
 <script>
 var _CORDE_MODS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
@@ -5120,7 +5126,7 @@ function showMod(name) {
   // Debug label
   try {
     var _lbl = document.getElementById('_corde_debug');
-    if (_lbl) _lbl.textContent = 'STACKED MODE ACTIVE · hash=' + (window.location.hash || '#' + name);
+    if (_lbl) _lbl.textContent = 'STACKED · ' + (_lbl.getAttribute('data-commit') || '') + ' · ' + (window.location.hash || '#' + name);
   } catch(e) {}
 
   // Module-specific data loaders
@@ -5480,7 +5486,7 @@ function _cordeliusInit() {
   try { loadOpportunityEngine(); } catch(e) {}
   try {
     var _lbl = document.getElementById('_corde_debug');
-    if (_lbl) _lbl.textContent = 'STACKED MODE ACTIVE · hash=' + (window.location.hash || '(none)');
+    if (_lbl) _lbl.textContent = 'STACKED · ' + (_lbl.getAttribute('data-commit') || '') + ' · ' + (window.location.hash || '#home');
   } catch(e) {}
   // Only scroll when the URL carries an explicit module hash
   var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
@@ -5789,11 +5795,23 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, { ok: true, ts: Date.now(), total: alerts.length, active: active.length, alerts });
   }
   if (path === "/api/ui-diagnostics") {
-    const gitRev = (() => { try { return require("child_process").execSync("git rev-parse --short HEAD", {encoding:"utf8"}).trim(); } catch(e) { return "unknown"; } })();
+    const hr = (() => { try { return computeHealthReadiness(); } catch (e) { return { configured: WHOOP_CONFIGURED, connected: false }; } })();
+    const journalCount = (() => { try { return computeJournalData().count; } catch (e) { return null; } })();
     return sendJSON(res, { ok: true, ts: Date.now(),
+      gitCommit: GIT_COMMIT,
+      mode: "stacked",
+      stackedMode: true,
       modules: ["home","trading","health","journal","intelligence","alfredo","autopilot"],
       cssStrategy: "stacked fallback — all modules visible",
-      gitCommit: gitRev,
+      uptimeSeconds: Math.round((Date.now() - SERVER_STARTED_AT) / 1000),
+      dataSources: {
+        whoop: hr.connected ? "OK" : (WHOOP_CONFIGURED ? "FALLBACK" : "PENDIENTE"),
+        market: FINNHUB_API_KEY ? "OK" : "FALLBACK",
+        quiver: QUIVER_API_KEY ? "OK" : "PENDIENTE",
+        journal: journalCount !== null ? "OK" : "ERROR",
+        journalEntries: journalCount,
+        portfolioHistoryPoints: Array.isArray(portfolioHistory) ? portfolioHistory.length : 0
+      },
       note: "Tabs only scroll; no modules are hidden."
     });
   }
