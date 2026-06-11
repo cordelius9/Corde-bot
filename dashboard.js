@@ -4687,30 +4687,42 @@ function collapsibleSection(id, title, summaryHtml, contentHtml, defaultOpen = f
 function renderNeuralHeader() {
   const h = computeHealthReadiness();
   const nodes = [
-    [60, 30], [30, 62], [95, 58], [62, 88], [128, 34], [150, 70], [118, 92]
+    [78, 34], [34, 70], [120, 62], [76, 100], [168, 32], [196, 78], [152, 104], [228, 52], [212, 110]
   ];
-  const links = [[0,1],[0,2],[1,3],[2,3],[2,4],[4,5],[5,6],[3,6],[0,4]];
-  const svg = `<svg width="178" height="118" viewBox="0 0 178 118" fill="none" style="flex:0 0 auto">
-    ${links.map(([a,b],i) => `<line x1="${nodes[a][0]}" y1="${nodes[a][1]}" x2="${nodes[b][0]}" y2="${nodes[b][1]}" stroke="${i%3===0?"rgba(0,255,153,.5)":i%3===1?"rgba(59,157,255,.45)":"rgba(255,211,92,.35)"}" stroke-width="1.1" stroke-dasharray="5 6" style="animation:dash ${2.4+(i%4)*.7}s linear infinite"/>`).join("")}
-    ${nodes.map(([x,y],i) => `<circle cx="${x}" cy="${y}" r="${i===0?6:4}" fill="${i%3===0?"#00ff99":i%3===1?"#3b9dff":"#ffd35c"}" opacity=".9"><animate attributeName="r" values="${i===0?6:4};${i===0?7.5:5.5};${i===0?6:4}" dur="${2+(i%3)}s" repeatCount="indefinite"/></circle>`).join("")}
+  const links = [[0,1],[0,2],[1,3],[2,3],[2,4],[4,5],[5,6],[3,6],[0,4],[4,7],[5,7],[5,8],[7,8],[6,8]];
+  const linkColor = i => i % 3 === 0 ? "0,255,153" : i % 3 === 1 ? "59,157,255" : "255,211,92";
+  const svg = `<svg width="248" height="128" viewBox="0 0 248 128" fill="none" style="flex:0 0 auto;filter:drop-shadow(0 0 14px rgba(0,255,153,.18))">
+    ${links.map(([a, b], i) => {
+      const [x1, y1] = nodes[a], [x2, y2] = nodes[b];
+      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(${linkColor(i)},.4)" stroke-width="1" stroke-dasharray="4 7" style="animation:dash ${2.2 + (i % 5) * .6}s linear infinite"/>
+      <circle r="2.2" fill="rgb(${linkColor(i)})" opacity=".95"><animateMotion dur="${2.6 + (i % 4) * .9}s" repeatCount="indefinite" path="M${x1},${y1} L${x2},${y2}"/></circle>`;
+    }).join("")}
+    ${nodes.map(([x, y], i) => `<g>
+      <circle cx="${x}" cy="${y}" r="${i === 0 ? 7 : 4.5}" fill="rgba(${linkColor(i)},.16)" stroke="rgb(${linkColor(i)})" stroke-width="1.1"><animate attributeName="r" values="${i === 0 ? "7;9;7" : "4.5;6;4.5"}" dur="${2.4 + (i % 3)}s" repeatCount="indefinite"/></circle>
+      <circle cx="${x}" cy="${y}" r="1.8" fill="rgb(${linkColor(i)})"/>
+    </g>`).join("")}
   </svg>`;
   const pills = [
     { label: "SECURITY", on: true },
     { label: "SESSION", on: !!CORDELIUS_ACCESS_KEY },
+    { label: "WHOOP", badge: h.configured ? "LIVE" : "FALLBACK" },
     { label: "QUOTES", badge: quotesFreshness() },
     { label: "CRYPTO", badge: cryptoFreshness() },
-    { label: "INDICATORS", badge: indicatorsFreshness() },
-    { label: "WHOOP", badge: h.configured ? "LIVE" : "FALLBACK" }
+    { label: "INDICATORS", badge: indicatorsFreshness() }
   ];
-  return `<div class="panel" style="max-width:1280px;margin:8px auto 14px;padding:14px 22px;display:flex;gap:20px;align-items:center;flex-wrap:wrap;border:1px solid rgba(0,255,153,.14);background:linear-gradient(120deg,rgba(0,255,153,.05),rgba(59,157,255,.04) 60%,rgba(255,211,92,.03))">
+  return `<div class="panel" style="max-width:1280px;margin:8px auto 14px;padding:16px 24px;display:flex;gap:24px;align-items:center;flex-wrap:wrap;border:1px solid rgba(0,255,153,.18);background:linear-gradient(120deg,rgba(0,255,153,.06),rgba(59,157,255,.05) 55%,rgba(255,211,92,.04));position:relative;overflow:hidden">
+    <div style="position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,transparent 0%,rgba(0,255,153,.04) 50%,transparent 100%);background-size:100% 220%;animation:nscan 7s linear infinite"></div>
     ${svg}
-    <div style="flex:1;min-width:240px">
-      <div style="font-size:20px;font-weight:900;background:linear-gradient(90deg,#00ff99,#9bd3ff,#ffd35c);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.04em">CORDELIUS · NEURAL OS</div>
-      <div style="font-size:11px;color:#9fb3c8;margin:4px 0 10px">Datos → análisis → señales → decisiones · pensamientos en vivo · educativo, no asesoría financiera ni médica</div>
-      <div style="display:flex;gap:7px;flex-wrap:wrap">
+    <div style="flex:1;min-width:250px;position:relative">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <div style="font-size:24px;font-weight:900;background:linear-gradient(90deg,#00ff99,#9bd3ff,#ffd35c);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.06em;text-shadow:0 0 28px rgba(0,255,153,.15)">CORDELIUS · NEURAL OS</div>
+        <span style="display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:900;letter-spacing:.14em;color:#00ff99"><span class="status-dot"></span>SISTEMA VIVO</span>
+      </div>
+      <div style="font-size:11px;color:#9fb3c8;margin:5px 0 11px;letter-spacing:.04em">datos → análisis → señales → decisiones · pensamiento en tiempo real · <span style="color:#5a6674">educativo — no asesoría financiera ni médica</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         ${pills.map(p => p.badge
-          ? `<span style="display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:900;letter-spacing:.08em;color:#9fb3c8">${esc(p.label)} ${statusBadge(p.badge)}</span>`
-          : `<span style="display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:3px 10px;font-size:9px;font-weight:900;letter-spacing:.08em;background:${p.on ? "rgba(0,255,153,.1)" : "rgba(255,211,92,.1)"};color:${p.on ? "#00ff99" : "#ffd35c"};border:1px solid ${p.on ? "rgba(0,255,153,.25)" : "rgba(255,211,92,.25)"}">${esc(p.label)} ${p.on ? "ON" : "OFF"}</span>`).join("")}
+          ? `<span style="display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:900;letter-spacing:.08em;color:#9fb3c8;border:1px solid rgba(120,160,210,.12);border-radius:99px;padding:3px 9px;background:rgba(0,0,0,.2)">${esc(p.label)} ${statusBadge(p.badge)}</span>`
+          : `<span style="display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:4px 11px;font-size:9px;font-weight:900;letter-spacing:.08em;background:${p.on ? "rgba(0,255,153,.1)" : "rgba(255,211,92,.1)"};color:${p.on ? "#00ff99" : "#ffd35c"};border:1px solid ${p.on ? "rgba(0,255,153,.3)" : "rgba(255,211,92,.3)"}">${esc(p.label)} ${p.on ? "ON" : "OFF"}</span>`).join("")}
       </div>
     </div>
   </div>`;
@@ -4728,28 +4740,31 @@ function renderActionCenter() {
   const alerts = loadAlerts().filter(a => !a.acknowledged).slice(-3).reverse();
   const notes = loadJSON("data/jarvis_quick_notes.json", []);
   const sevColor = s => s === "CRITICAL" ? "#ff4d6d" : s === "WARNING" ? "#ffd35c" : "#3b9dff";
-  const items = [];
-  for (const e of automation.firedToday) items.push({ icon: "⚙", color: sevColor(e.severity), text: e.message, tag: "automation" });
-  for (const a of alerts) items.push({ icon: "!", color: sevColor(a.severity || "WARNING"), text: a.title, tag: Date.parse(a.timestamp || "") < Date.now() - 24 * 3600 * 1000 ? "alerta · vieja" : "alerta" });
-  return `<div class="panel" id="action-center" style="max-width:1280px;margin:0 auto 16px;padding:18px 22px;border:1px solid rgba(255,211,92,.18);background:rgba(255,211,92,.03)">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#ffd35c">◈ Action Center · Inbox</div>
-      <div style="font-size:10px;color:#5a6674">Único lugar de preguntas y acciones · ⌘K para actuar</div>
+  const alertRow = (icon, color, text, tag) => `<div style="display:flex;gap:8px;align-items:start;border-left:3px solid ${color};padding:5px 9px;background:rgba(0,0,0,.18);border-radius:0 9px 9px 0;margin-bottom:5px">
+    <span style="color:${color};font-weight:900;font-size:12px">${icon}</span>
+    <div style="flex:1"><div style="font-size:12px;color:#dbeafe;line-height:1.3">${esc(text)}</div>${tag ? `<div style="font-size:9px;color:#5a6674;text-transform:uppercase;letter-spacing:.08em;margin-top:1px">${esc(tag)}</div>` : ""}</div>
+  </div>`;
+  return `<div class="panel" id="action-center" style="max-width:1280px;margin:0 auto 16px;padding:16px 22px;border:1px solid rgba(255,211,92,.2);background:rgba(255,211,92,.03)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:900;letter-spacing:.2em;text-transform:uppercase;color:#ffd35c">◈ Action Center</div>
+      <div style="font-size:10px;color:#5a6674">único inbox de preguntas y acciones · <span class="cmdk-kbd">⌘K</span> para actuar · notas: ${Array.isArray(notes) ? notes.length : 0}</div>
     </div>
-    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px">
-      <div>
-        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Jarvis pregunta</div>
-        <div style="font-size:15px;font-weight:800;color:#fff;line-height:1.35;margin-bottom:10px">${esc(ctx.question)}</div>
-        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Next best actions</div>
-        <ol style="margin:0;padding-left:18px">${b.nextActions.map(a => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(a)}</li>`).join("")}</ol>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px">
+      <div class="ac-block">
+        <div class="ac-title" style="color:#ffd35c">⌾ Pregunta actual</div>
+        <div style="font-size:14px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
       </div>
-      <div>
-        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#fb923c;margin-bottom:6px">Avisos activos (${items.length})</div>
-        ${items.length ? items.slice(0, 6).map(i => `<div style="display:flex;gap:8px;align-items:start;border-left:3px solid ${i.color};padding:6px 10px;background:rgba(0,0,0,.18);border-radius:0 10px 10px 0;margin-bottom:6px">
-          <span style="color:${i.color};font-weight:900">${i.icon}</span>
-          <div style="flex:1"><div style="font-size:12px;color:#dbeafe;line-height:1.35">${esc(i.text)}</div><div style="font-size:9px;color:#5a6674;text-transform:uppercase;letter-spacing:.08em;margin-top:2px">${esc(i.tag)}</div></div>
-        </div>`).join("") : `<div class="muted" style="font-size:12px">— Sin avisos activos. Todo en orden.</div>`}
-        <div style="font-size:11px;color:#5a6674;margin-top:8px">Notas rápidas guardadas: ${Array.isArray(notes) ? notes.length : 0} · detalle completo de alertas en Autopilot ↓</div>
+      <div class="ac-block">
+        <div class="ac-title" style="color:#3b9dff">→ Next actions</div>
+        <ol style="margin:0;padding-left:16px">${b.nextActions.slice(0, 4).map(a => `<li style="font-size:12px;color:#c8d8f0;margin-bottom:4px;line-height:1.35">${esc(a)}</li>`).join("")}</ol>
+      </div>
+      <div class="ac-block">
+        <div class="ac-title" style="color:#ff4d6d">! Alerts (${alerts.length})</div>
+        ${alerts.length ? alerts.map(a => alertRow("!", sevColor(a.severity || "WARNING"), a.title, Date.parse(a.timestamp || "") < Date.now() - 24 * 3600 * 1000 ? "vieja · detalle en Autopilot" : "activa")).join("") : `<div class="muted" style="font-size:12px">— Sin alertas activas.</div>`}
+      </div>
+      <div class="ac-block">
+        <div class="ac-title" style="color:#fb923c">⚙ Automations hoy (${automation.firedToday.length})</div>
+        ${automation.firedToday.length ? automation.firedToday.map(e => alertRow("⚙", sevColor(e.severity), e.message, e.suggestedMode ? "sugiere " + e.suggestedMode : null)).join("") : `<div class="muted" style="font-size:12px">— Ninguna regla disparada hoy.</div>`}
       </div>
     </div>
   </div>`;
@@ -4757,22 +4772,53 @@ function renderActionCenter() {
 
 function renderJarvisBrainPanel() {
   const b = computeJarvisBrain();
-  const sevColor = s => s === "CRITICAL" ? "#ff4d6d" : s === "WARNING" ? "#ffd35c" : "#3b9dff";
-  const ready = (label, r) => `<div style="text-align:center;border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:10px 6px;background:rgba(255,255,255,.03)">
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const modeColor = settings.defensiveMode ? "#ff4d6d" : "#00ff99";
+  // Live Signals: solo señales reales (indicadores LIVE), compactas.
+  const liveAssets = pv.assets.filter(a => a.indicatorStatus === "LIVE");
+  const extremes = liveAssets.filter(a => a.ind.rsi >= 70 || a.ind.rsi <= 30)
+    .sort((a, c) => Math.abs(c.ind.rsi - 50) - Math.abs(a.ind.rsi - 50)).slice(0, 4);
+  const bears = liveAssets.filter(a => a.ind.trend === "BAJISTA").length;
+  const bulls = liveAssets.filter(a => a.ind.trend === "ALCISTA").length;
+  const criptoPct = cryptoConcentrationPct(pv);
+  const signals = [
+    `<span class="brain-chip" style="border-color:${reg.color}40;color:${reg.color}">◈ ${esc(reg.label)} <span style="color:#5a6674;font-size:10px">${pct(reg.avg)}</span></span>`,
+    `<span class="brain-chip">↑${bulls} <span style="color:#5a6674">alcistas</span> · ↓${bears} <span style="color:#5a6674">bajistas</span> <span style="color:#5a6674;font-size:10px">(${liveAssets.length} reales)</span></span>`,
+    `<span class="brain-chip" style="${criptoPct > 60 ? "border-color:rgba(255,77,109,.35);color:#ff8aa0" : ""}">cripto ${criptoPct.toFixed(0)}%</span>`,
+    ...extremes.map(a => `<span class="brain-chip" style="border-color:${a.ind.rsi <= 30 ? "rgba(0,255,153,.3)" : "rgba(255,77,109,.3)"}"><b>${esc(a.symbol)}</b> RSI ${a.ind.rsi} <span style="color:#5a6674;font-size:10px">${a.ind.rsi <= 30 ? "sobreventa" : "sobrecompra"}</span></span>`)
+  ];
+  const lastDec = (() => { const d = loadJSON(TRADING_DECISION_FILE, []); return d[d.length - 1] || null; })();
+  const lastTrade = (bot.history || [])[0] || null;
+  const ready = (label, r) => `<div style="text-align:center;border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:9px 6px;background:rgba(255,255,255,.03)">
       <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8">${esc(label)}</div>
-      <div style="font-size:24px;font-weight:900;color:${r.score === null ? "#5a6674" : r.score >= 70 ? "#00ff99" : r.score >= 45 ? "#ffd35c" : "#ff4d6d"};margin:4px 0 2px">${r.score === null ? "—" : r.score}</div>
+      <div style="font-size:23px;font-weight:900;color:${r.score === null ? "#5a6674" : r.score >= 70 ? "#00ff99" : r.score >= 45 ? "#ffd35c" : "#ff4d6d"};margin:3px 0 2px">${r.score === null ? "—" : r.score}</div>
       ${statusBadge(r.status)}
     </div>`;
-  return `<div class="panel" id="jarvis-brain" style="max-width:1280px;margin:0 auto 16px;padding:20px 22px;border:1px solid rgba(0,255,153,.18);background:linear-gradient(135deg,rgba(0,255,153,.05),rgba(59,157,255,.04))">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#00ff99">⚡ Jarvis Brain</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">${Object.entries(b.state.dataStatus).map(([k, v]) => `<span style="font-size:9px;color:#5a6674;margin-right:1px">${esc(k)}</span>${statusBadge(v)}`).join(" ")}</div>
+  return `<div class="panel" id="jarvis-brain" style="max-width:1280px;margin:0 auto 16px;padding:20px 24px;border:1px solid rgba(0,255,153,.2);background:linear-gradient(135deg,rgba(0,255,153,.06),rgba(59,157,255,.04) 70%);box-shadow:0 16px 50px rgba(0,0,0,.3),0 0 40px rgba(0,255,153,.05)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:900;letter-spacing:.2em;text-transform:uppercase;color:#00ff99">⚡ Cordelius Brain</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${Object.entries(b.state.dataStatus).map(([k, v]) => `<span style="font-size:8px;color:#5a6674">${esc(k)}</span>${statusBadge(v)}`).join(" ")}</div>
     </div>
-    <div style="display:grid;grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);gap:16px">
+    <div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(230px,.6fr);gap:18px">
       <div>
-        <div style="font-size:13px;color:#9fb3c8;margin-bottom:6px">${esc(b.state.summary)}</div>
-        <div style="font-size:19px;font-weight:900;color:#fff;line-height:1.3;margin-bottom:10px">${esc(b.topFocus)}</div>
-        <div style="font-size:11px;color:#5a6674">${b.warnings.length} aviso(s) y ${b.nextActions.length} acción(es) → <b style="color:#ffd35c">Action Center</b> (abajo) — sin duplicados.</div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#9fb3c8;margin-bottom:7px">Estado</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">
+          <span class="brain-chip" style="border-color:${modeColor}40;color:${modeColor};font-weight:900">${esc(b.state.mode)}</span>
+          <span class="brain-chip"><b>${money(pv.totalValueMXN)}</b> <span style="color:${pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d"};font-size:11px">${pct(pv.totalGainPct)}</span></span>
+          <span class="brain-chip">R <b style="color:#f472b6">${h.recovery !== null ? h.recovery + "%" : "—"}</b> · S <b style="color:#f472b6">${h.sleep !== null ? h.sleep + "%" : "—"}</b></span>
+        </div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Top Focus</div>
+        <div style="font-size:19px;font-weight:900;color:#fff;line-height:1.3;margin-bottom:14px">${esc(b.topFocus)}</div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#3b9dff;margin-bottom:7px">Live Signals</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">${signals.join("")}</div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#a78bfa;margin-bottom:6px">Decisions</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+          ${lastTrade ? `<span class="brain-chip">${statusBadge("SIMULATED")} <b style="color:${lastTrade.type === "BUY" ? "#00ff99" : "#ff4d6d"}">${esc(lastTrade.type)}</b> ${esc(lastTrade.symbol)} <span style="color:#5a6674;font-size:10px">${esc(lastTrade.time || "")}</span></span>` : `<span class="brain-chip" style="color:#5a6674">sin trades paper recientes</span>`}
+          ${lastDec ? `<span class="brain-chip"><span style="color:#5a6674;font-size:10px">decisión:</span> ${esc(String(lastDec.title || lastDec.action || lastDec.type || "registro").slice(0, 50))}</span>` : ""}
+          <span style="font-size:11px;color:#5a6674">${b.warnings.length} aviso(s) → <a href="#action-center" style="color:#ffd35c;text-decoration:none;font-weight:900">Action Center</a></span>
+        </div>
       </div>
       <div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px">
@@ -4780,8 +4826,8 @@ function renderJarvisBrainPanel() {
         </div>
         <div style="border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:10px 12px;background:rgba(255,255,255,.03)">
           <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:5px">Memoria</div>
-          <div style="font-size:12px;color:#c8d8f0;line-height:1.45">${esc(b.memory.summary)}</div>
-          <div style="font-size:11px;color:#5a6674;margin-top:6px">Journal ${b.memory.journalEntries} · notas ${b.memory.quickNotes} · mood ${esc(b.memory.topMood || "—")}</div>
+          <div style="font-size:12px;color:#c8d8f0;line-height:1.4">${esc(b.memory.summary)}</div>
+          <div style="font-size:10px;color:#5a6674;margin-top:5px">Journal ${b.memory.journalEntries} · notas ${b.memory.quickNotes} · mood ${esc(b.memory.topMood || "—")}</div>
         </div>
         ${settings.defensiveMode ? `<div style="margin-top:8px;border:1px solid rgba(255,77,109,.3);border-radius:12px;padding:8px 10px;font-size:11px;font-weight:900;color:#ff4d6d;background:rgba(255,77,109,.07)">MODO DEFENSIVO ACTIVO (manual · educativo)</div>` : ""}
       </div>
@@ -4931,11 +4977,7 @@ function renderHomePortal(pv, reg) {
 
     ${renderTodayFeed()}
 
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:16px">
-      ${cards.map(c => `<div class="card" style="padding:14px 15px;border-color:${c.color}24;background:rgba(255,255,255,.035)"><div class="label">${esc(c.label)}</div><div ${c.id ? `id="${esc(c.id)}"` : ""} class="big" style="font-size:21px;color:${c.color}">${esc(c.value)}</div><div class="muted" style="font-size:11px">${esc(c.sub)}</div></div>`).join("")}
-    </div>
-
-    <div style="font-size:11px;color:#5a6674;margin-bottom:16px">Preguntas, acciones y avisos viven en el <a href="#action-center" style="color:#ffd35c;text-decoration:none;font-weight:900">Action Center ↑</a> — un solo lugar, sin repetición.</div>
+    <div style="font-size:11px;color:#5a6674;margin-bottom:16px">Métricas en vivo → <a href="#jarvis-brain" style="color:#00ff99;text-decoration:none;font-weight:900">Brain ↑</a> · preguntas y acciones → <a href="#action-center" style="color:#ffd35c;text-decoration:none;font-weight:900">Action Center ↑</a> — un solo lugar, sin repetición.</div>
   </div>`;
 }
 
@@ -5463,6 +5505,11 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 details.clps summary::-webkit-details-marker{display:none}
 details.clps[open] .clps-caret{transform:rotate(180deg)}
 details.clps[open] > summary{border-color:rgba(59,157,255,.3)}
+@keyframes nscan{0%{background-position:0 -120%}100%{background-position:0 120%}}
+.brain-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(120,160,210,.14);border-radius:10px;padding:5px 11px;font-size:12px;background:rgba(0,0,0,.22);color:#dbeafe;white-space:nowrap}
+.brain-chip b{font-size:13px}
+.ac-block{border:1px solid rgba(120,160,210,.1);border-radius:14px;padding:11px 14px;background:rgba(0,0,0,.16)}
+.ac-title{font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;margin-bottom:7px}
 </style></head><body>
 <aside class="sidebar">
   <div class="sidebar-brand">
@@ -5655,16 +5702,17 @@ ${renderHomePortal(pv, reg)}
   </div>
 </details></div>
 
-<a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
-${(function(){
-  const bySource = {};
-  for (const a of assets) { bySource[a.source] = bySource[a.source] || []; bySource[a.source].push(a); }
-  return Object.entries(bySource).map(([src, list]) =>
-    renderAccountSummary(src, list)
-    + `<h2 style="font-size:18px;margin:6px 0 8px;color:#9fb3c8">${esc(src)} · ${[...new Set(list.map(a => a.category))].join(", ")}</h2>`
-    + renderPortfolioRows(list)
-  ).join("");
-})()}
+<a id="portfolio"></a>${collapsibleSection("portfolio-tables", "◈ Portafolio real por cuenta",
+  `<span style="font-size:11px;color:#9fb3c8">${assets.length} activos · GBM / Plata / Bitso</span>${statusBadge(quotesFreshness() === "LIVE" || cryptoFreshness() === "LIVE" ? "LIVE" : "MANUAL")}`,
+  (function(){
+    const bySource = {};
+    for (const a of assets) { bySource[a.source] = bySource[a.source] || []; bySource[a.source].push(a); }
+    return Object.entries(bySource).map(([src, list]) =>
+      renderAccountSummary(src, list)
+      + `<h2 style="font-size:18px;margin:6px 0 8px;color:#9fb3c8">${esc(src)} · ${[...new Set(list.map(a => a.category))].join(", ")}</h2>`
+      + renderPortfolioRows(list)
+    ).join("");
+  })(), true)}
 
 
 ${renderSignalCenter(pv, reg)}
@@ -5895,11 +5943,12 @@ ${renderAutomationsPanel()}
 
 ${renderAutopilotPanel()}
 
-${renderLedgerPanel()}
+${collapsibleSection("ledger", "◇ Position Ledger", `<span style="font-size:11px;color:#9fb3c8">historial de posiciones</span>${statusBadge("SIMULATED")}`, renderLedgerPanel(), false)}
 
-${renderAlertsPanel()}
+${collapsibleSection("alerts-detail", "! Alertas · historial completo", `<span style="font-size:11px;color:#9fb3c8">las activas se resumen en Action Center ↑</span>`, renderAlertsPanel(), false)}
 
-<h2>System</h2>
+<details class="clps" data-clps="system" style="max-width:1280px;margin:0 auto 12px">
+<summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 20px;background:var(--panel);border:1px solid rgba(120,160,210,.14);border-radius:18px;user-select:none"><span style="display:flex;align-items:center;gap:10px"><b style="font-size:15px">⚙ System · acceso y servicios</b></span><span class="clps-caret" style="font-size:11px;opacity:.55;transition:.2s">▼</span></summary>
 <div class="grid">
   <div class="card"><div class="label">App</div><div class="big green">${esc(CORDA_APP_NAME)}</div></div>
   <div class="card"><div class="label">Jarvis AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
@@ -5919,6 +5968,7 @@ ${renderAlertsPanel()}
     </div>
   </div>
 </div>
+</details>
 </div>
 
 
@@ -7178,6 +7228,7 @@ const server = http.createServer(async (req, res) => {
         todayFeed: true,
         actionCenter: true,
         neuralHeader: true,
+        visualPolish: "v2",
         automations: (() => { try { const a = getAutomationState(); return { rules: a.rules.length, firedToday: a.firedToday.length, defensiveMode: a.defensiveMode }; } catch (e) { return { error: e.message }; } })(),
         endpoints: ["/api/jarvis/brain", "/api/feed/today", "/api/automations", "POST /api/mode/defensive"]
       },
