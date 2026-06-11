@@ -1,6 +1,7 @@
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
+const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
@@ -5480,7 +5481,8 @@ ${renderAlertsPanel()}
   <div class="card"><div class="label">WHOOP</div><div class="big ${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "ON" : "PENDIENTE"}</div></div>
   <div class="card"><div class="label">Journal</div><div class="big" style="color:#818cf8">${journalEntries.length} entradas</div></div>
   <div class="card" style="grid-column:span 2">
-    <div class="label">Admin Token</div>
+    <div class="label">Access Key (X-Cordelius-Key)</div>
+    <div style="font-size:11px;color:#5a6674;margin-top:2px">Necesaria para acciones de escritura vía túnel público. Se guarda solo en esta sesión del navegador.</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
       <input id="corde-admin-token-input" type="password" placeholder="Token de sesión" style="background:rgba(0,0,0,.3);border:1px solid rgba(120,160,210,.25);border-radius:10px;padding:6px 10px;color:#eaf6ff;font-size:13px;width:200px">
       <button onclick="saveAdminToken()" class="btn" style="font-size:12px;padding:5px 12px">Guardar</button>
@@ -5518,6 +5520,15 @@ ${renderAlertsPanel()}
   function esc2(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function showResult(html){ result.style.display='block'; result.innerHTML=html; }
   function getJSON(url, cb){ fetch(url).then(function(r){return r.json();}).then(cb).catch(function(e){ showResult('Error: '+esc2(e.message)); }); }
+  function secHeaders(extra){ try { return (typeof authHeaders==='function') ? authHeaders(extra) : (extra||{}); } catch(e){ return extra||{}; } }
+  function blockedMsg(status, d){ showResult('<b style="color:#ff4d6d">Acción bloqueada ('+status+')</b><br>'+esc2((d&&d.reason)||'Mutación protegida por el Security Gate.')+'<br><span style="color:#5a6674">Guarda tu access key en System → Admin Token y reintenta.</span>'); }
+  function mutate(url, opts, cb){
+    var o = opts||{}; o.headers = secHeaders(o.headers||{});
+    fetch(url, o).then(function(r){
+      if(r.status===401||r.status===403){ r.json().then(function(d){ blockedMsg(r.status, d); }).catch(function(){ blockedMsg(r.status, null); }); return null; }
+      return r.json();
+    }).then(function(d){ if(d && cb) cb(d); }).catch(function(e){ showResult('Error: '+esc2(e.message)); });
+  }
 
   var ACTIONS = [
     { label:'Brief de hoy', hint:'resumen ejecutivo', run:function(){ showResult('Cargando…'); getJSON('/api/daily-brief', function(d){ showResult(fmtLines(d.greeting||'Brief', d.lines||[])); }); } },
@@ -5526,7 +5537,7 @@ ${renderAlertsPanel()}
     { label:'Health check', hint:'WHOOP readiness', run:function(){ showResult('Cargando…'); getJSON('/api/health-readiness', function(h){ showResult(fmtLines('Health ('+esc2(h.source||'')+')', ['Recovery: '+(h.recovery!=null?h.recovery+'%':'—'),'Sleep: '+(h.sleep!=null?h.sleep+'%':'—'),'Strain: '+(h.strain!=null?(+h.strain).toFixed(1):'—'),'HRV: '+(h.hrv!=null?Math.round(h.hrv)+' ms':'—'),'Modo: '+esc2(h.operatingMode||'—')])); }); } },
     { label:'Explicar portafolio', hint:'abre Jarvis con la pregunta', run:function(){ closeCmdk(); try{ if(document.getElementById('alfredo-panel').style.display!=='block') toggleJarvis(); setJarvisQ('Explica mi portafolio: composición, riesgo y qué vigilar (educativo)'); }catch(e){} } },
     { label:'Registrar nota', hint:'guarda en Journal', run:function(){ noteMode=true; result.style.display='none'; inp.value=''; inp.placeholder='Escribe tu nota y presiona Enter… (Esc cancela)'; list.innerHTML='<div style="padding:12px 14px;font-size:12px;color:#9fb3c8">Modo nota: lo que escribas se guarda en Journal como entrada rápida.</div>'; } },
-    { label:'Modo defensivo '+(DEFENSIVE?'OFF':'ON'), hint:'etiqueta educativa, sin órdenes', run:function(){ showResult('Cambiando…'); fetch('/api/mode/defensive',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ DEFENSIVE=d.defensiveMode; showResult('<b>Modo defensivo: '+(d.defensiveMode?'ACTIVADO':'DESACTIVADO')+'</b><br>'+esc2(d.note)+'<br><span style="color:#5a6674">El Home lo reflejará al recargar.</span>'); }); } },
+    { label:'Modo defensivo '+(DEFENSIVE?'OFF':'ON'), hint:'etiqueta educativa, sin órdenes', run:function(){ showResult('Cambiando…'); mutate('/api/mode/defensive',{method:'POST'},function(d){ DEFENSIVE=d.defensiveMode; showResult('<b>Modo defensivo: '+(d.defensiveMode?'ACTIVADO':'DESACTIVADO')+'</b><br>'+esc2(d.note)+'<br><span style="color:#5a6674">El Home lo reflejará al recargar.</span>'); }); } },
     { label:'Ver automations', hint:'reglas locales', run:function(){ showResult('Cargando…'); getJSON('/api/automations', function(a){ var f=(a.firedToday||[]).map(function(e){return '['+e.severity+'] '+e.name+': '+e.message;}); showResult(fmtLines('Reglas activas hoy', f.length?f:['Ninguna regla disparada hoy'])+'<br><span style="color:#5a6674">Cripto: '+a.criptoPct+'% del portafolio</span>'); }); } },
     { label:'Memoria de Jarvis', hint:'resumen de memoria', run:function(){ showResult('Cargando…'); getJSON('/api/jarvis/memory', function(m){ showResult('<b>Memoria</b><br>'+esc2(m.summary)); }); } },
     { label:'Ir a Jarvis', hint:'módulo', run:function(){ closeCmdk(); showMod('alfredo'); } },
@@ -5559,8 +5570,11 @@ ${renderAlertsPanel()}
     var text = (inp.value||'').trim();
     if(!text) return;
     showResult('Guardando…');
-    fetch('/api/journal', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'text='+encodeURIComponent(text)+'&mood=neutral', redirect:'manual' })
-      .then(function(){ noteMode=false; inp.value=''; inp.placeholder='Escribe un comando o pregunta… (Esc cierra)'; renderList(); showResult('<b>Nota guardada en Journal ✓</b><br>'+esc2(text)); })
+    fetch('/api/journal', { method:'POST', headers:secHeaders({'Content-Type':'application/x-www-form-urlencoded'}), body:'text='+encodeURIComponent(text)+'&mood=neutral', redirect:'manual' })
+      .then(function(r){
+        if(r && (r.status===401||r.status===403)){ blockedMsg(r.status, null); return; }
+        noteMode=false; inp.value=''; inp.placeholder='Escribe un comando o pregunta… (Esc cierra)'; renderList(); showResult('<b>Nota guardada en Journal ✓</b><br>'+esc2(text));
+      })
       .catch(function(e){ showResult('Error guardando: '+esc2(e.message)); });
   }
 
@@ -6019,7 +6033,7 @@ window.addEventListener('hashchange', function() {
 function getAdminToken(){try{return sessionStorage.getItem('corde_admin_token')||'';}catch(e){return '';}}
 function saveAdminToken(){var v=(document.getElementById('corde-admin-token-input')||{}).value||'';try{sessionStorage.setItem('corde_admin_token',v);}catch(e){}var st=document.getElementById('corde-admin-token-status');if(st){st.textContent=v?'Configurado (sesión)':'No configurado';st.style.color=v?'#4ade80':'';}};
 function clearAdminToken(){try{sessionStorage.removeItem('corde_admin_token');}catch(e){}var st=document.getElementById('corde-admin-token-status');if(st){st.textContent='No configurado';st.style.color='';}}
-function authHeaders(extra){var t=getAdminToken();var h=Object.assign({},extra||{});if(t)h['X-Admin-Token']=t;return h;}
+function authHeaders(extra){var t=(typeof window!=='undefined'&&window.CORDELIUS_ACCESS_KEY)||getAdminToken();var h=Object.assign({},extra||{});if(t){h['X-Admin-Token']=t;h['X-Cordelius-Key']=t;}return h;}
 async function secureFetch(url,opts){var o=Object.assign({},opts||{});o.headers=authHeaders(o.headers||{});return fetch(url,o);}
 async function cordeliusMutate(url){await secureFetch(url,{method:'GET'});location.reload();}
 async function cordeliusFormPost(form,redirect){var p=new URLSearchParams(new FormData(form));await secureFetch(form.action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});location.href=redirect||'/';}
@@ -6150,8 +6164,196 @@ function sendJSON(res, data, status = 200) {
   return res.end(JSON.stringify(data));
 }
 
+// ════════════════════════════════════════════════════════════════
+// SECURITY GATE — permisos centralizados por endpoint
+// El dashboard se expone vía Cloudflare Quick Tunnel; cualquier request
+// del túnel llega como loopback pero trae headers cf-* / x-forwarded-for.
+// Niveles:
+//   publicRead      → siempre permitido (shell UI, health, OAuth, diagnósticos)
+//   privateRead     → GET con datos personales; clasificado y auditado.
+//                     Hoy NO se bloquea porque "/" server-renderiza los mismos
+//                     datos; bloquearlo sería teatro de seguridad (ver audit).
+//   mutateLocal     → toggles locales de bajo riesgo
+//   mutateProtected → POST que escriben datos
+//   dangerous       → borrado/reset masivo
+// Mutaciones (mutateLocal/mutateProtected/dangerous) desde el túnel exigen
+// X-Cordelius-Key == process.env.CORDELIUS_ACCESS_KEY. Sin key configurada,
+// toda mutación pública se bloquea. El valor de la key jamás se imprime.
+// ════════════════════════════════════════════════════════════════
+const CORDELIUS_ACCESS_KEY = process.env.CORDELIUS_ACCESS_KEY || "";
+
+const ENDPOINT_PERMISSIONS = {
+  "/": "publicRead",
+  "/health": "publicRead",
+  "/healthz": "publicRead",
+  "/api/ui-diagnostics": "publicRead",
+  "/api/security/audit": "publicRead",
+  "/whoop/auth": "publicRead",
+  "/whoop/callback": "publicRead",
+  "/api/whoop/callback": "publicRead",
+
+  "/api/status": "privateRead",
+  "/api/portfolio": "privateRead",
+  "/api/intel": "privateRead",
+  "/api/quiver": "privateRead",
+  "/api/quiver/matches": "privateRead",
+  "/api/quiver/trending": "privateRead",
+  "/api/executive": "privateRead",
+  "/api/executive/score": "privateRead",
+  "/api/project/status": "privateRead",
+  "/api/project/memory": "privateRead",
+  "/api/decisions": "privateRead",
+  "/api/decisions/patterns": "privateRead",
+  "/api/decisions/playbook": "privateRead",
+  "/api/opportunities": "privateRead",
+  "/api/research/queue": "privateRead",
+  "/api/watchlist/opportunities": "privateRead",
+  "/api/jarvis/memory": "privateRead",
+  "/api/jarvis/brain": "privateRead",
+  "/api/feed/today": "privateRead",
+  "/api/automations": "privateRead",
+  "/api/ledger": "privateRead",
+  "/api/alerts": "privateRead",
+  "/api/daily-scan": "privateRead",
+  "/api/market-radar": "privateRead",
+  "/api/intelligence": "privateRead",
+  "/api/intelligence/feed": "privateRead",
+  "/api/daily-brief": "privateRead",
+  "/api/market-intelligence": "privateRead",
+  "/api/external-radar": "privateRead",
+  "/api/paper/status": "privateRead",
+  "/api/morning-report": "privateRead",
+  "/api/whoop/status": "privateRead",
+  "/api/whoop/profile": "privateRead",
+  "/api/whoop/cycle": "privateRead",
+  "/api/whoop/today": "privateRead",
+  "/api/autopilot/database": "privateRead",
+  "/api/autopilot/progress": "privateRead",
+  "/api/journal/auto": "privateRead",
+  "/api/journal/status": "privateRead",
+  "/api/journal": "privateRead",            // GET lee; el POST se reclasifica abajo
+  "/api/health-readiness": "privateRead",
+  "/api/health/behaviors/today": "privateRead",
+  "/api/health/snapshot": "privateRead",
+  "/api/health/insights": "privateRead",
+  "/api/trading/summary": "privateRead",
+  "/api/alfredo/context": "privateRead",
+  "/api/os-status": "privateRead",
+  "/api/research/stock": "privateRead",     // GET lee cache; el POST se reclasifica abajo
+
+  "/toggle-thinking": "mutateLocal",
+  "/bot/start": "mutateLocal",
+  "/bot/pause": "mutateLocal",
+
+  "/ask": "mutateProtected",
+  "/research": "mutateProtected",
+  "/intel": "mutateProtected",
+  "/intel/delete": "mutateProtected",
+  "/api/health/behavior": "mutateProtected",
+  "/alerts/dismiss": "mutateProtected",
+  "/api/opportunities/run": "mutateProtected",
+  "/api/research/queue/add": "mutateProtected",
+  "/api/research/queue/remove": "mutateProtected",
+  "/api/research/queue/run": "mutateProtected",
+  "/api/mode/defensive": "mutateProtected",
+  "/api/alerts/dry-run": "mutateProtected",
+  "/api/autopilot/snapshot": "mutateProtected",
+
+  "/intel/clear": "dangerous",
+  "/bot/reset": "dangerous"
+};
+const MUTATION_LEVELS = ["mutateLocal", "mutateProtected", "dangerous"];
+
+const securityStats = { publicRequestSeen: false, blockedMutations: 0, publicMutationsAllowed: 0, lastBlockedPath: null, lastBlockedAt: null };
+
+function endpointPermission(req, path) {
+  let level = ENDPOINT_PERMISSIONS[path];
+  // Rutas dual GET/POST: el POST escribe aunque el GET solo lea.
+  if (req.method !== "GET" && req.method !== "HEAD" && !MUTATION_LEVELS.includes(level)) level = "mutateProtected";
+  if (!level) level = "privateRead"; // GET desconocido: clasificar conservador
+  return level;
+}
+
+function requestIsPublic(req) {
+  const h = req.headers || {};
+  if (h["cf-connecting-ip"] || h["cf-ray"] || h["x-forwarded-for"] || h["x-real-ip"]) return true;
+  const addr = (req.socket && req.socket.remoteAddress) || "";
+  return !(addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1");
+}
+
+function accessKeyValid(req) {
+  if (!CORDELIUS_ACCESS_KEY) return false;
+  const provided = String(req.headers["x-cordelius-key"] || req.headers["x-admin-token"] || "");
+  if (!provided) return false;
+  const a = crypto.createHash("sha256").update(provided).digest();
+  const b = crypto.createHash("sha256").update(CORDELIUS_ACCESS_KEY).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+// Devuelve true si el request puede continuar; si no, responde 401/403 JSON y devuelve false.
+function enforceEndpointPermission(req, res, path) {
+  const level = endpointPermission(req, path);
+  const isPublic = requestIsPublic(req);
+  if (isPublic) securityStats.publicRequestSeen = true;
+
+  if (!MUTATION_LEVELS.includes(level)) return true; // publicRead/privateRead: pasar (auditado)
+  if (!isPublic) return true;                        // mutaciones desde localhost: permitidas
+
+  if (!CORDELIUS_ACCESS_KEY) {
+    securityStats.blockedMutations++;
+    securityStats.lastBlockedPath = path; securityStats.lastBlockedAt = Date.now();
+    sendJSON(res, { ok: false, error: "mutation_blocked", reason: "CORDELIUS_ACCESS_KEY no está configurada en el servidor; las mutaciones públicas están bloqueadas por seguridad.", howTo: "Define CORDELIUS_ACCESS_KEY en el entorno del servidor y manda el header X-Cordelius-Key desde el cliente." }, 403);
+    return false;
+  }
+  if (!accessKeyValid(req)) {
+    securityStats.blockedMutations++;
+    securityStats.lastBlockedPath = path; securityStats.lastBlockedAt = Date.now();
+    sendJSON(res, { ok: false, error: "unauthorized", reason: "Header X-Cordelius-Key ausente o inválido para una mutación vía túnel público.", howTo: "Guarda tu access key en System → Admin Token (se envía automáticamente) o manda X-Cordelius-Key." }, 401);
+    return false;
+  }
+  securityStats.publicMutationsAllowed++;
+  return true;
+}
+
+function buildSecurityAudit() {
+  const byLevel = { publicRead: [], privateRead: [], mutateLocal: [], mutateProtected: [], dangerous: [] };
+  for (const [p, lvl] of Object.entries(ENDPOINT_PERMISSIONS)) (byLevel[lvl] || byLevel.privateRead).push(p);
+  const writes = byLevel.mutateLocal.length + byLevel.mutateProtected.length + byLevel.dangerous.length;
+  return {
+    ok: true, ts: Date.now(),
+    securityLayer: true,
+    accessKeyConfigured: !!CORDELIUS_ACCESS_KEY,
+    publicTunnelRisk: securityStats.publicRequestSeen,
+    totals: {
+      classified: Object.keys(ENDPOINT_PERMISSIONS).length,
+      publicRead: byLevel.publicRead.length,
+      privateRead: byLevel.privateRead.length,
+      writes,
+      protectedMutationEndpoints: writes, // toda mutación pública pasa por el gate
+      unprotectedMutationEndpoints: 0
+    },
+    endpoints: byLevel,
+    enforcement: {
+      mutations: CORDELIUS_ACCESS_KEY
+        ? "Públicas requieren X-Cordelius-Key válido; localhost libre."
+        : "BLOQUEADAS en público (no hay CORDELIUS_ACCESS_KEY); localhost libre.",
+      privateRead: "Clasificado pero NO bloqueado: '/' server-renderiza los mismos datos, bloquear solo las APIs sería teatro de seguridad.",
+      unknownPaths: "GET desconocido → privateRead; método con escritura desconocido → mutateProtected (gate aplica)."
+    },
+    riskNotes: [
+      "La página '/' expone datos personales a cualquiera con la URL del Quick Tunnel. Mitigación recomendada: gate de sesión/login en '/' o Cloudflare Access.",
+      securityStats.publicRequestSeen ? "Se han observado requests con headers de proxy/túnel: el servidor ES alcanzable públicamente." : "Aún no se observan requests públicos desde el arranque.",
+      !CORDELIUS_ACCESS_KEY ? "CORDELIUS_ACCESS_KEY no configurada: las mutaciones públicas quedan totalmente bloqueadas (modo más restrictivo)." : "Access key configurada (valor nunca expuesto).",
+      "Trading real: no existe ninguna ruta que ejecute órdenes; todo es paper/educativo."
+    ],
+    stats: { blockedMutations: securityStats.blockedMutations, publicMutationsAllowed: securityStats.publicMutationsAllowed, lastBlockedPath: securityStats.lastBlockedPath, lastBlockedAt: securityStats.lastBlockedAt ? new Date(securityStats.lastBlockedAt).toISOString() : null }
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   const path = req.url.split("?")[0];
+  if (!enforceEndpointPermission(req, res, path)) return;
+  if (path === "/api/security/audit") return sendJSON(res, buildSecurityAudit());
   if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && path === "/intel") return handleIntel(req, res);
   if (req.method === "POST" && path === "/intel/delete") return handleIntelDelete(req, res);
@@ -6347,6 +6549,14 @@ const server = http.createServer(async (req, res) => {
         journalEntries: journalCount,
         portfolioHistoryPoints: Array.isArray(portfolioHistory) ? portfolioHistory.length : 0
       },
+      security: (() => { try { const a = buildSecurityAudit(); return {
+        securityLayer: true,
+        publicTunnelRisk: a.publicTunnelRisk,
+        accessKeyConfigured: a.accessKeyConfigured,
+        protectedMutationEndpoints: a.totals.protectedMutationEndpoints,
+        unprotectedMutationEndpoints: a.totals.unprotectedMutationEndpoints,
+        blockedMutations: a.stats.blockedMutations
+      }; } catch (e) { return { securityLayer: false, error: e.message }; } })(),
       commandCenter: {
         commandPalette: true,
         jarvisBrain: true,
