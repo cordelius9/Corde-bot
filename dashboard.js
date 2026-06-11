@@ -115,7 +115,15 @@ let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
 let journalEntries = loadJSON(JOURNAL_FILE, []);
 let whoopTokens = loadJSON(WHOOP_TOKEN_FILE, null);
-let whoopCache = { profile: null, cycle: null, recovery: null, lastFetch: 0, connected: false };
+let whoopCache = { profile: null, cycle: null, recovery: null, sleep: null, lastFetch: 0, connected: false };
+// Warm start: reuse the last persisted WHOOP reading until a live refresh succeeds,
+// but only if it is recent (< 6h) — never present stale data as current.
+{
+  const _wc = loadJSON("whoop_today_cache.json", null);
+  if (_wc && typeof _wc === "object" && !Array.isArray(_wc) && _wc.lastFetch && Date.now() - _wc.lastFetch < 6 * 3600 * 1000) {
+    whoopCache = { ...whoopCache, ..._wc, lastFetch: 0 };
+  }
+}
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
@@ -208,6 +216,21 @@ function apiPost(url, bodyStr, extraHeaders = {}) {
 const WHOOP_API_BASE = "https://api.prod.whoop.com";
 const WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token";
 
+// Non-secret WHOOP health reason for diagnostics: token_missing, token_expired_refresh_failed,
+// api_unavailable, no_today_reading, ok
+let whoopStatusReason = whoopTokens && whoopTokens.access_token ? "pending_first_fetch" : "token_missing";
+
+// Tokens saved by older flows have savedAt+expires_in instead of expires_at.
+function whoopTokenExpiryMs() {
+  if (!whoopTokens) return 0;
+  if (whoopTokens.expires_at) return whoopTokens.expires_at;
+  if (whoopTokens.savedAt && whoopTokens.expires_in) {
+    const base = Date.parse(whoopTokens.savedAt);
+    if (Number.isFinite(base)) return base + whoopTokens.expires_in * 1000;
+  }
+  return 0;
+}
+
 async function refreshWhoopToken() {
   if (!whoopTokens || !whoopTokens.refresh_token) return false;
   const cid = process.env.WHOOP_CLIENT_ID || "";
@@ -231,11 +254,22 @@ async function refreshWhoopToken() {
   return false;
 }
 
+// WHOOP rotates refresh tokens (single-use): concurrent refreshes race and all but
+// the first fail. Share one in-flight refresh across parallel fetchWhoopAPI calls.
+let whoopRefreshInFlight = null;
+function refreshWhoopTokenOnce() {
+  if (!whoopRefreshInFlight) {
+    whoopRefreshInFlight = refreshWhoopToken().finally(() => { whoopRefreshInFlight = null; });
+  }
+  return whoopRefreshInFlight;
+}
+
 async function fetchWhoopAPI(path) {
-  if (!whoopTokens || !whoopTokens.access_token) return null;
-  if (whoopTokens.expires_at && Date.now() > whoopTokens.expires_at - 60000) {
-    const ok = await refreshWhoopToken();
-    if (!ok) return null;
+  if (!whoopTokens || !whoopTokens.access_token) { whoopStatusReason = "token_missing"; return null; }
+  const expiry = whoopTokenExpiryMs();
+  if (expiry && Date.now() > expiry - 60000) {
+    const ok = await refreshWhoopTokenOnce();
+    if (!ok) { whoopStatusReason = "token_expired_refresh_failed"; return null; }
   }
   return apiGetAuth(WHOOP_API_BASE + path, whoopTokens.access_token);
 }
@@ -265,6 +299,10 @@ async function refreshWhoopCache() {
       (recovery && recovery.records && recovery.records.length) ||
       (sleep && sleep.records && sleep.records.length)
     );
+    if (whoopCache.connected) whoopStatusReason = "ok";
+    else if (!profile && !cycle && !recovery && !sleep) {
+      if (whoopStatusReason !== "token_expired_refresh_failed" && whoopStatusReason !== "token_missing") whoopStatusReason = "api_unavailable";
+    } else whoopStatusReason = "no_today_reading";
     whoopCache.lastFetch = Date.now();
 
     saveJSON("whoop_today_cache.json", {
@@ -5810,6 +5848,9 @@ const server = http.createServer(async (req, res) => {
       uptimeSeconds: Math.round((Date.now() - SERVER_STARTED_AT) / 1000),
       dataSources: {
         whoop: hr.connected ? "OK" : (WHOOP_CONFIGURED ? "FALLBACK" : "PENDIENTE"),
+        whoopReason: hr.connected ? "ok" : whoopStatusReason,
+        whoopTokenExpiresAt: whoopTokenExpiryMs() ? new Date(whoopTokenExpiryMs()).toISOString() : null,
+        whoopReconnect: hr.connected ? null : "visit /whoop/auth to re-authorize",
         market: FINNHUB_API_KEY ? "OK" : "FALLBACK",
         quiver: QUIVER_API_KEY ? "OK" : "PENDIENTE",
         journal: journalCount !== null ? "OK" : "ERROR",
@@ -5999,6 +6040,10 @@ const server = http.createServer(async (req, res) => {
       configured: WHOOP_CONFIGURED,
       connected: h.connected,
       tokensPresent: !!(whoopTokens && whoopTokens.access_token),
+      tokenExpiresAt: whoopTokenExpiryMs() ? new Date(whoopTokenExpiryMs()).toISOString() : null,
+      tokenExpired: whoopTokenExpiryMs() ? Date.now() > whoopTokenExpiryMs() : null,
+      statusReason: h.connected ? "ok" : whoopStatusReason,
+      reconnect: h.connected ? null : "Open /whoop/auth in a browser to re-authorize WHOOP (requires WHOOP_REDIRECT_URI in .env to match the app settings).",
       source: h.source,
       reason: h.connected
         ? "WHOOP connected and data available"
@@ -6057,6 +6102,7 @@ const server = http.createServer(async (req, res) => {
   }
 
 if (path === "/api/whoop/today") {
+    await refreshWhoopCache(); // rate-limited internally (WHOOP_CACHE_MS)
     const h = computeHealthReadiness();
     const _cyc = whoopCache.cycle;
     const _kj = _cyc && _cyc.score && _cyc.score.kilojoule != null ? _cyc.score.kilojoule : null;
