@@ -4320,6 +4320,106 @@ function alfredoDailyContext(h, pv, reg) {
   return { mode, oneLiner, question, nextActions };
 }
 
+// ── Badges honestos de origen de dato ──
+const BADGE_META = {
+  LIVE:      { color: "#00ff99", title: "Dato en vivo de API real" },
+  FALLBACK:  { color: "#ffd35c", title: "Sin API activa; valor local o ausente" },
+  STALE:     { color: "#fb923c", title: "Dato real pero viejo" },
+  SIMULATED: { color: "#a78bfa", title: "Simulado/determinista, no real" },
+  MANUAL:    { color: "#3b9dff", title: "Capturado a mano" },
+  HEURISTIC: { color: "#9fb3c8", title: "Calculado con reglas locales" }
+};
+function statusBadge(status) {
+  const m = BADGE_META[status] || BADGE_META.HEURISTIC;
+  return `<span title="${esc(m.title)}" style="display:inline-block;border-radius:99px;padding:2px 8px;font-size:9px;font-weight:900;letter-spacing:.08em;color:${m.color};background:${m.color}14;border:1px solid ${m.color}33;vertical-align:middle">${esc(status)}</span>`;
+}
+
+function renderJarvisBrainPanel() {
+  const b = computeJarvisBrain();
+  const sevColor = s => s === "CRITICAL" ? "#ff4d6d" : s === "WARNING" ? "#ffd35c" : "#3b9dff";
+  const ready = (label, r) => `<div style="text-align:center;border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:10px 6px;background:rgba(255,255,255,.03)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8">${esc(label)}</div>
+      <div style="font-size:24px;font-weight:900;color:${r.score === null ? "#5a6674" : r.score >= 70 ? "#00ff99" : r.score >= 45 ? "#ffd35c" : "#ff4d6d"};margin:4px 0 2px">${r.score === null ? "—" : r.score}</div>
+      ${statusBadge(r.status)}
+    </div>`;
+  return `<div class="panel" id="jarvis-brain" style="max-width:1280px;margin:0 auto 16px;padding:20px 22px;border:1px solid rgba(0,255,153,.18);background:linear-gradient(135deg,rgba(0,255,153,.05),rgba(59,157,255,.04))">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#00ff99">⚡ Jarvis Brain</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${Object.entries(b.state.dataStatus).map(([k, v]) => `<span style="font-size:9px;color:#5a6674;margin-right:1px">${esc(k)}</span>${statusBadge(v)}`).join(" ")}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);gap:16px">
+      <div>
+        <div style="font-size:13px;color:#9fb3c8;margin-bottom:6px">${esc(b.state.summary)}</div>
+        <div style="font-size:19px;font-weight:900;color:#fff;line-height:1.3;margin-bottom:12px">${esc(b.topFocus)}</div>
+        ${b.warnings.length ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">${b.warnings.slice(0, 4).map(w =>
+          `<div style="border-left:3px solid ${sevColor(w.severity)};padding:6px 10px;background:rgba(0,0,0,.18);border-radius:0 10px 10px 0;font-size:12px;color:#dbeafe">${esc(w.text)}</div>`).join("")}</div>` : ""}
+        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Next best actions</div>
+        <ol style="margin:0;padding-left:18px">${b.nextActions.map(a => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(a)}</li>`).join("")}</ol>
+      </div>
+      <div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px">
+          ${ready("Health", b.readiness.health)}${ready("Trading", b.readiness.trading)}${ready("Study", b.readiness.study)}${ready("Social", b.readiness.social)}
+        </div>
+        <div style="border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:10px 12px;background:rgba(255,255,255,.03)">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:5px">Memoria</div>
+          <div style="font-size:12px;color:#c8d8f0;line-height:1.45">${esc(b.memory.summary)}</div>
+          <div style="font-size:11px;color:#5a6674;margin-top:6px">Journal ${b.memory.journalEntries} · notas ${b.memory.quickNotes} · mood ${esc(b.memory.topMood || "—")}</div>
+        </div>
+        ${settings.defensiveMode ? `<div style="margin-top:8px;border:1px solid rgba(255,77,109,.3);border-radius:12px;padding:8px 10px;font-size:11px;font-weight:900;color:#ff4d6d;background:rgba(255,77,109,.07)">MODO DEFENSIVO ACTIVO (manual · educativo)</div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderTodayFeed() {
+  const feed = buildTodayFeed();
+  const typeMeta = {
+    health: { icon: "◉", color: "#f472b6" }, portfolio: { icon: "◈", color: "#3b9dff" },
+    journal: { icon: "◇", color: "#818cf8" }, news: { icon: "◆", color: "#00ff99" },
+    decision: { icon: "✓", color: "#ffd35c" }, automation: { icon: "⚙", color: "#fb923c" },
+    alert: { icon: "!", color: "#ff4d6d" }, autopilot: { icon: "⊕", color: "#a78bfa" }
+  };
+  const fmtTime = ts => new Date(ts).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+  const fmtDay = ts => new Date(ts).toDateString() === new Date().toDateString() ? "hoy" : "ayer";
+  return `<div class="panel" id="today-feed" style="max-width:1280px;margin:0 auto 16px;padding:18px 22px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#3b9dff">◷ Today Feed</div>
+      <div style="font-size:11px;color:#5a6674">${feed.count} eventos · 36h</div>
+    </div>
+    ${feed.count === 0 ? `<div class="muted" style="font-size:13px">— Sin eventos registrados aún. Los eventos aparecen conforme llegan datos reales.</div>` : `
+    <div style="display:flex;flex-direction:column;gap:0;max-height:420px;overflow-y:auto">
+      ${feed.items.map(i => { const m = typeMeta[i.type] || { icon: "·", color: "#9fb3c8" }; return `
+      <div style="display:grid;grid-template-columns:54px 26px 1fr auto;gap:8px;align-items:start;padding:8px 4px;border-bottom:1px solid rgba(120,160,210,.07)">
+        <div style="font-size:11px;color:#5a6674;padding-top:2px">${fmtTime(i.ts)}<div style="font-size:9px">${fmtDay(i.ts)}</div></div>
+        <div style="color:${m.color};font-weight:900;text-align:center">${m.icon}</div>
+        <div><div style="font-size:13px;font-weight:700;color:#dbeafe;line-height:1.3">${esc(i.title)}</div>
+        ${i.detail ? `<div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc(i.detail)}</div>` : ""}</div>
+        <div style="padding-top:2px">${statusBadge(i.status)}</div>
+      </div>`; }).join("")}
+    </div>`}
+  </div>`;
+}
+
+function renderAutomationsPanel() {
+  const st = getAutomationState();
+  return `<div class="panel" id="automations-panel" style="max-width:1280px;margin:0 auto 16px;padding:18px 22px;border-color:rgba(251,146,60,.18)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#fb923c">⚙ Automations · Reglas locales</div>
+      <div style="font-size:10px;color:#5a6674">Solo alertas educativas — nunca órdenes reales</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px">
+      ${st.rules.map(r => `<div style="border:1px solid ${r.fired ? "rgba(251,146,60,.35)" : "rgba(120,160,210,.1)"};border-radius:14px;padding:12px 14px;background:${r.fired ? "rgba(251,146,60,.06)" : "rgba(255,255,255,.025)"}">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:5px">
+          <div style="font-size:12px;font-weight:900;color:${r.fired ? "#fb923c" : "#9fb3c8"}">${esc(r.name)}</div>
+          <span style="font-size:9px;font-weight:900;border-radius:99px;padding:2px 8px;background:${r.fired ? "rgba(251,146,60,.15)" : "rgba(120,160,210,.08)"};color:${r.fired ? "#fb923c" : "#5a6674"}">${r.fired ? "ACTIVA" : "OK"}</span>
+        </div>
+        ${r.fired && r.message ? `<div style="font-size:11px;color:#c8d8f0;line-height:1.4">${esc(r.message)}</div>` : `<div style="font-size:11px;color:#5a6674">Condición no cumplida hoy.</div>`}
+        ${r.suggestedMode ? `<div style="font-size:10px;color:#9fb3c8;margin-top:5px">Sugiere: <b>${esc(r.suggestedMode)}</b></div>` : ""}
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
+
 function renderHomePortal(pv, reg) {
   const h = computeHealthReadiness();
   const jd = computeJournalData();
@@ -4362,6 +4462,8 @@ function renderHomePortal(pv, reg) {
         <span style="border-radius:99px;padding:4px 12px;font-size:11px;font-weight:900;background:${modeColor}12;color:${modeColor};border:1px solid ${modeColor}25">${esc(h.operatingMode)}</span>
       </div>
     </div>
+
+    ${renderJarvisBrainPanel()}
 
     <!-- Quick stats strip -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px">
@@ -4411,20 +4513,17 @@ function renderHomePortal(pv, reg) {
       </div>
     </div>
 
+    ${renderTodayFeed()}
+
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:16px">
       ${cards.map(c => `<div class="card" style="padding:14px 15px;border-color:${c.color}24;background:rgba(255,255,255,.035)"><div class="label">${esc(c.label)}</div><div ${c.id ? `id="${esc(c.id)}"` : ""} class="big" style="font-size:21px;color:${c.color}">${esc(c.value)}</div><div class="muted" style="font-size:11px">${esc(c.sub)}</div></div>`).join("")}
     </div>
 
-    <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,.8fr);gap:12px;margin-bottom:16px">
-      <div class="panel" style="padding:16px 18px;border-color:rgba(255,211,92,.16);background:rgba(255,211,92,.035)">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Jarvis asks</div>
-        <div id="home-alfredo-question" style="font-size:17px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          ${ctx.nextActions.map(a => `<button class="btn" onclick="showMod('${a.mod}')" style="font-size:12px;padding:7px 12px">${esc(a.label)}</button>`).join("")}
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-        ${modules.map(m => `<div onclick="showMod('${m.id}')" class="panel" style="cursor:pointer;padding:15px;border-color:${m.color}28;background:rgba(255,255,255,.03)"><div style="color:${m.color};font-size:18px;font-weight:950">${esc(m.emoji)}</div><div style="font-size:13px;font-weight:900;margin-top:7px">${esc(m.label)}</div><div class="muted" style="font-size:11px;margin-top:4px">${esc(m.sub)}</div></div>`).join("")}
+    <div class="panel" style="padding:16px 18px;margin-bottom:16px;border-color:rgba(255,211,92,.16);background:rgba(255,211,92,.035)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Jarvis asks</div>
+      <div id="home-alfredo-question" style="font-size:17px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        ${ctx.nextActions.map(a => `<button class="btn" onclick="showMod('${a.mod}')" style="font-size:12px;padding:7px 12px">${esc(a.label)}</button>`).join("")}
       </div>
     </div>
   </div>`;
@@ -5337,6 +5436,8 @@ ${renderMorningReport()}
 })();
 </script>
 
+
+${renderAutomationsPanel()}
 
 ${renderAutopilotPanel()}
 
