@@ -4635,7 +4635,14 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
-.mod{display:none}.mod.active-mod{display:block!important}
+.mod{display:none!important}
+body[data-active-mod="home"] #mod-home,
+body[data-active-mod="trading"] #mod-trading,
+body[data-active-mod="health"] #mod-health,
+body[data-active-mod="journal"] #mod-journal,
+body[data-active-mod="intelligence"] #mod-intelligence,
+body[data-active-mod="alfredo"] #mod-alfredo,
+body[data-active-mod="autopilot"] #mod-autopilot{display:block!important;visibility:visible!important;opacity:1!important;min-height:240px!important}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
@@ -4657,7 +4664,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .news-item .ni-caret{transition:.2s;flex:0 0 auto;opacity:.5;font-size:11px}
 .news-item[open] .ni-caret{transform:rotate(180deg)}
 #research-result{animation:fade .3s ease}
-</style></head><body>
+</style></head><body data-active-mod="alfredo">
 <aside class="sidebar">
   <div class="sidebar-brand">
     <div style="font-size:28px;margin-bottom:4px">◎</div>
@@ -5087,79 +5094,80 @@ ${renderAlertsPanel()}
 <div class="disclaimer">Cordelius es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
 </body>
 <script>
+var _CORDE_MODS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
 function validModName(name) {
-  return ['home','trading','health','journal','intelligence','alfredo','autopilot'].indexOf(name) !== -1;
+  return _CORDE_MODS.indexOf(name) !== -1;
 }
 function showMod(name) {
-  name = validModName(name) ? name : 'alfredo';
+  if (!validModName(name)) name = 'alfredo';
   if (!document.getElementById('mod-' + name)) name = 'alfredo';
 
-  // Show/hide via direct inline style — avoids CSS !important battles entirely
-  var MOD_IDS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
-  MOD_IDS.forEach(function(id) {
+  // PRIMARY: set body data attribute — drives CSS body[data-active-mod] rules
+  // Specificity body+attr+id (0-1-1-1) beats any class rule; cannot be overridden by Cloudflare/Rocket Loader
+  try { document.body.dataset.activeMod = name; } catch(e) {}
+
+  // FALLBACK: also set inline styles directly on each module element
+  _CORDE_MODS.forEach(function(id) {
     var el = document.getElementById('mod-' + id);
     if (!el) return;
     if (id === name) {
-      el.style.display = 'block';
+      el.style.cssText = el.style.cssText; // flush pending style recalcs
+      el.style.setProperty('display', 'block', '');
+      el.style.setProperty('visibility', 'visible', '');
+      el.style.setProperty('opacity', '1', '');
+      el.style.setProperty('min-height', '240px', '');
       el.classList.add('active-mod');
     } else {
-      el.style.display = 'none';
+      el.style.setProperty('display', 'none', '');
       el.classList.remove('active-mod');
     }
   });
 
-  // Inject an ID-specific CSS rule as final guarantee — ID specificity always beats class !important
-  try {
-    var styleTag = document.getElementById('_corde_active_mod');
-    if (!styleTag) {
-      styleTag = document.createElement('style');
-      styleTag.id = '_corde_active_mod';
-      (document.head || document.documentElement).appendChild(styleTag);
-    }
-    styleTag.textContent = '#mod-' + name + '{display:block!important;visibility:visible!important;opacity:1!important}';
-  } catch(e) {}
-
   // Nav active state
-  document.querySelectorAll('.nav-mod').forEach(function(b) { b.classList.remove('nav-active'); });
-  document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b) { b.classList.add('nav-active'); });
-
-  // Persist state
-  try { localStorage.setItem('corde_mod', name); } catch(e) {}
-  if (window.location.hash !== '#' + name) {
-    try { history.replaceState(null, '', '#' + name); } catch(e) { try { window.location.hash = name; } catch(e2) {} }
-  }
-
-  // Scroll to top via requestAnimationFrame for cross-browser reliability
   try {
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(function() { window.scrollTo(0, 0); });
-    } else {
-      window.scrollTo(0, 0);
-    }
+    document.querySelectorAll('.nav-mod').forEach(function(b) { b.classList.remove('nav-active'); });
+    document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b) { b.classList.add('nav-active'); });
   } catch(e) {}
 
-  // Module-specific loaders
+  // Persist
+  try { localStorage.setItem('corde_mod', name); } catch(e) {}
+  try {
+    if (window.location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+  } catch(e) { try { window.location.hash = name; } catch(e2) {} }
+
+  // Scroll to top (rAF ensures layout is committed first)
+  try { requestAnimationFrame(function() { window.scrollTo(0, 0); }); } catch(e) {}
+
+  // Module-specific data loaders
   try { if (name === 'health') loadHealthOS(); } catch(e) {}
   try { if (name === 'journal') loadJournalAuto(); } catch(e) {}
   try { if (name === 'intelligence') loadIntelligenceFeed(); } catch(e) {}
   try { if (name === 'alfredo') loadJarvisContext(); } catch(e) {}
   try { if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); } } catch(e) {}
 
-  // Debug fallback: if the module still has no visible height after render, show an error card
+  // Debug fallback card — shown only when module exists but offsetHeight is still collapsed after render
   try {
-    var modEl = document.getElementById('mod-' + name);
+    var _dbgMod = document.getElementById('mod-' + name);
     setTimeout(function() {
-      if (!modEl || modEl.offsetHeight > 40) return;
-      var dbgId = '_corde_dbg_' + name;
-      if (document.getElementById(dbgId)) return;
-      var dbg = document.createElement('div');
-      dbg.id = dbgId;
-      dbg.setAttribute('style','display:block!important;padding:18px 22px;background:rgba(255,211,92,.07);border:1px solid rgba(255,211,92,.35);border-radius:18px;margin:28px auto;max-width:560px;text-align:center;color:#ffd35c;font-size:14px;font-weight:700;font-family:-apple-system,sans-serif');
-      dbg.textContent = 'Módulo "' + name + '" visible — si el contenido no aparece, recarga la página (Ctrl+R / Cmd+R).';
-      modEl.insertBefore(dbg, modEl.firstChild);
+      if (!_dbgMod) {
+        var _card = document.createElement('div');
+        _card.setAttribute('style', 'display:block!important;padding:18px;background:rgba(255,77,109,.08);border:1px solid #ff4d6d55;border-radius:16px;margin:24px auto;max-width:600px;color:#ff4d6d;font-size:13px;font-family:monospace;white-space:pre-wrap');
+        _card.textContent = 'Module render fallback: active module exists but height is collapsed\nname: ' + name + '\nbody.dataset.activeMod: ' + (document.body.dataset.activeMod || 'NOT SET') + '\nDOM element: NOT FOUND';
+        (document.getElementById('mod-alfredo') || document.body).appendChild(_card);
+        return;
+      }
+      if (_dbgMod.offsetHeight >= 40) return;
+      var _dbgId = '_corde_dbg_' + name;
+      if (document.getElementById(_dbgId)) return;
+      var _card = document.createElement('div');
+      _card.id = _dbgId;
+      _card.setAttribute('style', 'display:block!important;padding:18px;background:rgba(255,77,109,.08);border:1px solid #ff4d6d55;border-radius:16px;margin:24px auto;max-width:600px;color:#ff4d6d;font-size:13px;font-family:monospace;white-space:pre-wrap');
+      _card.textContent = 'Module render fallback: active module exists but height is collapsed\nname: ' + name + '\nclassName: ' + _dbgMod.className + '\nstyle.display: ' + _dbgMod.style.display + '\noffsetHeight: ' + _dbgMod.offsetHeight + '\nbody.dataset.activeMod: ' + (document.body.dataset.activeMod || 'NOT SET');
+      _dbgMod.insertBefore(_card, _dbgMod.firstChild);
     }, 500);
   } catch(e) {}
 }
+window.showMod = showMod;
 
 function healthSet(id, value) {
   var el = document.getElementById(id);
@@ -5784,11 +5792,15 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, { ok: true, ts: Date.now(), total: alerts.length, active: active.length, alerts });
   }
   if (path === "/api/ui-diagnostics") {
+    const gitRev = (() => { try { return require("child_process").execSync("git rev-parse --short HEAD", {encoding:"utf8"}).trim(); } catch(e) { return "unknown"; } })();
     return sendJSON(res, { ok: true, ts: Date.now(),
       modules: ["home","trading","health","journal","intelligence","alfredo","autopilot"],
       defaultMod: "alfredo", ssrActiveMod: "alfredo",
-      cssHideRule: ".mod{display:none!important}", cssShowRule: ".mod.active-mod{display:block!important}",
-      note: "mod-alfredo carries active-mod in SSR. JS readyState-safe init overrides on load."
+      cssStrategy: "body[data-active-mod=X] #mod-X { display:block!important }",
+      ssrBodyAttr: "data-active-mod=alfredo",
+      specificity: "body(0-0-0-1)+attr(0-0-1-0)+id(0-1-0-0)=0-1-1-1 beats .mod(0-0-1-0)",
+      gitCommit: gitRev,
+      note: "showMod sets body.dataset.activeMod first, then inline styles as fallback. CSS rule is definitive."
     });
   }
   if (req.method === "POST" && path === "/api/alerts/dry-run") {
