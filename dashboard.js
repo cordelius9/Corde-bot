@@ -4635,7 +4635,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
-.mod{display:none!important}.mod.active-mod{display:block!important}
+.mod{display:none}.mod.active-mod{display:block!important}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
@@ -4732,12 +4732,12 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </div>
 
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
-<div id="mod-home" class="mod">
+<div id="mod-home" class="mod" style="display:none">
 ${renderHomePortal(pv, reg)}
 </div>
 
 <!-- ── MOD: TRADING ──────────────────────────────────────── -->
-<div id="mod-trading" class="mod">
+<div id="mod-trading" class="mod" style="display:none">
 <h2>Cordelius Trading</h2>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
@@ -4851,16 +4851,16 @@ ${renderPaperTradingPanel()}
 
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
-<div id="mod-health" class="mod">
+<div id="mod-health" class="mod" style="display:none">
 ${renderHealthOSPanel()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
-<div id="mod-journal" class="mod">
+<div id="mod-journal" class="mod" style="display:none">
 <h2>Cordelius Journal</h2>
 ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
-<div id="mod-intelligence" class="mod">
+<div id="mod-intelligence" class="mod" style="display:none">
 
 <h2>Cordelius Intelligence</h2>
 ${renderCordeliusIntelligenceFeedPreview()}
@@ -4939,7 +4939,7 @@ ${(function(){
 </div></details>
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
-<div id="mod-alfredo" class="mod active-mod">
+<div id="mod-alfredo" class="mod active-mod" style="display:block">
 <h2>Jarvis — Command Center</h2>
 ${renderJarvisCommandCenter(pv)}
 ${renderJarvisTopPriorities(pv)}
@@ -4957,7 +4957,7 @@ ${renderJarvisChangelog(pv)}
 ${renderMorningReport()}
 </div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
-<div id="mod-autopilot" class="mod">
+<div id="mod-autopilot" class="mod" style="display:none">
 
 <h2>Cordelius Autopilot</h2>
 
@@ -5092,26 +5092,75 @@ function validModName(name) {
 }
 function showMod(name) {
   name = validModName(name) ? name : 'alfredo';
-  var mod = document.getElementById('mod-' + name);
-  if (!mod) name = 'alfredo';
+  if (!document.getElementById('mod-' + name)) name = 'alfredo';
 
-  document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
-  document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
-  mod = document.getElementById('mod-' + name);
-  if (mod) mod.classList.add('active-mod');
-  document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b){ b.classList.add('nav-active'); });
+  // Show/hide via direct inline style — avoids CSS !important battles entirely
+  var MOD_IDS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
+  MOD_IDS.forEach(function(id) {
+    var el = document.getElementById('mod-' + id);
+    if (!el) return;
+    if (id === name) {
+      el.style.display = 'block';
+      el.classList.add('active-mod');
+    } else {
+      el.style.display = 'none';
+      el.classList.remove('active-mod');
+    }
+  });
+
+  // Inject an ID-specific CSS rule as final guarantee — ID specificity always beats class !important
+  try {
+    var styleTag = document.getElementById('_corde_active_mod');
+    if (!styleTag) {
+      styleTag = document.createElement('style');
+      styleTag.id = '_corde_active_mod';
+      (document.head || document.documentElement).appendChild(styleTag);
+    }
+    styleTag.textContent = '#mod-' + name + '{display:block!important;visibility:visible!important;opacity:1!important}';
+  } catch(e) {}
+
+  // Nav active state
+  document.querySelectorAll('.nav-mod').forEach(function(b) { b.classList.remove('nav-active'); });
+  document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b) { b.classList.add('nav-active'); });
+
+  // Persist state
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
-
   if (window.location.hash !== '#' + name) {
-    try { history.replaceState(null, '', '#' + name); } catch(e) { window.location.hash = name; }
+    try { history.replaceState(null, '', '#' + name); } catch(e) { try { window.location.hash = name; } catch(e2) {} }
   }
-  try { window.scrollTo(0, 0); } catch(e) {}
-  if (name === 'health') { try { loadHealthOS(); } catch(e) {} }
-  if (name === 'journal') { try { loadJournalAuto(); } catch(e) {} }
-  if (name === 'intelligence') { try { loadIntelligenceFeed(); } catch(e) {} }
-  if (name === 'alfredo') { try { loadJarvisContext(); } catch(e) {} }
-  if (name === 'autopilot') { try { loadAutopilotDatabase(); } catch(e) {} try { loadOpportunityEngine(); } catch(e) {} }
+
+  // Scroll to top via requestAnimationFrame for cross-browser reliability
+  try {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function() { window.scrollTo(0, 0); });
+    } else {
+      window.scrollTo(0, 0);
+    }
+  } catch(e) {}
+
+  // Module-specific loaders
+  try { if (name === 'health') loadHealthOS(); } catch(e) {}
+  try { if (name === 'journal') loadJournalAuto(); } catch(e) {}
+  try { if (name === 'intelligence') loadIntelligenceFeed(); } catch(e) {}
+  try { if (name === 'alfredo') loadJarvisContext(); } catch(e) {}
+  try { if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); } } catch(e) {}
+
+  // Debug fallback: if the module still has no visible height after render, show an error card
+  try {
+    var modEl = document.getElementById('mod-' + name);
+    setTimeout(function() {
+      if (!modEl || modEl.offsetHeight > 40) return;
+      var dbgId = '_corde_dbg_' + name;
+      if (document.getElementById(dbgId)) return;
+      var dbg = document.createElement('div');
+      dbg.id = dbgId;
+      dbg.setAttribute('style','display:block!important;padding:18px 22px;background:rgba(255,211,92,.07);border:1px solid rgba(255,211,92,.35);border-radius:18px;margin:28px auto;max-width:560px;text-align:center;color:#ffd35c;font-size:14px;font-weight:700;font-family:-apple-system,sans-serif');
+      dbg.textContent = 'Módulo "' + name + '" visible — si el contenido no aparece, recarga la página (Ctrl+R / Cmd+R).';
+      modEl.insertBefore(dbg, modEl.firstChild);
+    }, 500);
+  } catch(e) {}
 }
+
 function healthSet(id, value) {
   var el = document.getElementById(id);
   if (el) el.textContent = value == null || value === '' ? '—' : String(value);
@@ -5411,7 +5460,7 @@ async function researchTicker() {
       result.innerHTML = '<div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:18px 20px;margin-top:6px">'
         + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;color:#3b9dff;margin-bottom:10px">ANÁLISIS · ' + d.ticker + '</div>'
         + '<div style="font-size:14px;color:#dbeafe;line-height:1.75">'
-        + String(d.reply || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split(String.fromCharCode(10)).join('<br>').replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
+        + String(d.reply || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split(String.fromCharCode(10)).join('<br>').replace(/\\*\\*(.*?)\\*\\*/g,'<b>$1</b>')
         + '</div></div>';
     } else {
       result.innerHTML = '<div style="color:#ff4d6d;font-size:13px;padding:8px 0">Error: ' + (d.error||'desconocido') + '</div>';
