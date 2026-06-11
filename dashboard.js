@@ -168,7 +168,8 @@ let bot = loadJSON(BOT_FILE, {
 
 function apiGet(url) {
   return new Promise(resolve => {
-    const req = https.get(url, res => {
+    // CoinGecko (y otros con Cloudflare) responden 403 sin User-Agent.
+    const req = https.get(url, { headers: { "User-Agent": "Cordelius/1.0 (personal dashboard)", Accept: "application/json" } }, res => {
       let data = "";
       res.on("data", c => data += c);
       res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
@@ -320,7 +321,15 @@ async function refreshWhoopCache() {
   }
 }
 
-function assetLiveValue(a) { if (a.source === "GBM" || a.source === "Bitso" || a.currency === "MXN") return a.valueManual; const q = quotes[a.symbol]; if (q && Number.isFinite(q.value)) return q.value; return a.valueManual; }
+function assetLiveValue(a) {
+  if (a.type === "crypto") {
+    const cq = cryptoQuotes[a.symbol];
+    if (cq && Number.isFinite(cq.priceMXN) && cq.priceMXN > 0) return cq.priceMXN * a.units; // MXN live (Bitso/CoinGecko)
+    return a.valueManual;
+  }
+  if (a.source === "GBM" || a.source === "Bitso" || a.currency === "MXN") return a.valueManual;
+  const q = quotes[a.symbol]; if (q && Number.isFinite(q.value)) return q.value; return a.valueManual;
+}
 function assetValueMXN(a) { const v = assetLiveValue(a); return a.currency === "USD" ? v * FX_USD_MXN : v; }
 function assetCostMXN(a) { const c = a.costManual || 0; return a.currency === "USD" ? c * FX_USD_MXN : c; }
 function assetGainPct(a) {
@@ -395,7 +404,8 @@ function portfolioValue() {
     const gainMXN = valueMXN - costMXN;
     const gainPct = costMXN ? (gainMXN / costMXN) * 100 : assetGainPct(a);
     const q = quotes[a.symbol] || {};
-    return { ...a, liveValue: assetLiveValue(a), valueMXN, costMXN, gainMXN, gainPct, day: Number(q.day || 0), score: assetScore(a), risk: assetRisk(a), signal: assetSignal(a), zones: tradeZones(a), quoteSource: q.source || "manual", ind: indicators(a) };
+    const cq = a.type === "crypto" ? cryptoQuotes[a.symbol] : null;
+    return { ...a, liveValue: assetLiveValue(a), valueMXN, costMXN, gainMXN, gainPct, day: cq ? cq.day : Number(q.day || 0), score: assetScore(a), risk: assetRisk(a), signal: assetSignal(a), zones: tradeZones(a), quoteSource: assetQuoteSource(a), ind: indicators(a) };
   });
   const totalValueMXN = assets.reduce((s, a) => s + a.valueMXN, 0);
   const totalCostMXN = assets.reduce((s, a) => s + a.costMXN, 0);
@@ -533,6 +543,60 @@ function quotesFreshness() {
   if (!FINNHUB_API_KEY) return "SIMULATED";
   if (!quotesLastFetch) return "FALLBACK";
   return Date.now() - quotesLastFetch > 30 * 60 * 1000 ? "STALE" : "LIVE";
+}
+
+// ---- CRYPTO QUOTES REALES — Bitso público (pares MXN, sin API key) con
+// fallback CoinGecko para libros que Bitso no tiene (p.ej. SHIB). Si todo
+// falla, el activo conserva valueManual y badge FALLBACK; nunca crashea. ----
+let cryptoQuotes = {};            // por símbolo: { priceMXN, day, source, t }
+let cryptoQuotesLastFetch = 0;
+let cryptoQuotesError = null;
+const BITSO_BOOKS = { BTC: "btc_mxn", ETH: "eth_mxn", XRP: "xrp_mxn", BCH: "bch_mxn", MANA: "mana_mxn" };
+const COINGECKO_IDS = { BTC: "bitcoin", ETH: "ethereum", XRP: "ripple", BCH: "bitcoin-cash", MANA: "decentraland", SHIB: "shiba-inu" };
+
+async function refreshCryptoQuotes() {
+  const symbols = PORTFOLIO.filter(a => a.type === "crypto").map(a => a.symbol);
+  let okCount = 0;
+  const missing = [];
+  for (const sym of symbols) {
+    const book = BITSO_BOOKS[sym];
+    if (!book) { missing.push(sym); continue; }
+    const r = await apiGet(`https://api.bitso.com/v3/ticker/?book=${book}`);
+    const p = r && r.success && r.payload ? r.payload : null;
+    const last = p ? Number(p.last) : NaN;
+    if (Number.isFinite(last) && last > 0) {
+      const ch = Number(p.change_24); // Bitso reporta cambio absoluto en MXN
+      const day = Number.isFinite(ch) && last - ch !== 0 ? (ch / (last - ch)) * 100 : 0;
+      cryptoQuotes[sym] = { priceMXN: last, day: +day.toFixed(2), source: "bitso", t: Date.now() };
+      okCount++;
+    } else missing.push(sym);
+  }
+  if (missing.length) {
+    const ids = missing.map(s => COINGECKO_IDS[s]).filter(Boolean).join(",");
+    if (ids) {
+      const cg = await apiGet(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=mxn&include_24hr_change=true`);
+      for (const sym of missing) {
+        const row = cg && cg[COINGECKO_IDS[sym]];
+        if (row && Number.isFinite(row.mxn) && row.mxn > 0) {
+          cryptoQuotes[sym] = { priceMXN: row.mxn, day: Number.isFinite(row.mxn_24h_change) ? +row.mxn_24h_change.toFixed(2) : 0, source: "coingecko", t: Date.now() };
+          okCount++;
+        }
+      }
+    }
+  }
+  if (okCount > 0) { cryptoQuotesLastFetch = Date.now(); cryptoQuotesError = null; }
+  else cryptoQuotesError = "api_unavailable";
+}
+function cryptoFreshness() {
+  if (!cryptoQuotesLastFetch) return "FALLBACK";
+  return Date.now() - cryptoQuotesLastFetch > 30 * 60 * 1000 ? "STALE" : "LIVE";
+}
+// Fuente real con la que se valuó cada activo (para badges y conteos honestos).
+function assetQuoteSource(a) {
+  if (a.type === "crypto") { const cq = cryptoQuotes[a.symbol]; return cq && Number.isFinite(cq.priceMXN) ? cq.source : "manual"; }
+  if (a.source === "GBM" || a.currency === "MXN") return "manual";
+  const q = quotes[a.symbol];
+  return q && q.source === "finnhub" && Number.isFinite(q.value) ? "finnhub" : "manual";
 }
 
 async function fetchNews() {
@@ -1441,8 +1505,9 @@ function computeJarvisBrain() {
       dataStatus: {
         whoop: h.configured ? "LIVE" : "FALLBACK",
         quotes: quotesFreshness(),
+        cryptoQuotes: cryptoFreshness(),
         news: FINNHUB_API_KEY ? "LIVE" : "FALLBACK",
-        portfolioValues: "MANUAL",
+        mxAssets: "MANUAL",
         indicators: "SIMULATED"
       }
     },
@@ -5144,8 +5209,9 @@ ${renderHomePortal(pv, reg)}
 <div id="mod-trading" class="mod" data-title="Módulo · Trading">
 <h2>Cordelius Trading</h2>
 <div style="max-width:1280px;margin:0 auto 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:11px;color:#5a6674">
-  <span>Precios USD ${statusBadge(quotesFreshness())}</span>
-  <span>Valores GBM/Bitso ${statusBadge("MANUAL")}</span>
+  <span>Acciones USD ${statusBadge(quotesFreshness())}</span>
+  <span>Cripto Bitso/CoinGecko ${statusBadge(cryptoFreshness())}</span>
+  <span>México/GBM ${statusBadge("MANUAL")}</span>
   <span>Indicadores y scores ${statusBadge("SIMULATED")}</span>
   <span>Paper trading ${statusBadge("SIMULATED")}</span>
 </div>
@@ -6686,6 +6752,10 @@ const server = http.createServer(async (req, res) => {
         quotes: quotesFreshness(),
         quotesLastFetch: quotesLastFetch ? new Date(quotesLastFetch).toISOString() : null,
         quotesError: quotesLastError,
+        cryptoQuotes: cryptoFreshness(),
+        cryptoQuotesLastFetch: cryptoQuotesLastFetch ? new Date(cryptoQuotesLastFetch).toISOString() : null,
+        cryptoQuotesError: cryptoQuotesError,
+        ...(() => { try { const pv = portfolioValue(); let live = 0; for (const a of pv.assets) if (a.quoteSource !== "manual") live++; return { liveAssetsCount: live, manualAssetsCount: pv.assets.length - live }; } catch (e) { return { liveAssetsCount: null, manualAssetsCount: null }; } })(),
         quiver: QUIVER_API_KEY ? "OK" : "PENDIENTE",
         journal: journalCount !== null ? "OK" : "ERROR",
         journalEntries: journalCount,
@@ -7598,6 +7668,15 @@ async function boot() {
 
     try {
       await Promise.race([
+        refreshCryptoQuotes(),
+        new Promise(resolve => setTimeout(resolve, 8000))
+      ]);
+    } catch (e) {
+      console.log("refreshCryptoQuotes background omitido:", e.message);
+    }
+
+    try {
+      await Promise.race([
         fetchNews(),
         new Promise(resolve => setTimeout(resolve, 8000))
       ]);
@@ -7634,6 +7713,15 @@ async function boot() {
         ]);
       } catch (e) {
         console.log("refreshQuotes interval omitido:", e.message);
+      }
+
+      try {
+        await Promise.race([
+          refreshCryptoQuotes(),
+          new Promise(resolve => setTimeout(resolve, 8000))
+        ]);
+      } catch (e) {
+        console.log("refreshCryptoQuotes interval omitido:", e.message);
       }
 
       try { savePortfolioPoint(); } catch (e) {}
