@@ -4636,7 +4636,9 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
-.mod{display:block !important;visibility:visible !important;opacity:1 !important;min-height:120px;position:relative;z-index:2;margin:24px 0;padding-top:12px;border-top:1px solid rgba(255,255,255,.12)}
+.mod{display:block !important;visibility:visible !important;opacity:1 !important;min-height:120px;position:relative;z-index:2;margin:48px 0 24px;padding-top:16px;border-top:2px solid rgba(59,157,255,.22);scroll-margin-top:14px}
+.mod::before{content:attr(data-title);display:block;max-width:1280px;margin:0 auto 14px;padding:9px 16px;font-size:12px;font-weight:900;letter-spacing:.22em;text-transform:uppercase;color:#9bd3ff;background:linear-gradient(90deg,rgba(59,157,255,.16),transparent 70%);border-left:3px solid #3b9dff;border-radius:8px}
+#mod-home{margin-top:18px;border-top:none}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
@@ -4733,12 +4735,12 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </div>
 
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
-<div id="mod-home" class="mod">
+<div id="mod-home" class="mod" data-title="Módulo · Home">
 ${renderHomePortal(pv, reg)}
 </div>
 
 <!-- ── MOD: TRADING ──────────────────────────────────────── -->
-<div id="mod-trading" class="mod">
+<div id="mod-trading" class="mod" data-title="Módulo · Trading">
 <h2>Cordelius Trading</h2>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
@@ -4852,16 +4854,16 @@ ${renderPaperTradingPanel()}
 
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
-<div id="mod-health" class="mod">
+<div id="mod-health" class="mod" data-title="Módulo · Health">
 ${renderHealthOSPanel()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
-<div id="mod-journal" class="mod">
+<div id="mod-journal" class="mod" data-title="Módulo · Journal">
 <h2>Cordelius Journal</h2>
 ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
-<div id="mod-intelligence" class="mod">
+<div id="mod-intelligence" class="mod" data-title="Módulo · Intelligence">
 
 <h2>Cordelius Intelligence</h2>
 ${renderCordeliusIntelligenceFeedPreview()}
@@ -4939,7 +4941,7 @@ ${(function(){
 </div></details>
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
-<div id="mod-alfredo" class="mod">
+<div id="mod-alfredo" class="mod" data-title="Módulo · Jarvis">
 <h2>Jarvis — Command Center</h2>
 ${renderJarvisCommandCenter(pv)}
 ${renderJarvisTopPriorities(pv)}
@@ -4957,7 +4959,7 @@ ${renderJarvisChangelog(pv)}
 ${renderMorningReport()}
 </div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
-<div id="mod-autopilot" class="mod">
+<div id="mod-autopilot" class="mod" data-title="Módulo · Autopilot">
 
 <h2>Cordelius Autopilot — Estado del sistema · Automatización</h2>
 
@@ -5129,6 +5131,35 @@ function showMod(name) {
   try { if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); } } catch(e) {}
 }
 window.showMod = showMod;
+
+// Scroll-spy: keep the nav button of the module in view highlighted while scrolling.
+(function() {
+  var ticking = false;
+  function currentModInView() {
+    var probe = window.innerHeight * 0.33;
+    var mods = document.querySelectorAll('.mod');
+    var cur = null;
+    for (var i = 0; i < mods.length; i++) {
+      if (mods[i].getBoundingClientRect().top <= probe) cur = mods[i].id.replace('mod-', '');
+    }
+    return cur || (mods[0] ? mods[0].id.replace('mod-', '') : null);
+  }
+  function syncNav() {
+    ticking = false;
+    try {
+      var name = currentModInView();
+      if (!name) return;
+      document.querySelectorAll('.nav-mod').forEach(function(b) { b.classList.remove('nav-active'); });
+      document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b) { b.classList.add('nav-active'); });
+    } catch (e) {}
+  }
+  window.addEventListener('scroll', function() {
+    if (ticking) return;
+    ticking = true;
+    if (window.requestAnimationFrame) requestAnimationFrame(syncNav); else setTimeout(syncNav, 120);
+  }, { passive: true });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', syncNav); else syncNav();
+})();
 
 function healthSet(id, value) {
   var el = document.getElementById(id);
