@@ -405,7 +405,17 @@ function portfolioValue() {
     const gainPct = costMXN ? (gainMXN / costMXN) * 100 : assetGainPct(a);
     const q = quotes[a.symbol] || {};
     const cq = a.type === "crypto" ? cryptoQuotes[a.symbol] : null;
-    return { ...a, liveValue: assetLiveValue(a), valueMXN, costMXN, gainMXN, gainPct, day: cq ? cq.day : Number(q.day || 0), score: assetScore(a), risk: assetRisk(a), signal: assetSignal(a), zones: tradeZones(a), quoteSource: assetQuoteSource(a), ind: indicators(a) };
+    const tech = assetTechnical(a);
+    const simInd = indicators(a); // heurístico seeded (legacy)
+    const quoteSource = assetQuoteSource(a);
+    // `ind` (legacy UI) usa valores reales cuando existen; si no, el simulado de siempre.
+    const ind = tech
+      ? { rsi: tech.rsi, macd: +tech.macd.macd.toFixed(2), momentum: tech.momentum, volatility: tech.volatility, trend: tech.trend }
+      : simInd;
+    const indicatorsFull = tech
+      ? { rsi: tech.rsi, macd: tech.macd.macd, signal: tech.macd.signal, histogram: tech.macd.histogram, momentum: tech.momentum, trend: tech.trend, volatility: tech.volatility, source: tech.source, status: "LIVE" }
+      : { rsi: simInd.rsi, macd: simInd.macd, signal: null, histogram: null, momentum: simInd.momentum, trend: simInd.trend, volatility: simInd.volatility, source: "heuristic-seed", status: "SIMULATED" };
+    return { ...a, liveValue: assetLiveValue(a), valueMXN, costMXN, gainMXN, gainPct, day: cq ? cq.day : Number(q.day || 0), score: assetScore(a), risk: assetRisk(a), signal: assetSignal(a), zones: tradeZones(a), quoteSource, priceQuoteStatus: quoteSource === "manual" ? "MANUAL" : "LIVE", indicatorStatus: indicatorsFull.status, indicatorSource: indicatorsFull.source, ind, indicators: indicatorsFull };
   });
   const totalValueMXN = assets.reduce((s, a) => s + a.valueMXN, 0);
   const totalCostMXN = assets.reduce((s, a) => s + a.costMXN, 0);
@@ -591,6 +601,125 @@ function cryptoFreshness() {
   if (!cryptoQuotesLastFetch) return "FALLBACK";
   return Date.now() - cryptoQuotesLastFetch > 30 * 60 * 1000 ? "STALE" : "LIVE";
 }
+// ---- TECHNICAL INDICATORS REALES — series de cierres diarios ----
+// Acciones: Finnhub candle si la key tiene acceso (free tier suele dar 403)
+// con fallback a Yahoo chart v8 (público). Cripto: CoinGecko market_chart.
+// Sin serie suficiente: NO se inventa; el activo queda SIMULATED/FALLBACK.
+let technicalIndicators = {};   // sym → { rsi, macd:{macd,signal,histogram}, momentum, trend, volatility, source, closes, t }
+let technicalLastFetch = 0;
+let technicalLastError = null;
+let finnhubCandlesBlocked = false;
+const TECH_TTL_MS = 2 * 3600 * 1000; // velas diarias: refrescar cada 2h basta
+
+function emaSeries(values, period) {
+  const k = 2 / (period + 1);
+  const out = [values[0]];
+  for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
+  return out;
+}
+function computeIndicatorsFromCloses(closes) {
+  const c = (closes || []).filter(v => Number.isFinite(v) && v > 0);
+  if (c.length < 35) return null; // serie insuficiente: no inventar
+  // RSI(14) Wilder
+  let gain = 0, loss = 0;
+  for (let i = 1; i <= 14; i++) { const d = c[i] - c[i - 1]; if (d >= 0) gain += d; else loss -= d; }
+  let avgG = gain / 14, avgL = loss / 14;
+  for (let i = 15; i < c.length; i++) {
+    const d = c[i] - c[i - 1];
+    avgG = (avgG * 13 + Math.max(d, 0)) / 14;
+    avgL = (avgL * 13 + Math.max(-d, 0)) / 14;
+  }
+  const rsi = avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL);
+  // MACD(12,26,9)
+  const e12 = emaSeries(c, 12), e26 = emaSeries(c, 26);
+  const macdLine = c.map((_, i) => e12[i] - e26[i]);
+  const sigLine = emaSeries(macdLine.slice(25), 9);
+  const macd = macdLine[macdLine.length - 1];
+  const signal = sigLine[sigLine.length - 1];
+  const histogram = macd - signal;
+  // Momentum 10 períodos (%)
+  const momentum = c.length > 11 ? ((c[c.length - 1] / c[c.length - 11]) - 1) * 100 : 0;
+  // Volatilidad: stdev de retornos diarios (últimos 20)
+  const rets = [];
+  for (let i = Math.max(1, c.length - 20); i < c.length; i++) rets.push(c[i] / c[i - 1] - 1);
+  const mean = rets.reduce((s, r) => s + r, 0) / rets.length;
+  const stdev = Math.sqrt(rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length) * 100;
+  const volatility = stdev > 3 ? "ALTA" : stdev > 1.2 ? "MEDIA" : "BAJA";
+  // Tendencia: histograma MACD + precio vs SMA20
+  const sma20 = c.slice(-20).reduce((s, v) => s + v, 0) / 20;
+  const last = c[c.length - 1];
+  const trend = histogram > 0 && last > sma20 ? "ALCISTA" : histogram < 0 && last < sma20 ? "BAJISTA" : "LATERAL";
+  return {
+    rsi: Math.round(rsi),
+    macd: { macd: +macd.toFixed(4), signal: +signal.toFixed(4), histogram: +histogram.toFixed(4) },
+    momentum: +momentum.toFixed(2),
+    trend, volatility,
+    closes: c.length
+  };
+}
+
+async function fetchDailyCloses(a) {
+  if (a.type === "crypto") {
+    const id = COINGECKO_IDS[a.symbol];
+    if (!id) return null;
+    const r = await apiGet(`https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=mxn&days=60&interval=daily`);
+    const prices = r && Array.isArray(r.prices) ? r.prices.map(p => Number(p[1])) : null;
+    return prices && prices.length >= 35 ? { closes: prices, source: "coingecko" } : null;
+  }
+  const ticker = a.liveTicker || a.symbol;
+  if (FINNHUB_API_KEY && !finnhubCandlesBlocked) {
+    const to = Math.floor(Date.now() / 1000), from = to - 86400 * 100;
+    const r = await apiGet(`https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(ticker)}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`);
+    if (r && r.s === "ok" && Array.isArray(r.c) && r.c.length >= 35) return { closes: r.c, source: "finnhub" };
+    if (r && r.error) finnhubCandlesBlocked = true; // free tier sin acceso: no insistir
+  }
+  const y = await apiGet(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=3mo&interval=1d`);
+  const res = y && y.chart && y.chart.result && y.chart.result[0];
+  const closes = res && res.indicators && res.indicators.quote && res.indicators.quote[0] ? (res.indicators.quote[0].close || []).filter(v => Number.isFinite(v)) : null;
+  return closes && closes.length >= 35 ? { closes, source: "yahoo" } : null;
+}
+
+let technicalLastGapRetry = 0;
+async function refreshTechnicalIndicators(force) {
+  const now = Date.now();
+  const fullDue = force || !technicalLastFetch || now - technicalLastFetch >= TECH_TTL_MS;
+  // Entre refresques completos, solo reintentar huecos (máx 1 pasada cada 5 min).
+  const targets = fullDue ? PORTFOLIO : PORTFOLIO.filter(a => !assetTechnical(a));
+  if (!targets.length) return;
+  if (!fullDue && now - technicalLastGapRetry < 5 * 60 * 1000) return;
+  if (!fullDue) technicalLastGapRetry = now;
+  let ok = 0, fail = 0;
+  for (const a of targets) {
+    try {
+      const serie = await fetchDailyCloses(a);
+      const ind = serie ? computeIndicatorsFromCloses(serie.closes) : null;
+      if (ind) { technicalIndicators[a.symbol] = { ...ind, source: serie.source, t: Date.now() }; ok++; }
+      else fail++;
+    } catch (e) { fail++; }
+    // CoinGecko free tolera ~5-6 req/min: espaciar las llamadas cripto.
+    if (a.type === "crypto") await new Promise(r => setTimeout(r, 7000));
+  }
+  if (ok > 0) {
+    if (fullDue) technicalLastFetch = Date.now();
+    technicalLastError = fail ? `${fail}_sin_serie` : null;
+  } else if (fullDue) technicalLastError = "no_series_available";
+}
+
+function assetTechnical(a) {
+  const t = technicalIndicators[a.symbol];
+  return t && Date.now() - t.t < 24 * 3600 * 1000 ? t : null; // >24h: ya no es confiable
+}
+function indicatorsFreshness() {
+  const live = PORTFOLIO.filter(a => assetTechnical(a)).length;
+  if (live === PORTFOLIO.length && live > 0) return "LIVE";
+  if (live > 0) return "MIXED";
+  return technicalLastError ? "FALLBACK" : "SIMULATED";
+}
+function indicatorCounts() {
+  const live = PORTFOLIO.filter(a => assetTechnical(a)).length;
+  return { live, simulated: PORTFOLIO.length - live };
+}
+
 // Fuente real con la que se valuó cada activo (para badges y conteos honestos).
 function assetQuoteSource(a) {
   if (a.type === "crypto") { const cq = cryptoQuotes[a.symbol]; return cq && Number.isFinite(cq.priceMXN) ? cq.source : "manual"; }
@@ -1491,6 +1620,8 @@ function computeJarvisBrain() {
   if (jd.count === 0 || !journalEntries.some(e => (e.date || "").slice(0, 10) === todayKey())) nextActions.push("Registrar nota del día en Journal (2 min).");
   const topOpp = (opp.topOpportunities || [])[0];
   if (topOpp) nextActions.push(`Leer research de ${topOpp.symbol} (${topOpp.score}/100) — paper only.`);
+  const rsiExtremes = pv.assets.filter(x => x.indicatorStatus === "LIVE" && (x.ind.rsi >= 70 || x.ind.rsi <= 30)).slice(0, 3);
+  if (rsiExtremes.length) nextActions.push(`RSI extremo (real, educativo): ${rsiExtremes.map(x => `${x.symbol} ${x.ind.rsi}`).join(", ")} — solo contexto técnico, no es consejo financiero.`);
   if (!nextActions.length) nextActions.push("Todo en orden: revisa el Today Feed y sigue con tu día.");
 
   const topFocus = warnings.find(w => w.severity === "CRITICAL")?.text
@@ -1508,7 +1639,7 @@ function computeJarvisBrain() {
         cryptoQuotes: cryptoFreshness(),
         news: FINNHUB_API_KEY ? "LIVE" : "FALLBACK",
         mxAssets: "MANUAL",
-        indicators: "SIMULATED"
+        indicators: indicatorsFreshness()
       }
     },
     topFocus,
@@ -4401,7 +4532,8 @@ const BADGE_META = {
   STALE:     { color: "#fb923c", title: "Dato real pero viejo" },
   SIMULATED: { color: "#a78bfa", title: "Simulado/determinista, no real" },
   MANUAL:    { color: "#3b9dff", title: "Capturado a mano" },
-  HEURISTIC: { color: "#9fb3c8", title: "Calculado con reglas locales" }
+  HEURISTIC: { color: "#9fb3c8", title: "Calculado con reglas locales" },
+  MIXED:     { color: "#67e8f9", title: "Parte real, parte simulado — ver detalle por activo" }
 };
 function statusBadge(status) {
   const m = BADGE_META[status] || BADGE_META.HEURISTIC;
@@ -5212,7 +5344,8 @@ ${renderHomePortal(pv, reg)}
   <span>Acciones USD ${statusBadge(quotesFreshness())}</span>
   <span>Cripto Bitso/CoinGecko ${statusBadge(cryptoFreshness())}</span>
   <span>México/GBM ${statusBadge("MANUAL")}</span>
-  <span>Indicadores y scores ${statusBadge("SIMULATED")}</span>
+  <span>Indicadores ${statusBadge(indicatorsFreshness())}${indicatorsFreshness() === "MIXED" ? `<span style="font-size:9px;color:#67e8f9"> ${indicatorCounts().live}/${PORTFOLIO.length} reales</span>` : ""}</span>
+  <span>Scores ${statusBadge("SIMULATED")}</span>
   <span>Paper trading ${statusBadge("SIMULATED")}</span>
 </div>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
@@ -6755,6 +6888,11 @@ const server = http.createServer(async (req, res) => {
         cryptoQuotes: cryptoFreshness(),
         cryptoQuotesLastFetch: cryptoQuotesLastFetch ? new Date(cryptoQuotesLastFetch).toISOString() : null,
         cryptoQuotesError: cryptoQuotesError,
+        technicalIndicators: indicatorsFreshness(),
+        technicalIndicatorsLastFetch: technicalLastFetch ? new Date(technicalLastFetch).toISOString() : null,
+        technicalIndicatorsError: technicalLastError,
+        liveIndicatorsCount: indicatorCounts().live,
+        simulatedIndicatorsCount: indicatorCounts().simulated,
         ...(() => { try { const pv = portfolioValue(); let live = 0; for (const a of pv.assets) if (a.quoteSource !== "manual") live++; return { liveAssetsCount: live, manualAssetsCount: pv.assets.length - live }; } catch (e) { return { liveAssetsCount: null, manualAssetsCount: null }; } })(),
         quiver: QUIVER_API_KEY ? "OK" : "PENDIENTE",
         journal: journalCount !== null ? "OK" : "ERROR",
@@ -7677,6 +7815,15 @@ async function boot() {
 
     try {
       await Promise.race([
+        refreshTechnicalIndicators(),
+        new Promise(resolve => setTimeout(resolve, 25000))
+      ]);
+    } catch (e) {
+      console.log("refreshTechnicalIndicators background omitido:", e.message);
+    }
+
+    try {
+      await Promise.race([
         fetchNews(),
         new Promise(resolve => setTimeout(resolve, 8000))
       ]);
@@ -7723,6 +7870,8 @@ async function boot() {
       } catch (e) {
         console.log("refreshCryptoQuotes interval omitido:", e.message);
       }
+
+      try { refreshTechnicalIndicators(); } catch (e) {} // TTL interno de 2h; no martillea APIs
 
       try { savePortfolioPoint(); } catch (e) {}
       try { botTick(); } catch (e) {}
