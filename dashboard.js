@@ -4919,7 +4919,6 @@ function render() {
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="${settings.autoRefreshSeconds}">
 <title>${esc(CORDA_APP_NAME)}</title>
 <style>
 :root{--bg:#02040a;--panel:rgba(7,16,30,.72);--line:rgba(120,160,210,.16);--muted:#9fb3c8;--green:#00ff99;--red:#ff4d6d;--blue:#3b9dff;--gold:#ffd35c;--text:#eaf6ff}
@@ -5040,6 +5039,17 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .news-item .ni-caret{transition:.2s;flex:0 0 auto;opacity:.5;font-size:11px}
 .news-item[open] .ni-caret{transform:rotate(180deg)}
 #research-result{animation:fade .3s ease}
+#cmdk-overlay{position:fixed;inset:0;z-index:200;display:none;background:rgba(2,4,10,.62);backdrop-filter:blur(7px)}
+#cmdk{width:min(640px,calc(100vw - 32px));margin:9vh auto 0;background:rgba(7,16,30,.97);border:1px solid rgba(0,255,153,.25);border-radius:20px;box-shadow:0 30px 90px rgba(0,0,0,.6),0 0 60px rgba(0,255,153,.1);overflow:hidden;animation:fade .18s ease}
+#cmdk-input{width:100%;background:transparent;border:none;outline:none;color:#eaf6ff;font-size:17px;padding:18px 20px;border-bottom:1px solid rgba(120,160,210,.12);font-family:inherit}
+#cmdk-list{max-height:44vh;overflow-y:auto;padding:8px}
+.cmdk-item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;cursor:pointer;font-size:14px;color:#c8d8f0}
+.cmdk-item.sel{background:rgba(0,255,153,.1);color:#fff;border-left:2px solid #00ff99}
+.cmdk-hint{color:#5a6674;font-size:11px;white-space:nowrap}
+#cmdk-result{padding:14px 18px;border-top:1px solid rgba(120,160,210,.12);font-size:13px;color:#c8d8f0;max-height:32vh;overflow-y:auto;display:none;line-height:1.5}
+#cmdk-result b{color:#00ff99}
+.cmdk-kbd{border:1px solid rgba(120,160,210,.25);border-radius:6px;padding:1px 6px;font-size:10px;color:#9fb3c8;background:rgba(0,0,0,.3)}
+.cmdk-open-btn{cursor:pointer;font-family:inherit}
 </style></head><body>
 <aside class="sidebar">
   <div class="sidebar-brand">
@@ -5105,6 +5115,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </header>
 
 <div class="toolbar">
+  <button class="switch cmdk-open-btn" onclick="openCmdk()" style="border-color:rgba(0,255,153,.3);background:rgba(0,255,153,.06)"><b style="color:#00ff99">⌘K</b>&nbsp;Ask Jarvis · Command</button>
   <a class="switch" href="/toggle-thinking"><span class="dot"></span>Thinking Mode: <b>${settings.thinkingEnabled ? "ON" : "OFF"}</b></a>
   <span class="switch">Refresh: <b>${settings.autoRefreshSeconds}s</b></span>
   <span class="switch">Finnhub: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
@@ -5468,6 +5479,119 @@ ${renderAlertsPanel()}
 
 <div class="disclaimer">Cordelius es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
 <div id="_corde_debug" data-commit="${GIT_COMMIT}" style="position:fixed;bottom:8px;right:8px;z-index:99999;background:rgba(0,0,0,.85);color:#00ff99;font-size:10px;padding:5px 9px;border-radius:8px;font-family:monospace;pointer-events:none;border:1px solid rgba(0,255,153,.3)">STACKED · ${GIT_COMMIT}</div>
+
+<!-- ── COMMAND PALETTE (⌘K) ── -->
+<div id="cmdk-overlay" onclick="if(event.target===this)closeCmdk()">
+  <div id="cmdk">
+    <input id="cmdk-input" placeholder="Escribe un comando o pregunta… (Esc cierra)" autocomplete="off">
+    <div id="cmdk-list"></div>
+    <div id="cmdk-result"></div>
+    <div style="display:flex;justify-content:space-between;padding:8px 16px;border-top:1px solid rgba(120,160,210,.08)">
+      <span style="font-size:10px;color:#5a6674"><span class="cmdk-kbd">↑↓</span> navegar · <span class="cmdk-kbd">↵</span> ejecutar</span>
+      <span style="font-size:10px;color:#5a6674">Cordelius Command Center · educativo</span>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var DEFENSIVE = ${settings.defensiveMode ? "true" : "false"};
+  var noteMode = false;
+  var sel = 0;
+  var ov, inp, list, result;
+
+  function fmtLines(title, lines){ return '<b>'+title+'</b><br>'+lines.map(function(l){return '· '+esc2(l);}).join('<br>'); }
+  function esc2(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function showResult(html){ result.style.display='block'; result.innerHTML=html; }
+  function getJSON(url, cb){ fetch(url).then(function(r){return r.json();}).then(cb).catch(function(e){ showResult('Error: '+esc2(e.message)); }); }
+
+  var ACTIONS = [
+    { label:'Brief de hoy', hint:'resumen ejecutivo', run:function(){ showResult('Cargando…'); getJSON('/api/daily-brief', function(d){ showResult(fmtLines(d.greeting||'Brief', d.lines||[])); }); } },
+    { label:'Qué hago ahora', hint:'next best actions', run:function(){ showResult('Pensando…'); getJSON('/api/jarvis/brain', function(b){ showResult(fmtLines('Next best actions', b.nextActions||[]) + '<br><br><b>Focus:</b> '+esc2(b.topFocus)); }); } },
+    { label:'Ver riesgo', hint:'warnings y concentración', run:function(){ showResult('Analizando…'); getJSON('/api/jarvis/brain', function(b){ var w=(b.warnings||[]).map(function(x){return '['+x.severity+'] '+x.text;}); showResult(fmtLines('Riesgo actual', w.length?w:['Sin warnings activos'])); }); } },
+    { label:'Health check', hint:'WHOOP readiness', run:function(){ showResult('Cargando…'); getJSON('/api/health-readiness', function(h){ showResult(fmtLines('Health ('+esc2(h.source||'')+')', ['Recovery: '+(h.recovery!=null?h.recovery+'%':'—'),'Sleep: '+(h.sleep!=null?h.sleep+'%':'—'),'Strain: '+(h.strain!=null?(+h.strain).toFixed(1):'—'),'HRV: '+(h.hrv!=null?Math.round(h.hrv)+' ms':'—'),'Modo: '+esc2(h.operatingMode||'—')])); }); } },
+    { label:'Explicar portafolio', hint:'abre Jarvis con la pregunta', run:function(){ closeCmdk(); try{ if(document.getElementById('alfredo-panel').style.display!=='block') toggleJarvis(); setJarvisQ('Explica mi portafolio: composición, riesgo y qué vigilar (educativo)'); }catch(e){} } },
+    { label:'Registrar nota', hint:'guarda en Journal', run:function(){ noteMode=true; result.style.display='none'; inp.value=''; inp.placeholder='Escribe tu nota y presiona Enter… (Esc cancela)'; list.innerHTML='<div style="padding:12px 14px;font-size:12px;color:#9fb3c8">Modo nota: lo que escribas se guarda en Journal como entrada rápida.</div>'; } },
+    { label:'Modo defensivo '+(DEFENSIVE?'OFF':'ON'), hint:'etiqueta educativa, sin órdenes', run:function(){ showResult('Cambiando…'); fetch('/api/mode/defensive',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ DEFENSIVE=d.defensiveMode; showResult('<b>Modo defensivo: '+(d.defensiveMode?'ACTIVADO':'DESACTIVADO')+'</b><br>'+esc2(d.note)+'<br><span style="color:#5a6674">El Home lo reflejará al recargar.</span>'); }); } },
+    { label:'Ver automations', hint:'reglas locales', run:function(){ showResult('Cargando…'); getJSON('/api/automations', function(a){ var f=(a.firedToday||[]).map(function(e){return '['+e.severity+'] '+e.name+': '+e.message;}); showResult(fmtLines('Reglas activas hoy', f.length?f:['Ninguna regla disparada hoy'])+'<br><span style="color:#5a6674">Cripto: '+a.criptoPct+'% del portafolio</span>'); }); } },
+    { label:'Memoria de Jarvis', hint:'resumen de memoria', run:function(){ showResult('Cargando…'); getJSON('/api/jarvis/memory', function(m){ showResult('<b>Memoria</b><br>'+esc2(m.summary)); }); } },
+    { label:'Ir a Jarvis', hint:'módulo', run:function(){ closeCmdk(); showMod('alfredo'); } },
+    { label:'Ir a Home', hint:'módulo', run:function(){ closeCmdk(); showMod('home'); } },
+    { label:'Ir a Trading', hint:'módulo', run:function(){ closeCmdk(); showMod('trading'); } },
+    { label:'Ir a Health', hint:'módulo', run:function(){ closeCmdk(); showMod('health'); } },
+    { label:'Ir a Journal', hint:'módulo', run:function(){ closeCmdk(); showMod('journal'); } },
+    { label:'Ir a Intelligence', hint:'módulo', run:function(){ closeCmdk(); showMod('intelligence'); } },
+    { label:'Ir a Autopilot', hint:'módulo', run:function(){ closeCmdk(); showMod('autopilot'); } }
+  ];
+
+  function filtered(){
+    var q = (inp.value||'').toLowerCase().trim();
+    if(!q) return ACTIONS;
+    return ACTIONS.filter(function(a){ return (a.label+' '+a.hint).toLowerCase().indexOf(q) !== -1; });
+  }
+  function renderList(){
+    if(noteMode) return;
+    var items = filtered();
+    if(sel >= items.length) sel = Math.max(0, items.length-1);
+    list.innerHTML = items.length ? items.map(function(a,i){
+      return '<div class="cmdk-item'+(i===sel?' sel':'')+'" data-i="'+i+'"><span>'+esc2(a.label)+'</span><span class="cmdk-hint">'+esc2(a.hint)+'</span></div>';
+    }).join('') : '<div style="padding:12px 14px;font-size:13px;color:#5a6674">Sin comandos. Prueba "brief", "riesgo", "nota"…</div>';
+    Array.prototype.forEach.call(list.children, function(el){
+      el.onclick = function(){ var i = +el.getAttribute('data-i'); if(!isNaN(i)){ sel=i; runSel(); } };
+    });
+  }
+  function runSel(){ var items = filtered(); if(items[sel]) items[sel].run(); }
+  function saveNote(){
+    var text = (inp.value||'').trim();
+    if(!text) return;
+    showResult('Guardando…');
+    fetch('/api/journal', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'text='+encodeURIComponent(text)+'&mood=neutral', redirect:'manual' })
+      .then(function(){ noteMode=false; inp.value=''; inp.placeholder='Escribe un comando o pregunta… (Esc cierra)'; renderList(); showResult('<b>Nota guardada en Journal ✓</b><br>'+esc2(text)); })
+      .catch(function(e){ showResult('Error guardando: '+esc2(e.message)); });
+  }
+
+  window.openCmdk = function(){
+    ov.style.display='block'; sel=0; noteMode=false;
+    inp.value=''; inp.placeholder='Escribe un comando o pregunta… (Esc cierra)';
+    result.style.display='none'; renderList();
+    setTimeout(function(){ inp.focus(); }, 30);
+  };
+  window.closeCmdk = function(){ ov.style.display='none'; noteMode=false; };
+  window.cmdkOpen = function(){ return ov && ov.style.display==='block'; };
+
+  document.addEventListener('DOMContentLoaded', init);
+  if(document.readyState !== 'loading') init();
+  function init(){
+    if(ov) return;
+    ov = document.getElementById('cmdk-overlay');
+    inp = document.getElementById('cmdk-input');
+    list = document.getElementById('cmdk-list');
+    result = document.getElementById('cmdk-result');
+    inp.addEventListener('input', function(){ sel=0; renderList(); });
+    inp.addEventListener('keydown', function(e){
+      if(e.key==='Escape'){ e.preventDefault(); noteMode ? window.openCmdk() : closeCmdk(); return; }
+      if(noteMode){ if(e.key==='Enter'){ e.preventDefault(); saveNote(); } return; }
+      if(e.key==='ArrowDown'){ e.preventDefault(); sel=Math.min(sel+1, filtered().length-1); renderList(); }
+      else if(e.key==='ArrowUp'){ e.preventDefault(); sel=Math.max(sel-1, 0); renderList(); }
+      else if(e.key==='Enter'){ e.preventDefault(); runSel(); }
+    });
+    document.addEventListener('keydown', function(e){
+      if((e.metaKey||e.ctrlKey) && (e.key==='k'||e.key==='K')){ e.preventDefault(); window.cmdkOpen() ? closeCmdk() : openCmdk(); }
+      else if(e.key==='Escape' && window.cmdkOpen()) closeCmdk();
+    });
+  }
+
+  // Auto-reload inteligente: sustituye al meta-refresh. No recarga si el
+  // palette o el chat de Jarvis están abiertos, o si estás escribiendo.
+  var REFRESH_S = ${Math.max(15, Number(settings.autoRefreshSeconds) || 60)};
+  setInterval(function(){
+    try {
+      var jar = document.getElementById('alfredo-panel');
+      var typing = document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+      if(!window.cmdkOpen() && !(jar && jar.style.display==='block') && !typing) location.reload();
+    } catch(e){}
+  }, REFRESH_S * 1000);
+})();
+</script>
 </body>
 <script>
 var _CORDE_MODS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
