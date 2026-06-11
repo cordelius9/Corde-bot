@@ -2580,6 +2580,14 @@ function renderQuiverPanel() {
   if (quiverData.error) {
     return '<div class="panel"><div class="muted">Quiver error: ' + esc(quiverData.error) + '</div></div>';
   }
+  const _qRows = (quiverData.congressional || []).length + (quiverData.insider || []).length + (quiverData.contracts || []).length;
+  if (_qRows === 0) {
+    return '<div class="panel" style="border-color:rgba(255,211,92,.2)"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      + statusBadge("LIVE")
+      + '<b style="font-size:14px">Quiver conectado, sin filas hoy</b>'
+      + '<span class="muted" style="font-size:12px">La API respondió pero congreso/insiders/contratos vienen vacíos para tus tickers. Se muestra "—" en vez de inventar datos.</span>'
+      + '</div></div>';
+  }
 
   const allM = [
     ...quiverData.congressional.map(x => ({ ...x, _ds: "congressional" })),
@@ -3545,7 +3553,7 @@ function renderTradingAIStatus() {
   return `<div style="max-width:1280px;margin:0 auto 8px;border:1px solid rgba(255,211,92,.18);border-radius:24px;padding:18px 22px;background:linear-gradient(135deg,rgba(255,211,92,.04),rgba(59,157,255,.04))">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
       <div>
-        <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">TRADING AI · PAPER MODE</div>
+        <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">TRADING AI · PAPER MODE ${statusBadge("SIMULATED")}</div>
         <div style="color:#9fb3c8;font-size:13px;margin-top:2px">Simulación educativa — sin dinero real — Alpaca pendiente de conexión</div>
       </div>
       <div style="display:flex;gap:8px">
@@ -5120,8 +5128,9 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <span class="switch">Refresh: <b>${settings.autoRefreshSeconds}s</b></span>
   <span class="switch">Finnhub: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
   <span class="switch"><span class="status-dot"></span>Server OK</span>
-  <span class="switch">WHOOP: <b class="${whoopLive ? "green" : "yellow"}">${whoopLive ? "OK" : WHOOP_CONFIGURED ? "FALLBACK" : "PENDIENTE"}</b></span>
-  <span class="switch">Market Data: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
+  <span class="switch">WHOOP: ${statusBadge(whoopLive ? "LIVE" : WHOOP_CONFIGURED ? "STALE" : "FALLBACK")}</span>
+  <span class="switch">Precios USD: ${statusBadge(quotesFreshness())}</span>
+  <span class="switch">Noticias: ${statusBadge(FINNHUB_API_KEY ? "LIVE" : "FALLBACK")}</span>
   <span class="switch">Journal: <b class="green">OK</b></span>
 </div>
 
@@ -5133,9 +5142,15 @@ ${renderHomePortal(pv, reg)}
 <!-- ── MOD: TRADING ──────────────────────────────────────── -->
 <div id="mod-trading" class="mod" data-title="Módulo · Trading">
 <h2>Cordelius Trading</h2>
+<div style="max-width:1280px;margin:0 auto 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:11px;color:#5a6674">
+  <span>Precios USD ${statusBadge(quotesFreshness())}</span>
+  <span>Valores GBM/Bitso ${statusBadge("MANUAL")}</span>
+  <span>Indicadores y scores ${statusBadge("SIMULATED")}</span>
+  <span>Paper trading ${statusBadge("SIMULATED")}</span>
+</div>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
-  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Régimen ${statusBadge(quotesFreshness() === "LIVE" ? "LIVE" : "SIMULATED")}</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
   <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
   <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
@@ -6324,10 +6339,20 @@ const server = http.createServer(async (req, res) => {
         whoopTokenExpiresAt: whoopTokenExpiryMs() ? new Date(whoopTokenExpiryMs()).toISOString() : null,
         whoopReconnect: hr.connected ? null : "visit /whoop/auth to re-authorize",
         market: FINNHUB_API_KEY ? "OK" : "FALLBACK",
+        quotes: quotesFreshness(),
+        quotesLastFetch: quotesLastFetch ? new Date(quotesLastFetch).toISOString() : null,
+        quotesError: quotesLastError,
         quiver: QUIVER_API_KEY ? "OK" : "PENDIENTE",
         journal: journalCount !== null ? "OK" : "ERROR",
         journalEntries: journalCount,
         portfolioHistoryPoints: Array.isArray(portfolioHistory) ? portfolioHistory.length : 0
+      },
+      commandCenter: {
+        commandPalette: true,
+        jarvisBrain: true,
+        todayFeed: true,
+        automations: (() => { try { const a = getAutomationState(); return { rules: a.rules.length, firedToday: a.firedToday.length, defensiveMode: a.defensiveMode }; } catch (e) { return { error: e.message }; } })(),
+        endpoints: ["/api/jarvis/brain", "/api/feed/today", "/api/automations", "POST /api/mode/defensive"]
       },
       note: "Tabs only scroll; no modules are hidden."
     });
