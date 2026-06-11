@@ -4635,8 +4635,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
-.js-loaded .corde-module{display:none}
-.js-loaded .corde-module.is-visible{display:block;min-height:200px;visibility:visible;opacity:1;position:relative;z-index:1}
+.mod{display:block !important;visibility:visible !important;opacity:1 !important;min-height:120px;position:relative;z-index:2;margin:24px 0;padding-top:12px;border-top:1px solid rgba(255,255,255,.12)}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
@@ -4658,7 +4657,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .news-item .ni-caret{transition:.2s;flex:0 0 auto;opacity:.5;font-size:11px}
 .news-item[open] .ni-caret{transform:rotate(180deg)}
 #research-result{animation:fade .3s ease}
-</style></head><body data-active-mod="alfredo"><script>document.documentElement.classList.add('js-loaded');</script>
+</style></head><body>
 <aside class="sidebar">
   <div class="sidebar-brand">
     <div style="font-size:28px;margin-bottom:4px">◎</div>
@@ -4733,12 +4732,12 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </div>
 
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
-<div id="mod-home" class="mod corde-module" style="display:none">
+<div id="mod-home" class="mod">
 ${renderHomePortal(pv, reg)}
 </div>
 
 <!-- ── MOD: TRADING ──────────────────────────────────────── -->
-<div id="mod-trading" class="mod corde-module" style="display:none">
+<div id="mod-trading" class="mod">
 <h2>Cordelius Trading</h2>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
@@ -4852,16 +4851,16 @@ ${renderPaperTradingPanel()}
 
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
-<div id="mod-health" class="mod corde-module" style="display:none">
+<div id="mod-health" class="mod">
 ${renderHealthOSPanel()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
-<div id="mod-journal" class="mod corde-module" style="display:none">
+<div id="mod-journal" class="mod">
 <h2>Cordelius Journal</h2>
 ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
-<div id="mod-intelligence" class="mod corde-module" style="display:none">
+<div id="mod-intelligence" class="mod">
 
 <h2>Cordelius Intelligence</h2>
 ${renderCordeliusIntelligenceFeedPreview()}
@@ -4940,7 +4939,7 @@ ${(function(){
 </div></details>
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
-<div id="mod-alfredo" class="mod corde-module is-visible active-mod" style="display:block">
+<div id="mod-alfredo" class="mod">
 <h2>Jarvis — Command Center</h2>
 ${renderJarvisCommandCenter(pv)}
 ${renderJarvisTopPriorities(pv)}
@@ -4958,7 +4957,7 @@ ${renderJarvisChangelog(pv)}
 ${renderMorningReport()}
 </div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
-<div id="mod-autopilot" class="mod corde-module" style="display:none">
+<div id="mod-autopilot" class="mod">
 
 <h2>Cordelius Autopilot</h2>
 
@@ -5086,105 +5085,50 @@ ${renderAlertsPanel()}
 
 
 <div class="disclaimer">Cordelius es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
-<div id="_corde_debug" style="position:fixed;bottom:8px;right:8px;z-index:9999;background:rgba(0,0,0,.85);color:#00ff99;font-size:10px;padding:5px 9px;border-radius:8px;font-family:monospace;pointer-events:none;border:1px solid rgba(0,255,153,.3)">mod:init</div>
+<div id="_corde_debug" style="position:fixed;bottom:8px;right:8px;z-index:99999;background:rgba(0,0,0,.85);color:#00ff99;font-size:10px;padding:5px 9px;border-radius:8px;font-family:monospace;pointer-events:none;border:1px solid rgba(0,255,153,.3)">STACKED MODE ACTIVE · hash=</div>
 </body>
 <script>
 var _CORDE_MODS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
 function validModName(name) {
   return _CORDE_MODS.indexOf(name) !== -1;
 }
+// STACKED MODE: all modules are always visible, stacked vertically.
+// showMod never hides anything — nav buttons only scroll to the chosen module.
 function showMod(name) {
   if (!validModName(name)) name = 'alfredo';
-  if (!document.getElementById('mod-' + name)) name = 'alfredo';
-
   var selected = document.getElementById('mod-' + name);
 
-  // Step 1: hide ALL corde-module elements via class + direct inline style
-  // No !important in CSS → inline style always wins. No specificity battle possible.
-  var allMods = document.querySelectorAll('.corde-module');
-  for (var _i = 0; _i < allMods.length; _i++) {
-    allMods[_i].classList.remove('is-visible');
-    allMods[_i].classList.remove('active-mod');
-    allMods[_i].style.display = 'none';
-    allMods[_i].style.visibility = '';
-    allMods[_i].style.opacity = '';
-  }
-
-  // Step 2: show selected — class + direct inline style (belt-and-suspenders, no !important)
-  if (selected) {
-    selected.classList.add('is-visible');
-    selected.classList.add('active-mod');
-    selected.style.display = 'block';
-    selected.style.visibility = 'visible';
-    selected.style.opacity = '1';
-  }
-
-  // Keep body data attribute for debugging (not relied on for visibility)
-  try { document.body.dataset.activeMod = name; } catch(e) {}
-
-  // Step 3: nav active state
+  // Nav active state
   try {
     document.querySelectorAll('.nav-mod').forEach(function(b) { b.classList.remove('nav-active'); });
     document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b) { b.classList.add('nav-active'); });
   } catch(e) {}
 
-  // Step 4: persist + update hash
-  try { localStorage.setItem('corde_mod', name); } catch(e) {}
+  // Hash + persistence
   try {
     if (window.location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
   } catch(e) {}
+  try { localStorage.setItem('corde_mod', name); } catch(e) {}
 
-  // Step 5: scroll to top
-  try { requestAnimationFrame(function() { window.scrollTo(0, 0); }); } catch(e) {}
+  // Scroll the selected module into view
+  try {
+    if (selected) selected.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch(e) {
+    try { if (selected) selected.scrollIntoView(); } catch(e2) {}
+  }
 
-  // Step 6: update permanent debug label
+  // Debug label
   try {
     var _lbl = document.getElementById('_corde_debug');
-    if (_lbl) _lbl.textContent = 'mod:' + name + ' h:' + (selected ? selected.offsetHeight : 0);
+    if (_lbl) _lbl.textContent = 'STACKED MODE ACTIVE · hash=' + (window.location.hash || '#' + name);
   } catch(e) {}
 
-  // Step 7: module-specific data loaders
+  // Module-specific data loaders
   try { if (name === 'health') loadHealthOS(); } catch(e) {}
   try { if (name === 'journal') loadJournalAuto(); } catch(e) {}
   try { if (name === 'intelligence') loadIntelligenceFeed(); } catch(e) {}
   try { if (name === 'alfredo') loadJarvisContext(); } catch(e) {}
   try { if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); } } catch(e) {}
-
-  // Step 8: fallback card + emergency stack-view if height collapsed after 300ms
-  try {
-    var _el = selected;
-    setTimeout(function() {
-      var _h = _el ? _el.offsetHeight : 0;
-      // Update debug label with post-render height
-      try {
-        var _lbl2 = document.getElementById('_corde_debug');
-        if (_lbl2) _lbl2.textContent = 'mod:' + name + ' h:' + _h;
-      } catch(e) {}
-      if (_h >= 40) return;
-      // Inject diagnostic card inside the collapsed module
-      var _id = '_corde_fbk_' + name;
-      if (!document.getElementById(_id) && _el) {
-        var _d = document.createElement('div');
-        _d.id = _id;
-        _d.style.cssText = 'display:block;padding:16px;background:#1a0000;border:2px solid #ff4d6d;border-radius:12px;margin:16px;color:#ff4d6d;font-size:12px;font-family:monospace;white-space:pre-wrap';
-        _d.textContent = 'Module render fallback: active module exists but height is collapsed' +
-          '\nname: ' + name +
-          '\nclassName: ' + (_el.className || '') +
-          '\nstyle.display: ' + (_el.style.display || '') +
-          '\nstyle.visibility: ' + (_el.style.visibility || '') +
-          '\nstyle.opacity: ' + (_el.style.opacity || '') +
-          '\noffsetHeight: ' + _h;
-        _el.insertBefore(_d, _el.firstChild);
-      }
-      // Emergency stack-view: inject style that force-shows ALL modules stacked
-      if (!document.getElementById('_corde_ems')) {
-        var _fs = document.createElement('style');
-        _fs.id = '_corde_ems';
-        _fs.textContent = '.corde-module{display:block!important;visibility:visible!important;opacity:1!important;min-height:auto!important;margin-bottom:32px;border-top:2px solid rgba(255,77,109,.25)}';
-        document.head.appendChild(_fs);
-      }
-    }, 300);
-  } catch(e) {}
 }
 window.showMod = showMod;
 
@@ -5498,15 +5442,20 @@ async function researchTicker() {
 }
 
 function _cordeliusInit() {
-  var saved = '';
-  var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
-  try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
-  var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'alfredo');
-  showMod(activeMod);
+  // STACKED MODE: every module is already visible; load all data sources up front.
+  try { loadHealthOS(); } catch(e) {}
   try { loadJournalAuto(); } catch(e) {}
   try { loadJarvisContext(); } catch(e) {}
   try { loadIntelligenceFeed(); } catch(e) {}
+  try { loadAutopilotDatabase(); } catch(e) {}
   try { loadOpportunityEngine(); } catch(e) {}
+  try {
+    var _lbl = document.getElementById('_corde_debug');
+    if (_lbl) _lbl.textContent = 'STACKED MODE ACTIVE · hash=' + (window.location.hash || '(none)');
+  } catch(e) {}
+  // Only scroll when the URL carries an explicit module hash
+  var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
+  if (validModName(hashMod)) showMod(hashMod);
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', _cordeliusInit);
@@ -5814,12 +5763,9 @@ const server = http.createServer(async (req, res) => {
     const gitRev = (() => { try { return require("child_process").execSync("git rev-parse --short HEAD", {encoding:"utf8"}).trim(); } catch(e) { return "unknown"; } })();
     return sendJSON(res, { ok: true, ts: Date.now(),
       modules: ["home","trading","health","journal","intelligence","alfredo","autopilot"],
-      defaultMod: "alfredo", ssrActiveMod: "alfredo",
-      cssStrategy: ".js-loaded .corde-module{display:none} .js-loaded .corde-module.is-visible{display:block} — no !important; inline style always wins",
-      ssrDefaultMod: "alfredo has is-visible+style=block; others style=none",
-      jsLoadedClass: "added to <html> by early inline script before body content renders",
+      cssStrategy: "stacked fallback — all modules visible",
       gitCommit: gitRev,
-      note: "showMod: classList.remove(is-visible) all + el.style.display=none all, then classList.add(is-visible) + el.style.display=block for selected. Emergency: offsetHeight<40 after 300ms injects stack-view style."
+      note: "Tabs only scroll; no modules are hidden."
     });
   }
   if (req.method === "POST" && path === "/api/alerts/dry-run") {
