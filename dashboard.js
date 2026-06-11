@@ -4535,6 +4535,7 @@ function render() {
   const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Jarvis AI:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
   const botTables = renderBotTables();
   const topTV = TV_SYMBOL.BBVA || "BMV:BBVA";
+  const whoopLive = computeHealthReadiness().connected;
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -4726,7 +4727,7 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <span class="switch">Refresh: <b>${settings.autoRefreshSeconds}s</b></span>
   <span class="switch">Finnhub: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
   <span class="switch"><span class="status-dot"></span>Server OK</span>
-  <span class="switch">WHOOP: <b class="${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "OK" : "PENDIENTE"}</b></span>
+  <span class="switch">WHOOP: <b class="${whoopLive ? "green" : "yellow"}">${whoopLive ? "OK" : WHOOP_CONFIGURED ? "FALLBACK" : "PENDIENTE"}</b></span>
   <span class="switch">Market Data: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
   <span class="switch">Journal: <b class="green">OK</b></span>
 </div>
@@ -4867,7 +4868,6 @@ ${renderCordeliusIntelligenceFeedPreview()}
 ${renderStockResearch()}
 
 ${renderDailyBrief()}
-${renderMorningReport()}
 
 <a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos · Políticos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
 ${renderQuiverIntelligencePanel()}
@@ -4959,9 +4959,7 @@ ${renderMorningReport()}
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
 <div id="mod-autopilot" class="mod">
 
-<h2>Cordelius Autopilot</h2>
-
-<h2>Autopilot — Estado del sistema · Automatización</h2>
+<h2>Cordelius Autopilot — Estado del sistema · Automatización</h2>
 
 <section id="autopilot-db-panel" style="margin:22px 0;padding:22px;border-radius:28px;background:radial-gradient(circle at 0% 0%,rgba(0,255,170,.18),transparent 34%),linear-gradient(135deg,rgba(5,11,24,.96),rgba(8,18,35,.88));border:1px solid rgba(0,255,170,.22);box-shadow:0 20px 70px rgba(0,0,0,.42)">
   <div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px">
