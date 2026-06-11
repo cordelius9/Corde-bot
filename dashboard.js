@@ -435,8 +435,76 @@ function marketRegime() {
 function savePortfolioPoint() {
   const pv = portfolioValue();
   portfolioHistory.push({ t: Date.now(), total: pv.totalValueMXN, pnl: pv.totalGainPct });
-  if (portfolioHistory.length > 600) portfolioHistory = portfolioHistory.slice(-600);
+  // Retención multi-día: antes el cap de 600 puntos/minuto borraba todo lo
+  // anterior a ~10h. Ahora: resolución por minuto las últimas 24h, 1 punto
+  // por hora para lo más viejo. Se conserva el rango completo de fechas.
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
+  const old = portfolioHistory.filter(p => p.t < dayAgo);
+  const recent = portfolioHistory.filter(p => p.t >= dayAgo);
+  const hourly = [];
+  let lastHour = null;
+  for (const p of old) {
+    const hr = Math.floor(p.t / 3600000);
+    if (hr !== lastHour) { hourly.push(p); lastHour = hr; }
+  }
+  portfolioHistory = hourly.concat(recent).slice(-2000);
   saveJSON(HISTORY_FILE, portfolioHistory);
+}
+
+// ── ANTI-REPETICIÓN / HISTORIA REAL ──
+// Reduce series con puntos casi idénticos: 1 representativo por bucket
+// temporal, y solo si el valor cambió lo suficiente vs el último mostrado.
+function dedupeTimeline(points, { bucketMs = 6 * 3600 * 1000, minDeltaPct = 0.4, max = 3, key = "total" } = {}) {
+  const out = [];
+  let lastBucket = null, lastVal = null;
+  for (const p of points) {
+    if (!p || !Number.isFinite(p.t)) continue;
+    const bucket = Math.floor(p.t / bucketMs);
+    const v = Number(p[key]);
+    const changed = lastVal === null || Math.abs((v - lastVal) / (lastVal || 1)) * 100 >= minDeltaPct;
+    if (bucket !== lastBucket && (changed || out.length === 0)) {
+      out.push(p); lastBucket = bucket; lastVal = v;
+    }
+  }
+  // siempre incluir el último punto si difiere del último mostrado
+  const last = points[points.length - 1];
+  if (last && out[out.length - 1] !== last && lastVal !== null && Math.abs((Number(last[key]) - lastVal) / (lastVal || 1)) * 100 >= minDeltaPct) out.push(last);
+  return out.slice(-max);
+}
+
+// Historia de equity multi-día: ancla diaria desde data/portfolio_snapshots.json
+// (summary.equity, último de cada día) + intradía de hoy desde portfolioHistory.
+// No inventa fechas: si solo hay un día, lo dice (mode: "limited").
+function buildDailyEquityHistory() {
+  const points = [];
+  const snaps = loadJSON(PORTFOLIO_SNAPSHOT_FILE, []);
+  const byDay = {};
+  for (const s of (Array.isArray(snaps) ? snaps : [])) {
+    const ts = Date.parse(s.timestamp || (s.summary && s.summary.timestamp) || "");
+    const eq = s.summary && Number(s.summary.equity);
+    if (!Number.isFinite(ts) || !Number.isFinite(eq)) continue;
+    const day = new Date(ts).toISOString().slice(0, 10);
+    if (!byDay[day] || ts > byDay[day].t) byDay[day] = { t: ts, total: eq, pnl: Number(s.summary.pnl) || 0 };
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  for (const [day, p] of Object.entries(byDay)) if (day !== today) points.push(p);
+  // intradía de hoy: 1 punto por hora + el último
+  let lastHour = null;
+  for (const p of portfolioHistory) {
+    const hr = Math.floor(p.t / 3600000);
+    if (hr !== lastHour) { points.push(p); lastHour = hr; }
+  }
+  const lastLive = portfolioHistory[portfolioHistory.length - 1];
+  if (lastLive && points[points.length - 1] !== lastLive) points.push(lastLive);
+  points.sort((a, b) => a.t - b.t);
+  const days = new Set(points.map(p => new Date(p.t).toISOString().slice(0, 10)));
+  return {
+    points,
+    rangeDays: days.size,
+    mode: days.size >= 2 ? "real" : "limited",
+    firstDate: points.length ? new Date(points[0].t).toISOString().slice(0, 10) : null,
+    lastDate: points.length ? new Date(points[points.length - 1].t).toISOString().slice(0, 10) : null
+  };
 }
 
 // ---- CHART SVG — ejes visibles, tooltips, tabla de datos ----
@@ -478,20 +546,27 @@ function spark(data, opts = {}) {
     yTicks.push(`<text x="${padLeft - 5}" y="${(y + 5).toFixed(1)}" fill="#9fb3c8" font-size="15" text-anchor="end">${fmtV(v)}</text>`);
   }
 
-  // X-axis: up to 7 date labels
+  // X-axis: up to 7 labels. Si el rango es intradía (<36h) mostrar hora;
+  // multi-día mostrar fecha — evita "jun 11, jun 11, jun 11…" repetido.
+  const tsAll = rawData.filter(d => d.t != null).map(d => d.t);
+  const spanMs = tsAll.length ? Math.max(...tsAll) - Math.min(...tsAll) : 0;
+  const intraday = spanMs > 0 && spanMs < 36 * 3600 * 1000;
+  const fmtT = t => intraday
+    ? new Date(t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })
+    : new Date(t).toLocaleDateString("es-MX", { month: "short", day: "numeric" });
   const xTicks = [];
   const xStep = Math.ceil(rawData.length / 6);
   rawData.forEach((d, i) => {
     if (i % xStep !== 0 && i !== rawData.length - 1) return;
     const p = xy[i];
-    const label = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric" }) : String(i + 1);
+    const label = d.t ? fmtT(d.t) : String(i + 1);
     xTicks.push(`<text x="${p.x.toFixed(1)}" y="${height - 6}" fill="#9fb3c8" font-size="13" text-anchor="middle">${label}</text>`);
   });
 
   // Dots with SVG <title> tooltips
   const dots = xy.map((p, i) => {
     if (i !== 0 && i !== rawData.length - 1 && i % Math.ceil(rawData.length / 8) !== 0) return "";
-    const tooltip = (p.t ? new Date(p.t).toLocaleDateString("es-MX") + " · " : "") + fmtV(p.v).replace("$", "$");
+    const tooltip = (p.t ? (intraday ? new Date(p.t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : new Date(p.t).toLocaleDateString("es-MX")) + " · " : "") + fmtV(p.v).replace("$", "$");
     return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${color}" stroke="#02040a" stroke-width="2"><title>${tooltip}</title></circle>`;
   }).join("");
 
@@ -500,7 +575,9 @@ function spark(data, opts = {}) {
   if (showTable && rawData.some(d => d.t != null) && rawData.length >= 3) {
     const recent = rawData.slice(-6);
     const rows = recent.map(d => {
-      const dateStr = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+      const dateStr = d.t ? (intraday
+        ? new Date(d.t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) + " hoy"
+        : new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })) : "-";
       return `<tr><td style="color:var(--muted);font-size:11px;padding:4px 8px">${dateStr}</td><td style="font-weight:700;text-align:right;padding:4px 8px">${fmtV(d.v)}</td></tr>`;
     }).join("");
     tableHtml = `<div style="overflow-x:auto;margin-top:6px"><table style="width:auto;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table></div>`;
@@ -1657,6 +1734,7 @@ function computeJarvisBrain() {
 }
 
 // Today Feed: timeline unificado de eventos del día (y ayer como contexto).
+let feedDedupeStats = { candidates: 0, shown: 0 };
 function buildTodayFeed() {
   const items = [];
   const push = (ts, type, title, detail, status) => {
@@ -1671,7 +1749,12 @@ function buildTodayFeed() {
       h.strain !== null ? `Strain ${h.strain.toFixed ? h.strain.toFixed(1) : h.strain} · HRV ${h.hrv || "—"} ms` : null, "LIVE");
   }
 
-  for (const p of portfolioHistory.slice(-6)) push(p.t, "portfolio", `Snapshot portafolio: ${money(p.total)}`, `P&L global ${pct(p.pnl)}`, "MANUAL");
+  // Snapshots deduplicados: máx 3 representativos (1 por bloque de 6h y solo
+  // si el total cambió ≥0.4%) en vez de 6 casi idénticos del mismo minuto.
+  const snapCandidates = portfolioHistory.slice(-360);
+  const snapShown = dedupeTimeline(snapCandidates, { bucketMs: 6 * 3600 * 1000, minDeltaPct: 0.4, max: 3 });
+  feedDedupeStats = { candidates: snapCandidates.length, shown: snapShown.length };
+  for (const p of snapShown) push(p.t, "portfolio", `Snapshot portafolio: ${money(p.total)}`, `P&L global ${pct(p.pnl)}`, "LIVE");
 
   for (const e of journalEntries.slice(0, 5)) {
     const ts = e.ts || Date.parse(e.date || "") || null;
@@ -1992,7 +2075,16 @@ function botTick() {
   }
   const eq = botValue();
   bot.equityHistory.push({ t: Date.now(), v: eq });
-  bot.equityHistory = bot.equityHistory.slice(-500);
+  // Retención multi-día (antes el cap de 500 minutos borraba todo lo >8h):
+  // minuto a minuto las últimas 24h, 1 punto/hora para lo anterior.
+  {
+    const dayAgo = Date.now() - 24 * 3600 * 1000;
+    const old = bot.equityHistory.filter(p => p.t < dayAgo);
+    const recent = bot.equityHistory.filter(p => p.t >= dayAgo);
+    const hourly = []; let lastHr = null;
+    for (const p of old) { const hr = Math.floor(p.t / 3600000); if (hr !== lastHr) { hourly.push(p); lastHr = hr; } }
+    bot.equityHistory = hourly.concat(recent).slice(-2000);
+  }
   const peak = Math.max(...bot.equityHistory.map(x => x.v), bot.initialCapital);
   bot.maxDrawdown = Math.max(bot.maxDrawdown || 0, peak ? ((peak - eq) / peak) * 100 : 0);
   bot.lastTick = new Date().toISOString();
@@ -3771,7 +3863,26 @@ function renderTradingAIStatus() {
 function renderPaperTradingPanel() {
   const idea = computeTradeIdea();
   const bt = renderBotTables();
+  const trades = bot.history || [];
+  const buys = trades.filter(t => t.type === "BUY");
+  const sells = trades.filter(t => t.type === "SELL");
+  const symbols = [...new Set(trades.map(t => t.symbol))];
+  const realizedPnl = trades.reduce((s, t) => s + (Number(t.pnl) || 0), 0);
+  const eq = bot.equityHistory || [];
+  const eqSpanH = eq.length > 1 ? (eq[eq.length - 1].t - eq[0].t) / 3600000 : 0;
+  const opsSummary = trades.length
+    ? `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;border:1px solid rgba(0,255,153,.14);border-radius:14px;padding:11px 16px;margin-bottom:12px;background:rgba(0,0,0,.18)">
+        ${statusBadge("SIMULATED")}
+        <span style="font-size:13px;color:#dbeafe"><b>${trades.length}</b> operaciones paper</span>
+        <span style="font-size:12px;color:#00ff99">${buys.length} BUY</span>
+        <span style="font-size:12px;color:#ff4d6d">${sells.length} SELL</span>
+        <span style="font-size:12px;color:#9fb3c8">Símbolos: ${symbols.map(esc).join(", ")}</span>
+        <span style="font-size:12px;color:${realizedPnl >= 0 ? "#00ff99" : "#ff4d6d"}">P&L realizado (sim): ${money(realizedPnl)}</span>
+        <span style="font-size:11px;color:#5a6674">${esc(trades[trades.length - 1] ? trades[trades.length - 1].time : "")} → ${esc(trades[0] ? trades[0].time : "")}</span>
+      </div>`
+    : `<div class="muted" style="border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:11px 16px;margin-bottom:12px;font-size:13px">Sin operaciones paper registradas todavía. Las decisiones disponibles aparecen abajo y en Autopilot.</div>`;
   return `<div style="max-width:1280px;margin:0 auto 16px">
+    ${opsSummary}
     ${idea.hasIdea ? `<div style="border:1px solid rgba(0,255,153,.18);border-radius:18px;padding:14px 20px;margin-bottom:14px;background:rgba(0,255,153,.03)">
       <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99;margin-bottom:8px">Idea de paper trade (hipotético — no ejecutar)</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
@@ -3781,6 +3892,7 @@ function renderPaperTradingPanel() {
       </div>
     </div>` : ""}
     ${spark(bot.equityHistory, { key: "v", color: "#00ff99", height: 220 })}
+    <div style="font-size:11px;color:${eqSpanH >= 36 ? "#9fb3c8" : "#ffd35c"};margin-top:4px">${eqSpanH >= 36 ? `Equity simulado · rango ${(eqSpanH / 24).toFixed(1)} días (timestamps reales)` : `Equity simulado intradía (~${eqSpanH.toFixed(1)}h) — historial limitado, se extiende solo. La bitácora de abajo sí cruza días.`}</div>
     <h2 style="font-size:18px;margin:16px 0 8px">Posiciones simuladas</h2>
     <div class="panel table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${bt.posRows}</tbody></table></div>
     <h2 style="font-size:18px;margin:16px 0 8px">Bitácora del bot</h2>
@@ -4132,12 +4244,31 @@ function renderAutopilotPanel() {
     { label: "PAPER MODE",   value: "ON",       sub: "Sin dinero real",   bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
     { label: "REAL TRADING", value: "OFF",      sub: "Desactivado",       bg: "rgba(255,77,109,.07)",   border: "rgba(255,77,109,.18)",   color: "#ff4d6d" },
     { label: "QUIVER",       value: quiverData.configured ? "ON" : "—",  sub: quiverData.configured ? "Datos en vivo" : "Agrega API key", bg: quiverData.configured ? "rgba(0,255,153,.07)" : "rgba(255,211,92,.07)", border: quiverData.configured ? "rgba(0,255,153,.18)" : "rgba(255,211,92,.18)", color: quiverData.configured ? "#00ff99" : "#ffd35c" },
-    { label: "ALPACA",       value: "PENDIENTE",sub: "Paper solo (F3)",   bg: "rgba(129,140,248,.07)",  border: "rgba(129,140,248,.18)",  color: "#818cf8" },
+    { label: "ALPACA",       value: "NO CONECTADO", sub: "Nunca órdenes reales", bg: "rgba(129,140,248,.07)",  border: "rgba(129,140,248,.18)",  color: "#818cf8" },
     { label: "WHOOP",        value: WHOOP_CONFIGURED ? "DETECTADO" : "PENDIENTE", sub: WHOOP_CONFIGURED ? "API key lista" : "Conecta para readiness", bg: WHOOP_CONFIGURED ? "rgba(0,255,153,.07)" : "rgba(244,114,182,.07)", border: WHOOP_CONFIGURED ? "rgba(0,255,153,.18)" : "rgba(244,114,182,.18)", color: WHOOP_CONFIGURED ? "#00ff99" : "#f472b6" },
   ];
+  const _apReal = (function(){
+    const decisions = loadJSON(TRADING_DECISION_FILE, []);
+    const lastDec = decisions[decisions.length - 1];
+    const snaps = loadJSON(PORTFOLIO_SNAPSHOT_FILE, []);
+    const lastSnap = Array.isArray(snaps) && snaps.length ? snaps[snaps.length - 1] : null;
+    const mem = loadJSON("data/autopilot_memory.json", null);
+    const memEntries = Array.isArray(mem) ? mem.length : mem && typeof mem === "object" ? Object.keys(mem).length : 0;
+    const opp = getOpportunityState();
+    return `<div style="border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:13px 16px;margin-bottom:14px;background:rgba(0,0,0,.18)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#818cf8;margin-bottom:8px">Estado real — qué hace y qué no</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;font-size:12px;color:#c8d8f0">
+        <div><b style="color:#3b9dff">Observa:</b> ${PORTFOLIO.length} activos del portafolio, ${MARKET_WATCHLIST.length} tickers de watchlist, ${(opp.topOpportunities || []).length} oportunidades scoring.</div>
+        <div><b style="color:#00ff99">Última decisión:</b> ${lastDec ? esc((lastDec.title || lastDec.action || lastDec.type || "registro") + " · " + (lastDec.timestamp || lastDec.date || "")) : "ninguna registrada"} ${statusBadge("SIMULATED")}</div>
+        <div><b style="color:#ffd35c">Último snapshot:</b> ${lastSnap ? esc(new Date(lastSnap.timestamp).toLocaleString("es-MX")) : "—"} · memoria: ${memEntries} entradas</div>
+        <div><b style="color:#ff4d6d">NO puede:</b> ejecutar órdenes reales, tocar dinero, conectarse a exchanges, modificar .env/tokens. Todo es paper/educativo.</div>
+      </div>
+    </div>`;
+  })();
   return `<div style="max-width:1280px;margin:0 auto 16px">
     <div class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.04)">
       <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Autopilot — Estado del sistema</div>
+      ${_apReal}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
         ${statusCards.map(c => `<div style="background:${c.bg};border:1px solid ${c.border};border-radius:12px;padding:10px 12px;text-align:center">
           <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:${c.color};margin-bottom:3px">${c.label}</div>
@@ -4540,6 +4671,90 @@ function statusBadge(status) {
   return `<span title="${esc(m.title)}" style="display:inline-block;border-radius:99px;padding:2px 8px;font-size:9px;font-weight:900;letter-spacing:.08em;color:${m.color};background:${m.color}14;border:1px solid ${m.color}33;vertical-align:middle">${esc(status)}</span>`;
 }
 
+// Sección colapsable con estado persistido en localStorage (clave data-clps).
+function collapsibleSection(id, title, summaryHtml, contentHtml, defaultOpen = false) {
+  return `<details class="clps" data-clps="${esc(id)}" ${defaultOpen ? "open" : ""} style="max-width:1280px;margin:0 auto 12px">
+    <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 20px;background:var(--panel);border:1px solid rgba(120,160,210,.14);border-radius:18px;user-select:none">
+      <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:15px">${title}</b>${summaryHtml || ""}</span>
+      <span class="clps-caret" style="font-size:11px;opacity:.55;transition:.2s">▼</span>
+    </summary>
+    <div style="padding-top:10px">${contentHtml}</div>
+  </details>`;
+}
+
+// Header neural: red de nodos SVG animada + estado del sistema en vivo.
+// Sin imágenes externas; todo inline. Premium/minimal/oscuro.
+function renderNeuralHeader() {
+  const h = computeHealthReadiness();
+  const nodes = [
+    [60, 30], [30, 62], [95, 58], [62, 88], [128, 34], [150, 70], [118, 92]
+  ];
+  const links = [[0,1],[0,2],[1,3],[2,3],[2,4],[4,5],[5,6],[3,6],[0,4]];
+  const svg = `<svg width="178" height="118" viewBox="0 0 178 118" fill="none" style="flex:0 0 auto">
+    ${links.map(([a,b],i) => `<line x1="${nodes[a][0]}" y1="${nodes[a][1]}" x2="${nodes[b][0]}" y2="${nodes[b][1]}" stroke="${i%3===0?"rgba(0,255,153,.5)":i%3===1?"rgba(59,157,255,.45)":"rgba(255,211,92,.35)"}" stroke-width="1.1" stroke-dasharray="5 6" style="animation:dash ${2.4+(i%4)*.7}s linear infinite"/>`).join("")}
+    ${nodes.map(([x,y],i) => `<circle cx="${x}" cy="${y}" r="${i===0?6:4}" fill="${i%3===0?"#00ff99":i%3===1?"#3b9dff":"#ffd35c"}" opacity=".9"><animate attributeName="r" values="${i===0?6:4};${i===0?7.5:5.5};${i===0?6:4}" dur="${2+(i%3)}s" repeatCount="indefinite"/></circle>`).join("")}
+  </svg>`;
+  const pills = [
+    { label: "SECURITY", on: true },
+    { label: "SESSION", on: !!CORDELIUS_ACCESS_KEY },
+    { label: "QUOTES", badge: quotesFreshness() },
+    { label: "CRYPTO", badge: cryptoFreshness() },
+    { label: "INDICATORS", badge: indicatorsFreshness() },
+    { label: "WHOOP", badge: h.configured ? "LIVE" : "FALLBACK" }
+  ];
+  return `<div class="panel" style="max-width:1280px;margin:8px auto 14px;padding:14px 22px;display:flex;gap:20px;align-items:center;flex-wrap:wrap;border:1px solid rgba(0,255,153,.14);background:linear-gradient(120deg,rgba(0,255,153,.05),rgba(59,157,255,.04) 60%,rgba(255,211,92,.03))">
+    ${svg}
+    <div style="flex:1;min-width:240px">
+      <div style="font-size:20px;font-weight:900;background:linear-gradient(90deg,#00ff99,#9bd3ff,#ffd35c);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.04em">CORDELIUS · NEURAL OS</div>
+      <div style="font-size:11px;color:#9fb3c8;margin:4px 0 10px">Datos → análisis → señales → decisiones · pensamientos en vivo · educativo, no asesoría financiera ni médica</div>
+      <div style="display:flex;gap:7px;flex-wrap:wrap">
+        ${pills.map(p => p.badge
+          ? `<span style="display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:900;letter-spacing:.08em;color:#9fb3c8">${esc(p.label)} ${statusBadge(p.badge)}</span>`
+          : `<span style="display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:3px 10px;font-size:9px;font-weight:900;letter-spacing:.08em;background:${p.on ? "rgba(0,255,153,.1)" : "rgba(255,211,92,.1)"};color:${p.on ? "#00ff99" : "#ffd35c"};border:1px solid ${p.on ? "rgba(0,255,153,.25)" : "rgba(255,211,92,.25)"}">${esc(p.label)} ${p.on ? "ON" : "OFF"}</span>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
+// Action Center: ÚNICO lugar para preguntas, next actions, alerts y
+// automations. Los demás módulos referencian aquí en vez de duplicar.
+function renderActionCenter() {
+  const b = computeJarvisBrain();
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const ctx = alfredoDailyContext(h, pv, reg);
+  const automation = getAutomationState();
+  const alerts = loadAlerts().filter(a => !a.acknowledged).slice(-3).reverse();
+  const notes = loadJSON("data/jarvis_quick_notes.json", []);
+  const sevColor = s => s === "CRITICAL" ? "#ff4d6d" : s === "WARNING" ? "#ffd35c" : "#3b9dff";
+  const items = [];
+  for (const e of automation.firedToday) items.push({ icon: "⚙", color: sevColor(e.severity), text: e.message, tag: "automation" });
+  for (const a of alerts) items.push({ icon: "!", color: sevColor(a.severity || "WARNING"), text: a.title, tag: Date.parse(a.timestamp || "") < Date.now() - 24 * 3600 * 1000 ? "alerta · vieja" : "alerta" });
+  return `<div class="panel" id="action-center" style="max-width:1280px;margin:0 auto 16px;padding:18px 22px;border:1px solid rgba(255,211,92,.18);background:rgba(255,211,92,.03)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#ffd35c">◈ Action Center · Inbox</div>
+      <div style="font-size:10px;color:#5a6674">Único lugar de preguntas y acciones · ⌘K para actuar</div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px">
+      <div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Jarvis pregunta</div>
+        <div style="font-size:15px;font-weight:800;color:#fff;line-height:1.35;margin-bottom:10px">${esc(ctx.question)}</div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Next best actions</div>
+        <ol style="margin:0;padding-left:18px">${b.nextActions.map(a => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(a)}</li>`).join("")}</ol>
+      </div>
+      <div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#fb923c;margin-bottom:6px">Avisos activos (${items.length})</div>
+        ${items.length ? items.slice(0, 6).map(i => `<div style="display:flex;gap:8px;align-items:start;border-left:3px solid ${i.color};padding:6px 10px;background:rgba(0,0,0,.18);border-radius:0 10px 10px 0;margin-bottom:6px">
+          <span style="color:${i.color};font-weight:900">${i.icon}</span>
+          <div style="flex:1"><div style="font-size:12px;color:#dbeafe;line-height:1.35">${esc(i.text)}</div><div style="font-size:9px;color:#5a6674;text-transform:uppercase;letter-spacing:.08em;margin-top:2px">${esc(i.tag)}</div></div>
+        </div>`).join("") : `<div class="muted" style="font-size:12px">— Sin avisos activos. Todo en orden.</div>`}
+        <div style="font-size:11px;color:#5a6674;margin-top:8px">Notas rápidas guardadas: ${Array.isArray(notes) ? notes.length : 0} · detalle completo de alertas en Autopilot ↓</div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderJarvisBrainPanel() {
   const b = computeJarvisBrain();
   const sevColor = s => s === "CRITICAL" ? "#ff4d6d" : s === "WARNING" ? "#ffd35c" : "#3b9dff";
@@ -4556,11 +4771,8 @@ function renderJarvisBrainPanel() {
     <div style="display:grid;grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);gap:16px">
       <div>
         <div style="font-size:13px;color:#9fb3c8;margin-bottom:6px">${esc(b.state.summary)}</div>
-        <div style="font-size:19px;font-weight:900;color:#fff;line-height:1.3;margin-bottom:12px">${esc(b.topFocus)}</div>
-        ${b.warnings.length ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">${b.warnings.slice(0, 4).map(w =>
-          `<div style="border-left:3px solid ${sevColor(w.severity)};padding:6px 10px;background:rgba(0,0,0,.18);border-radius:0 10px 10px 0;font-size:12px;color:#dbeafe">${esc(w.text)}</div>`).join("")}</div>` : ""}
-        <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#3b9dff;margin-bottom:6px">Next best actions</div>
-        <ol style="margin:0;padding-left:18px">${b.nextActions.map(a => `<li style="font-size:13px;color:#c8d8f0;margin-bottom:4px">${esc(a)}</li>`).join("")}</ol>
+        <div style="font-size:19px;font-weight:900;color:#fff;line-height:1.3;margin-bottom:10px">${esc(b.topFocus)}</div>
+        <div style="font-size:11px;color:#5a6674">${b.warnings.length} aviso(s) y ${b.nextActions.length} acción(es) → <b style="color:#ffd35c">Action Center</b> (abajo) — sin duplicados.</div>
       </div>
       <div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px">
@@ -4669,8 +4881,6 @@ function renderHomePortal(pv, reg) {
       </div>
     </div>
 
-    ${renderJarvisBrainPanel()}
-
     <!-- Quick stats strip -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:20px">
       <div style="background:rgba(59,157,255,.06);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:14px 16px;cursor:pointer" onclick="showMod('trading')">
@@ -4725,13 +4935,7 @@ function renderHomePortal(pv, reg) {
       ${cards.map(c => `<div class="card" style="padding:14px 15px;border-color:${c.color}24;background:rgba(255,255,255,.035)"><div class="label">${esc(c.label)}</div><div ${c.id ? `id="${esc(c.id)}"` : ""} class="big" style="font-size:21px;color:${c.color}">${esc(c.value)}</div><div class="muted" style="font-size:11px">${esc(c.sub)}</div></div>`).join("")}
     </div>
 
-    <div class="panel" style="padding:16px 18px;margin-bottom:16px;border-color:rgba(255,211,92,.16);background:rgba(255,211,92,.035)">
-      <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Jarvis asks</div>
-      <div id="home-alfredo-question" style="font-size:17px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        ${ctx.nextActions.map(a => `<button class="btn" onclick="showMod('${a.mod}')" style="font-size:12px;padding:7px 12px">${esc(a.label)}</button>`).join("")}
-      </div>
-    </div>
+    <div style="font-size:11px;color:#5a6674;margin-bottom:16px">Preguntas, acciones y avisos viven en el <a href="#action-center" style="color:#ffd35c;text-decoration:none;font-weight:900">Action Center ↑</a> — un solo lugar, sin repetición.</div>
   </div>`;
 }
 
@@ -5256,6 +5460,9 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 #cmdk-result b{color:#00ff99}
 .cmdk-kbd{border:1px solid rgba(120,160,210,.25);border-radius:6px;padding:1px 6px;font-size:10px;color:#9fb3c8;background:rgba(0,0,0,.3)}
 .cmdk-open-btn{cursor:pointer;font-family:inherit}
+details.clps summary::-webkit-details-marker{display:none}
+details.clps[open] .clps-caret{transform:rotate(180deg)}
+details.clps[open] > summary{border-color:rgba(59,157,255,.3)}
 </style></head><body>
 <aside class="sidebar">
   <div class="sidebar-brand">
@@ -5332,6 +5539,10 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
   <span class="switch">Journal: <b class="green">OK</b></span>
 </div>
 
+${renderNeuralHeader()}
+${renderJarvisBrainPanel()}
+${renderActionCenter()}
+
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
 <div id="mod-home" class="mod" data-title="Módulo · Home">
 ${renderHomePortal(pv, reg)}
@@ -5367,9 +5578,16 @@ ${renderHomePortal(pv, reg)}
   </div>
 </div>
 <div class="panel" style="max-width:1280px;margin:0 auto 8px">
-  <div id="port-chart-area">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}</div>
+  ${(function(){
+    const hist = buildDailyEquityHistory();
+    const note = hist.mode === "real"
+      ? `Historial real: ${esc(hist.firstDate || "")} → ${esc(hist.lastDate || "")} · ${hist.rangeDays} días (anclas diarias de snapshots + intradía de hoy)`
+      : `Historial limitado: solo ${esc(hist.lastDate || "hoy")} — se irá extendiendo conforme se acumulen snapshots diarios. No se inventan fechas.`;
+    return `<div id="port-chart-area">${spark(hist.points, { key: "total", color: "#3b9dff", height: 300 })}</div>
+    <div style="font-size:11px;color:${hist.mode === "real" ? "#9fb3c8" : "#ffd35c"};margin-top:4px">${note}</div>`;
+  })()}
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;align-items:center">
-    <span class="muted" id="port-chart-info" style="font-size:12px">${portfolioHistory.length} snapshots</span>
+    <span class="muted" id="port-chart-info" style="font-size:12px">${portfolioHistory.length} snapshots intradía</span>
     <span class="muted" style="font-size:11px">Actualizado: ${esc(nowMX())}</span>
     ${portfolioHistory.length >= 7 ? `<span style="font-size:11px;color:#00ff99">7D ✓</span>` : ""}
     ${portfolioHistory.length >= 30 ? `<span style="font-size:11px;color:#00ff99">30D ✓</span>` : ""}
@@ -5452,7 +5670,9 @@ ${(function(){
 ${renderSignalCenter(pv, reg)}
 
 
-<a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
+<a id="news"></a>${collapsibleSection("news", "◆ Market News",
+  `<span style="font-size:11px;color:#9fb3c8">${news.length} noticias · ${news.filter(n => n.impacted && n.impacted.length).length} con activos impactados</span>${statusBadge(FINNHUB_API_KEY ? "LIVE" : "FALLBACK")}`,
+  renderNews(), false)}
 
 <a id="bot"></a><h2>Trading AI — Paper Mode · Laboratorio ficticio</h2>
 ${renderTradingAIStatus()}
@@ -5472,15 +5692,23 @@ ${renderJournalModule()}
 <div id="mod-intelligence" class="mod" data-title="Módulo · Intelligence">
 
 <h2>Cordelius Intelligence</h2>
-${renderCordeliusIntelligenceFeedPreview()}
+${collapsibleSection("intel-feed", "◆ Intelligence Feed",
+  `<span style="font-size:11px;color:#9fb3c8">noticias + intel + quiver combinados</span>`,
+  renderCordeliusIntelligenceFeedPreview(), true)}
 ${renderStockResearch()}
 
 ${renderDailyBrief()}
 
-<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos · Políticos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
-${renderQuiverIntelligencePanel()}
+<a id="quiver"></a>${collapsibleSection("quiver", "◇ Quiver · Institucional",
+  (function(){
+    const c = (quiverData.congressional || []).length, i = (quiverData.insider || []).length, k = (quiverData.contracts || []).length;
+    return `<span style="font-size:11px;color:#9fb3c8">Congreso ${c} · Insiders ${i} · Contratos ${k} · Watchlist ${MARKET_WATCHLIST.length}</span>${statusBadge(QUIVER_API_KEY && quiverData.configured ? (c + i + k > 0 ? "LIVE" : "LIVE") : "FALLBACK")}${QUIVER_API_KEY && quiverData.configured && c + i + k === 0 ? '<span style="font-size:10px;color:#ffd35c">sin filas hoy</span>' : ""}`;
+  })(),
+  renderQuiverIntelligencePanel(), false)}
 
-<a id="intel"></a><h2>Cordelius Intelligence — Intel manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
+<a id="intel"></a>${collapsibleSection("intel", "◎ Cordelius Intelligence · Intel manual",
+  `<span style="font-size:11px;color:#9fb3c8">${intelItems.length} items</span>`,
+  renderIntelPanel(), false)}
 
 <details style="max-width:1280px;margin:0 auto 8px"><summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.12);border-radius:20px;user-select:none"><span style="font-size:14px;font-weight:900;color:#00ff99">◆ Radar político · Intel manual</span><span class="btn" style="font-size:12px;padding:5px 12px">Ver detalle ▾</span></summary>
 <div>
@@ -5808,6 +6036,19 @@ ${renderAlertsPanel()}
       else if(e.key==='Escape' && window.cmdkOpen()) closeCmdk();
     });
   }
+
+  // Secciones colapsables: recordar abierto/cerrado en localStorage.
+  function initClps(){
+    try {
+      document.querySelectorAll('details.clps').forEach(function(d){
+        var k = 'corde_clps_' + d.getAttribute('data-clps');
+        var saved = localStorage.getItem(k);
+        if (saved === '1') d.setAttribute('open',''); else if (saved === '0') d.removeAttribute('open');
+        d.addEventListener('toggle', function(){ try { localStorage.setItem(k, d.open ? '1' : '0'); } catch(e){} });
+      });
+    } catch(e){}
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initClps); else initClps();
 
   // Auto-reload inteligente: sustituye al meta-refresh. No recarga si el
   // palette o el chat de Jarvis están abiertos, o si estás escribiendo.
@@ -6912,10 +7153,31 @@ const server = http.createServer(async (req, res) => {
         blockedMutations: a.stats.blockedMutations,
         blockedReads: a.stats.blockedReads
       }; } catch (e) { return { securityLayer: false, error: e.message }; } })(),
+      uxRecovery: (() => { try {
+        const hist = buildDailyEquityHistory();
+        buildTodayFeed(); // refresca feedDedupeStats
+        const warnings = [];
+        if (hist.mode === "limited") warnings.push("Historial de equity limitado a un solo día; las anclas diarias crecerán con los snapshots.");
+        const eq = bot.equityHistory || [];
+        if (eq.length > 1 && eq[eq.length - 1].t - eq[0].t < 36 * 3600 * 1000) warnings.push("Equity del bot paper aún intradía (<36h).");
+        return {
+          dedupeLayer: true,
+          chartsHistoryMode: hist.mode,
+          chartDateRange: { from: hist.firstDate, to: hist.lastDate, days: hist.rangeDays },
+          actionCenter: true,
+          collapsibleSections: true,
+          paperModeTimeline: (bot.history || []).length ? "real" : "limited",
+          repeatedSnapshotsReduced: Math.max(0, feedDedupeStats.candidates - feedDedupeStats.shown),
+          feedSnapshotsShown: feedDedupeStats.shown,
+          warnings
+        };
+      } catch (e) { return { dedupeLayer: false, error: e.message }; } })(),
       commandCenter: {
         commandPalette: true,
         jarvisBrain: true,
         todayFeed: true,
+        actionCenter: true,
+        neuralHeader: true,
         automations: (() => { try { const a = getAutomationState(); return { rules: a.rules.length, firedToday: a.firedToday.length, defensiveMode: a.defensiveMode }; } catch (e) { return { error: e.message }; } })(),
         endpoints: ["/api/jarvis/brain", "/api/feed/today", "/api/automations", "POST /api/mode/defensive"]
       },
