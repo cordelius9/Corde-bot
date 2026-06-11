@@ -1296,6 +1296,214 @@ function buildMemorySummary() {
   };
 }
 
+// ════════════════════════════════════════════════════════════════
+// COMMAND CENTER LAYER — Automations · Jarvis Brain · Today Feed
+// Solo lectura + alertas educativas. Nunca ejecuta órdenes reales.
+// ════════════════════════════════════════════════════════════════
+const AUTOMATION_EVENTS_FILE = "data/automation_events.json";
+
+function cryptoConcentrationPct(pv) {
+  if (!pv.totalValueMXN) return 0;
+  return pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0) / pv.totalValueMXN * 100;
+}
+
+// Motor de reglas local: evalúa condiciones y devuelve eventos sugeridos.
+// "suggestedMode" es una sugerencia educativa — no cambia nada por sí solo.
+function evaluateAutomationRules() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const jd = computeJournalData();
+  const criptoPct = cryptoConcentrationPct(pv);
+  const bigNews = news.filter(n => n.classification && /alto|high/i.test(n.classification.impact || "")).slice(0, 3);
+  const lastMood = (journalEntries[0] && journalEntries[0].mood) || null;
+  const rules = [
+    {
+      id: "health_low_defensive",
+      name: "Salud baja → modo defensivo",
+      fired: h.recovery !== null && h.recovery < 50,
+      severity: "WARNING",
+      suggestedMode: "DEFENSIVO",
+      message: h.recovery !== null ? `Recovery ${h.recovery}% (<50%). Sugerencia educativa: modo defensivo, decisiones simples, sin riesgo nuevo.` : ""
+    },
+    {
+      id: "crypto_concentration",
+      name: "Concentración cripto alta",
+      fired: criptoPct > 60,
+      severity: criptoPct > 75 ? "CRITICAL" : "WARNING",
+      suggestedMode: null,
+      message: `Cripto es ${criptoPct.toFixed(1)}% del portafolio (umbral 60%). Revisar diversificación. No es consejo financiero.`
+    },
+    {
+      id: "big_market_news",
+      name: "Noticia de mercado relevante",
+      fired: bigNews.length > 0,
+      severity: "INFO",
+      suggestedMode: null,
+      message: bigNews.length ? `Noticias de impacto alto: ${bigNews.map(n => n.headline).join(" · ").slice(0, 220)}` : ""
+    },
+    {
+      id: "recovery_mode",
+      name: "Journal negativo + sueño bajo → recovery mode",
+      fired: lastMood === "negativo" && h.sleep !== null && h.sleep < 60,
+      severity: "WARNING",
+      suggestedMode: "RECOVERY",
+      message: h.sleep !== null ? `Último mood negativo y sleep ${h.sleep}% (<60%). Sugerencia: recovery mode — descanso, sin decisiones grandes hoy.` : ""
+    }
+  ];
+  const fired = rules.filter(r => r.fired).map(r => ({
+    id: r.id, name: r.name, severity: r.severity, suggestedMode: r.suggestedMode,
+    message: r.message, date: todayKey(), ts: Date.now()
+  }));
+  return { rules, fired, criptoPct };
+}
+
+// Persiste eventos disparados (1 por regla por día, append-only con cap).
+function recordAutomationEvents(fired) {
+  if (!fired.length) return loadJSON(AUTOMATION_EVENTS_FILE, []);
+  const events = loadJSON(AUTOMATION_EVENTS_FILE, []);
+  let changed = false;
+  for (const ev of fired) {
+    if (!events.some(e => e.id === ev.id && e.date === ev.date)) { events.push(ev); changed = true; }
+  }
+  const capped = events.slice(-200);
+  if (changed) saveJSON(AUTOMATION_EVENTS_FILE, capped);
+  return capped;
+}
+
+function getAutomationState() {
+  const { rules, fired, criptoPct } = evaluateAutomationRules();
+  const events = recordAutomationEvents(fired);
+  return {
+    ok: true, ts: Date.now(),
+    defensiveMode: !!settings.defensiveMode,
+    rules: rules.map(r => ({ id: r.id, name: r.name, fired: !!r.fired, severity: r.severity, suggestedMode: r.suggestedMode, message: r.fired ? r.message : null })),
+    firedToday: events.filter(e => e.date === todayKey()),
+    history: events.slice(-30).reverse(),
+    criptoPct: +criptoPct.toFixed(1),
+    educationalNote: "Reglas locales educativas. Nunca ejecutan compras ni órdenes reales."
+  };
+}
+
+// Readiness 0-100 por dominio, con heurísticas transparentes.
+function computeDomainReadiness(h, pv, jd, automation) {
+  const clamp = v => Math.max(0, Math.min(100, Math.round(v)));
+  const health = h.recovery !== null && h.sleep !== null ? clamp(h.recovery * 0.6 + h.sleep * 0.4)
+    : h.recovery !== null ? clamp(h.recovery) : null;
+  let trading = 60;
+  if (health !== null) trading += (health - 60) * 0.4;
+  trading -= automation.firedToday.filter(e => e.severity !== "INFO").length * 12;
+  if (settings.defensiveMode) trading -= 20;
+  const study = h.sleep !== null ? clamp(h.sleep * 0.7 + (h.recovery || h.sleep) * 0.3) : null;
+  const social = h.strain !== null ? clamp(95 - Math.max(0, h.strain - 8) * 6 + (h.recovery ? (h.recovery - 50) / 5 : 0)) : null;
+  return {
+    health: { score: health, status: h.configured ? "LIVE" : "FALLBACK" },
+    trading: { score: clamp(trading), status: "HEURISTIC" },
+    study: { score: study, status: study === null ? "FALLBACK" : "HEURISTIC" },
+    social: { score: social, status: social === null ? "FALLBACK" : "HEURISTIC" }
+  };
+}
+
+function computeJarvisBrain() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const jd = computeJournalData();
+  const opp = getOpportunityState();
+  const automation = getAutomationState();
+  const alerts = loadAlerts().filter(a => !a.acknowledged).slice(-5);
+  const quickNotes = loadJSON("data/jarvis_quick_notes.json", []);
+  const readiness = computeDomainReadiness(h, pv, jd, automation);
+  const mode = settings.defensiveMode ? "DEFENSIVO (manual)" : (h.operatingMode || "NORMAL");
+
+  const warnings = [];
+  for (const e of automation.firedToday) warnings.push({ severity: e.severity, text: e.message, source: "automation" });
+  for (const a of alerts.slice(0, 3)) warnings.push({ severity: a.severity || "WARNING", text: a.title, source: "alerts" });
+
+  const nextActions = [];
+  if (settings.defensiveMode) nextActions.push("Modo defensivo activo: hoy solo observar, nada de riesgo nuevo.");
+  if (h.recovery !== null && h.recovery < 50) nextActions.push("Prioriza descanso: recovery bajo. Mueve lo no urgente a mañana.");
+  if (automation.criptoPct > 60) nextActions.push(`Revisar concentración cripto (${automation.criptoPct}%) — educativo.`);
+  if (jd.count === 0 || !journalEntries.some(e => (e.date || "").slice(0, 10) === todayKey())) nextActions.push("Registrar nota del día en Journal (2 min).");
+  const topOpp = (opp.topOpportunities || [])[0];
+  if (topOpp) nextActions.push(`Leer research de ${topOpp.symbol} (${topOpp.score}/100) — paper only.`);
+  if (!nextActions.length) nextActions.push("Todo en orden: revisa el Today Feed y sigue con tu día.");
+
+  const topFocus = warnings.find(w => w.severity === "CRITICAL")?.text
+    || warnings.find(w => w.severity === "WARNING")?.text
+    || (topOpp ? `Oportunidad educativa: ${topOpp.symbol} ${topOpp.score}/100` : "Mantener rutina: salud y journal al día.");
+
+  return {
+    ok: true, ts: Date.now(),
+    state: {
+      mode,
+      summary: `Patrimonio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}) · Mercado ${reg.label} · Recovery ${h.recovery !== null ? h.recovery + "%" : "—"} · Sleep ${h.sleep !== null ? h.sleep + "%" : "—"}`,
+      dataStatus: {
+        whoop: h.configured ? "LIVE" : "FALLBACK",
+        quotes: quotesFreshness(),
+        news: FINNHUB_API_KEY ? "LIVE" : "FALLBACK",
+        portfolioValues: "MANUAL",
+        indicators: "SIMULATED"
+      }
+    },
+    topFocus,
+    warnings: warnings.slice(0, 6),
+    nextActions: nextActions.slice(0, 5),
+    readiness,
+    memory: {
+      journalEntries: jd.count,
+      topMood: jd.topMood,
+      quickNotes: Array.isArray(quickNotes) ? quickNotes.length : 0,
+      summary: buildMemorySummary().summary
+    },
+    educationalNote: "Resumen educativo. No es asesoría financiera ni médica."
+  };
+}
+
+// Today Feed: timeline unificado de eventos del día (y ayer como contexto).
+function buildTodayFeed() {
+  const items = [];
+  const push = (ts, type, title, detail, status) => {
+    if (!ts || !Number.isFinite(ts)) return;
+    items.push({ ts, type, title: String(title).slice(0, 160), detail: detail ? String(detail).slice(0, 240) : null, status: status || "LIVE" });
+  };
+  const cutoff = Date.now() - 36 * 3600 * 1000;
+
+  const h = computeHealthReadiness();
+  if (h.configured && whoopCache.lastFetch) {
+    push(whoopCache.lastFetch, "health", `WHOOP · Recovery ${h.recovery !== null ? h.recovery + "%" : "—"} · Sleep ${h.sleep !== null ? h.sleep + "%" : "—"}`,
+      h.strain !== null ? `Strain ${h.strain.toFixed ? h.strain.toFixed(1) : h.strain} · HRV ${h.hrv || "—"} ms` : null, "LIVE");
+  }
+
+  for (const p of portfolioHistory.slice(-6)) push(p.t, "portfolio", `Snapshot portafolio: ${money(p.total)}`, `P&L global ${pct(p.pnl)}`, "MANUAL");
+
+  for (const e of journalEntries.slice(0, 5)) {
+    const ts = e.ts || Date.parse(e.date || "") || null;
+    push(ts, "journal", `Journal · ${e.mood || "nota"}`, (e.text || e.note || "").slice(0, 200), "LIVE");
+  }
+
+  for (const n of news.slice(0, 6)) push((n.datetime || 0) * 1000, "news", n.headline, n.source, FINNHUB_API_KEY ? "LIVE" : "FALLBACK");
+
+  for (const d of loadJSON(TRADING_DECISION_FILE, []).slice(-5)) {
+    const ts = d.ts || Date.parse(d.timestamp || d.date || "") || null;
+    push(ts, "decision", `Decisión (paper): ${d.title || d.action || d.type || "registro"}`, d.summary || d.message || null, "SIMULATED");
+  }
+
+  for (const ev of loadJSON(AUTOMATION_EVENTS_FILE, []).slice(-8)) push(ev.ts, "automation", `Regla: ${ev.name}`, ev.message, "LIVE");
+
+  for (const a of loadAlerts().slice(-5)) {
+    const ts = Date.parse(a.timestamp || "") || null;
+    push(ts, "alert", a.title, null, ts && Date.now() - ts > 24 * 3600 * 1000 ? "STALE" : "LIVE");
+  }
+
+  for (const t of (bot.thoughts || []).slice(-4)) {
+    const ts = t.ts || t.t || null;
+    push(ts, "autopilot", `Bot paper: ${(t.text || t.msg || "").slice(0, 120)}`, null, "SIMULATED");
+  }
+
+  const feed = items.filter(i => i.ts >= cutoff).sort((a, b) => b.ts - a.ts).slice(0, 40);
+  return { ok: true, ts: Date.now(), count: feed.length, items: feed, note: "Eventos de las últimas 36h. Badges indican origen del dato." };
+}
+
 
 function buildDecisionRecords() {
   const stored = loadJSON(TRADING_DECISION_FILE, []);
@@ -5850,6 +6058,20 @@ const server = http.createServer(async (req, res) => {
   }
   if (path === "/api/jarvis/memory") {
     return sendJSON(res, buildMemorySummary());
+  }
+  if (path === "/api/jarvis/brain") {
+    return sendJSON(res, computeJarvisBrain());
+  }
+  if (path === "/api/feed/today") {
+    return sendJSON(res, buildTodayFeed());
+  }
+  if (path === "/api/automations") {
+    return sendJSON(res, getAutomationState());
+  }
+  if (req.method === "POST" && path === "/api/mode/defensive") {
+    settings.defensiveMode = !settings.defensiveMode;
+    saveJSON(SETTINGS_FILE, settings);
+    return sendJSON(res, { ok: true, defensiveMode: settings.defensiveMode, note: "Modo defensivo es una etiqueta educativa local; no ejecuta órdenes." });
   }
   if (path === "/api/ledger") {
     const positions = loadJSON(POSITION_LEDGER_FILE, []);
