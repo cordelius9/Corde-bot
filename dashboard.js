@@ -4817,13 +4817,60 @@ function renderCordeliusDoctor() {
     { cat: "Limpieza técnica", color: "#9fb3c8", items: cleanupItems },
   ];
 
+  const endpointAudit = (() => {
+    try { return buildSecurityAudit(); }
+    catch (e) { return { error: e.message, endpoints: {}, totals: {}, dashboardProtected: false, privateReadProtected: false, accessKeyConfigured: false }; }
+  })();
+
+  const privateReads = endpointAudit.endpoints?.privateRead || [];
+  const publicReads = endpointAudit.endpoints?.publicRead || [];
+  const protectedWrites = endpointAudit.endpoints?.mutateProtected || [];
+  const hasPublic = (route) => publicReads.includes(route);
+  const hasPrivate = (route) => privateReads.includes(route);
+  const hasProtectedWrite = (route) => protectedWrites.includes(route);
+
+  const brainDiag = (() => {
+    try {
+      const b = computeJarvisBrain();
+      return { ok: !!b, note: b?.mode ? `responde · ${b.mode}` : "responde" };
+    } catch (e) {
+      return { ok: false, note: `error: ${e.message}` };
+    }
+  })();
+
+  const feedDiag = (() => {
+    try {
+      const f = buildTodayFeed();
+      const n = Array.isArray(f?.items) ? f.items.length : Array.isArray(f?.feed) ? f.feed.length : null;
+      return { ok: !!f, note: n === null ? "responde" : `responde · ${n} item(s)` };
+    } catch (e) {
+      return { ok: false, note: `error: ${e.message}` };
+    }
+  })();
+
+  const automationDiag = (() => {
+    try {
+      const a = getAutomationState();
+      return { ok: !!a, note: `${a.rules?.length ?? 0} regla(s) · ${a.firedToday?.length ?? 0} disparada(s) hoy` };
+    } catch (e) {
+      return { ok: false, note: `error: ${e.message}` };
+    }
+  })();
+
+  const securityOk = !!(
+    endpointAudit.dashboardProtected &&
+    endpointAudit.privateReadProtected &&
+    endpointAudit.accessKeyConfigured &&
+    endpointAudit.totals?.unprotectedMutationEndpoints === 0
+  );
+
   const liveEndpoints = [
-    { level: "ok", label: "UI Diagnostics", endpoint: "/api/ui-diagnostics", note: "publicRead · diagnóstico sin secretos" },
-    { level: "ok", label: "Security Audit", endpoint: "/api/security/audit", note: "publicRead · estado de gates" },
-    { level: "ok", label: "Jarvis Brain", endpoint: "/api/jarvis/brain", note: "privateRead · cerebro operativo" },
-    { level: "ok", label: "Today Feed", endpoint: "/api/feed/today", note: "privateRead · feed deduplicado" },
-    { level: "ok", label: "Automations", endpoint: "/api/automations", note: "privateRead · reglas locales" },
-    { level: "ok", label: "Defensive Mode", endpoint: "POST /api/mode/defensive", note: "mutateProtected · etiqueta educativa, sin órdenes" },
+    { level: hasPublic("/api/ui-diagnostics") ? "ok" : "warn", label: "UI Diagnostics", endpoint: "/api/ui-diagnostics", note: hasPublic("/api/ui-diagnostics") ? "publicRead · clasificado" : "no clasificado como publicRead" },
+    { level: securityOk && hasPublic("/api/security/audit") ? "ok" : "warn", label: "Security Audit", endpoint: "/api/security/audit", note: securityOk ? "gates OK · 0 mutaciones sin proteger" : "revisar gates/security audit" },
+    { level: brainDiag.ok && hasPrivate("/api/jarvis/brain") ? "ok" : "warn", label: "Jarvis Brain", endpoint: "/api/jarvis/brain", note: hasPrivate("/api/jarvis/brain") ? `privateRead · ${brainDiag.note}` : "ruta no clasificada como privateRead" },
+    { level: feedDiag.ok && hasPrivate("/api/feed/today") ? "ok" : "warn", label: "Today Feed", endpoint: "/api/feed/today", note: hasPrivate("/api/feed/today") ? `privateRead · ${feedDiag.note}` : "ruta no clasificada como privateRead" },
+    { level: automationDiag.ok && hasPrivate("/api/automations") ? "ok" : "warn", label: "Automations", endpoint: "/api/automations", note: hasPrivate("/api/automations") ? `privateRead · ${automationDiag.note}` : "ruta no clasificada como privateRead" },
+    { level: hasProtectedWrite("/api/mode/defensive") ? "ok" : "warn", label: "Defensive Mode", endpoint: "POST /api/mode/defensive", note: hasProtectedWrite("/api/mode/defensive") ? "mutateProtected · etiqueta educativa, sin órdenes" : "mutación no protegida" },
   ];
 
   const endpointHtml = liveEndpoints.map(item => {
