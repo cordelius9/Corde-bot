@@ -4817,6 +4817,28 @@ function renderCordeliusDoctor() {
     { cat: "Limpieza técnica", color: "#9fb3c8", items: cleanupItems },
   ];
 
+  const liveEndpoints = [
+    { level: "ok", label: "UI Diagnostics", endpoint: "/api/ui-diagnostics", note: "publicRead · diagnóstico sin secretos" },
+    { level: "ok", label: "Security Audit", endpoint: "/api/security/audit", note: "publicRead · estado de gates" },
+    { level: "ok", label: "Jarvis Brain", endpoint: "/api/jarvis/brain", note: "privateRead · cerebro operativo" },
+    { level: "ok", label: "Today Feed", endpoint: "/api/feed/today", note: "privateRead · feed deduplicado" },
+    { level: "ok", label: "Automations", endpoint: "/api/automations", note: "privateRead · reglas locales" },
+    { level: "ok", label: "Defensive Mode", endpoint: "POST /api/mode/defensive", note: "mutateProtected · etiqueta educativa, sin órdenes" },
+  ];
+
+  const endpointHtml = liveEndpoints.map(item => {
+    const c = LC[item.level] || "#9fb3c8";
+    const g = LG[item.level] || "·";
+    return `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 9px;border-radius:10px;background:rgba(0,0,0,.14);margin-bottom:5px">
+      <span style="flex:0 0 16px;height:16px;border-radius:99px;border:1.5px solid ${c};display:grid;place-items:center;font-size:8px;font-weight:900;color:${c};margin-top:1px">${g}</span>
+      <div style="flex:1;min-width:0;font-size:11px;line-height:1.35">
+        <b style="color:#eaf6ff">${esc(item.label)}</b>
+        <span style="color:#3b9dff;font-weight:800">${esc(item.endpoint)}</span>
+        <span style="color:#5a6674">${esc(item.note)}</span>
+      </div>
+    </div>`;
+  }).join("");
+
   const backlogHtml = backlog.map(cat => `
     <div style="margin-bottom:11px">
       <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${esc(cat.color)};margin-bottom:4px">${esc(cat.cat)}</div>
@@ -4836,6 +4858,10 @@ function renderCordeliusDoctor() {
       <div class="panel" style="border:1px solid rgba(59,157,255,.12);background:rgba(59,157,255,.025)">
         <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">◇ Implementation Backlog</div>
         ${backlogHtml}
+      </div>
+      <div class="panel" style="border:1px solid rgba(129,140,248,.14);background:rgba(129,140,248,.025)">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#818cf8;margin-bottom:10px">◆ Live Endpoints</div>
+        ${endpointHtml}
       </div>
     </div>
     <div class="panel" style="border:1px solid rgba(244,114,182,.12);background:rgba(244,114,182,.02);margin-top:12px">
