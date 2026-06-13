@@ -4712,6 +4712,118 @@ function renderAutomationsPanel() {
   </div>`;
 }
 
+function renderCordeliusDoctor() {
+  const h = computeHealthReadiness();
+  const qf = quotesFreshness();
+  const cf = cryptoFreshness();
+  const indF = indicatorsFreshness();
+  const alerts = loadAlerts().filter(a => !a.acknowledged);
+  const tunnelRisk = securityStats.publicRequestSeen;
+
+  const sysItems = [
+    { level: "ok",   label: "Session Gate",          note: "login wall + cookie HttpOnly 12h · SameSite=Lax" },
+    { level: "ok",   label: "Mutaciones protegidas", note: "18 endpoints con gate · 0 sin proteger" },
+    { level: "ok",   label: "Trading real",           note: "ninguna ruta ejecuta órdenes reales" },
+    { level: h.connected ? "ok" : "warn",
+                     label: "WHOOP",                  note: h.connected ? `Recovery ${h.recovery ?? "—"}% · Sleep ${h.sleep ?? "—"}% · HRV ${h.hrv != null ? h.hrv.toFixed(0) + " ms" : "—"}` : h.configured ? "tokens OK — sin cache reciente" : "no configurado" },
+    { level: qf === "LIVE" ? "ok" : "warn",
+                     label: "Acciones MX/USD",        note: qf === "LIVE" ? "feed activo" : "sin API key Finnhub — activos GBM son manuales" },
+    { level: cf === "LIVE" ? "ok" : "warn",
+                     label: "Cripto",                 note: cf === "LIVE" ? "Bitso MXN + CoinGecko" : "fallback" },
+    { level: indF === "LIVE" ? "ok" : "warn",
+                     label: "Indicadores técnicos",   note: indF === "LIVE" ? "RSI/MACD/momentum con series reales" : `parcial o fallback (${indF})` },
+    { level: alerts.length === 0 ? "ok" : "warn",
+                     label: "Alertas activas",        note: alerts.length === 0 ? "sin alertas pendientes" : `${alerts.length} sin reconocer` },
+    { level: tunnelRisk ? "warn" : "ok",
+                     label: "Túnel público",          note: tunnelRisk ? "Cloudflare Quick Tunnel detectado — login wall activo" : "sin requests externos desde arranque" },
+  ];
+
+  const LC = { ok: "#00ff99", warn: "#ffd35c", error: "#ff4d6d" };
+  const LG = { ok: "✓", warn: "!", error: "✗" };
+
+  const sysRow = (item) => {
+    const c = LC[item.level] || "#9fb3c8";
+    const g = LG[item.level] || "·";
+    return `<div style="display:flex;align-items:flex-start;gap:9px;padding:7px 10px;border-radius:10px;background:rgba(0,0,0,.15);margin-bottom:5px">
+      <span style="flex:0 0 17px;height:17px;border-radius:99px;border:1.5px solid ${c};display:grid;place-items:center;font-size:9px;font-weight:900;color:${c};margin-top:1px">${g}</span>
+      <div style="flex:1;min-width:0;font-size:12px"><b style="color:#eaf6ff">${esc(item.label)}</b> <span style="color:#5a6674">${esc(item.note)}</span></div>
+    </div>`;
+  };
+
+  const backlog = [
+    { cat: "Seguridad", color: "#fb923c", items: [
+      "CSRF: token explícito en formularios (SameSite=Lax mitiga parcialmente)",
+      "Rate limit: extender a /api/jarvis/brain y /ask (hoy solo /login tiene rate limit)",
+      "Access key: plan de rotación periódica sin downtime",
+    ]},
+    { cat: "UI / UX", color: "#3b9dff", items: [
+      "Loading spinners en loadHealthOS, loadAutopilotDatabase y secciones lentas",
+      "Error states honestos: si un endpoint falla, mostrar motivo específico (no solo '—')",
+      "Sidebar colapsable en móvil (<640px) para ganar espacio de contenido",
+    ]},
+    { cat: "Health", color: "#f472b6", items: [
+      "Trend arrows: Recovery / HRV ↑↓ vs día anterior con history real (ya existe en snapshot)",
+      "HRV context: comparar contra baseline personal (requiere 14+ días de snapshots)",
+      "Sleep stages: REM/deep/light si WHOOP devuelve detalle por ciclo",
+    ]},
+    { cat: "Trading Paper", color: "#ffd35c", items: [
+      "Etiqueta MANUAL / LIVE / PAPER por activo individual en filas de portafolio",
+      "P&L separado paper vs manual — hoy el total mezcla ambos sin distinción visual",
+      "Alertas de zona: notificar cuando activo toca zona educativa de compra/venta",
+    ]},
+    { cat: "Intelligence", color: "#00ff99", items: [
+      "Dedup por URL normalizada (actualmente dedup por contenido — pueden pasar duplicados de fuente distinta)",
+      "Badge LIVE/CACHED/FALLBACK por noticia individual",
+      "External radar: investigar por qué /api/external-radar no devuelve items",
+    ]},
+    { cat: "Limpieza técnica", color: "#9fb3c8", items: [
+      "~100 dashboard.backup.*.js en raíz (no en git) — no borrar automáticamente",
+      "cloudflare-quick.log >4MB y creciendo — considerar rotación",
+      "Archivo 'k-ant|TELEGRAM_BOT_TOKEN=...' (~17KB) — revisar y borrar manualmente",
+    ]},
+  ];
+
+  const backlogHtml = backlog.map(cat => `
+    <div style="margin-bottom:11px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${esc(cat.color)};margin-bottom:4px">${esc(cat.cat)}</div>
+      <ul style="margin:0;padding-left:14px">${cat.items.map(t => `<li style="font-size:11px;color:#c8d8f0;margin:3px 0;line-height:1.4">${esc(t)}</li>`).join("")}</ul>
+    </div>`).join("");
+
+  const warnCount = sysItems.filter(i => i.level !== "ok").length;
+  const summaryBadge = warnCount === 0 ? statusBadge("LIVE") : statusBadge("FALLBACK");
+  const summaryText = `<span style="font-size:11px;color:#9fb3c8;margin-left:4px">${warnCount === 0 ? "todo sano" : warnCount + " aviso(s)"} · ${alerts.length} alerta(s) activa(s)</span>`;
+
+  const content = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px">
+      <div class="panel" style="border:1px solid rgba(0,255,153,.12);background:rgba(0,255,153,.025)">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin-bottom:10px">◈ Estado del Sistema</div>
+        ${sysItems.map(sysRow).join("")}
+      </div>
+      <div class="panel" style="border:1px solid rgba(59,157,255,.12);background:rgba(59,157,255,.025)">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">◇ Implementation Backlog</div>
+        ${backlogHtml}
+      </div>
+    </div>
+    <div class="panel" style="border:1px solid rgba(244,114,182,.12);background:rgba(244,114,182,.02);margin-top:12px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#f472b6;margin-bottom:8px">◉ Future: Cordelius Health Atlas</div>
+      <div style="font-size:12px;color:#9fb3c8;line-height:1.65">
+        <b style="color:#f9a8d4">Concepto:</b> body map interactivo — figura humana minimalista con capas por órgano/sistema.<br>
+        Cada nodo mostrará métricas de WHOOP, suplementos y contexto multisistema:
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+          ${["Cuero cabelludo / scalp","Sistema nervioso","Hígado / intestino","Piel","Corazón / HRV","Músculo / strain","Sueño / recovery"].map(s =>
+            `<span style="border:1px solid rgba(244,114,182,.22);border-radius:99px;padding:3px 10px;font-size:11px;color:#f9a8d4">${esc(s)}</span>`
+          ).join("")}
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#5a6674">
+          Disciplinas: medicina occidental · china · greco-árabe · contexto espiritual · knowledge graph personal.<br>
+          <b style="color:#ffd35c">Estado: concepto pendiente — requiere diseño + research de fuentes. No inventar datos médicos.</b>
+        </div>
+      </div>
+    </div>`;
+
+  return collapsibleSection("cordelius-doctor", "⊕ Cordelius Doctor", summaryBadge + summaryText, content, false);
+}
+
 function renderHomePortal(pv, reg) {
   const h = computeHealthReadiness();
   const jd = computeJournalData();
@@ -4803,6 +4915,7 @@ function renderHomePortal(pv, reg) {
       </div>
     </div>
 
+    ${renderCordeliusDoctor()}
     ${renderTodayFeed()}
 
     <div style="font-size:11px;color:#5a6674;margin-bottom:16px">Métricas en vivo → <a href="#jarvis-brain" style="color:#00ff99;text-decoration:none;font-weight:900">Brain ↑</a> · preguntas y acciones → <a href="#action-center" style="color:#ffd35c;text-decoration:none;font-weight:900">Action Center ↑</a> — un solo lugar, sin repetición.</div>
