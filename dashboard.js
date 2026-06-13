@@ -4750,6 +4750,44 @@ function renderCordeliusDoctor() {
     </div>`;
   };
 
+  const rootDir = process.env.APP_DIR || process.cwd();
+  let cleanupItems = [
+    "No se pudo escanear raíz del proyecto — revisar permisos/manual",
+  ];
+  try {
+    const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+    const files = entries.filter(e => e.isFile()).map(e => e.name);
+    const backups = files.filter(n => /^dashboard\.backup.*\.js$/i.test(n));
+    const largeLogs = files
+      .filter(n => /\.log$/i.test(n))
+      .map(n => {
+        try {
+          const st = fs.statSync(path.join(rootDir, n));
+          return { name: n, mb: st.size / 1024 / 1024 };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .filter(x => x.mb >= 1)
+      .sort((a, b) => b.mb - a.mb);
+    const sensitiveNames = files.filter(n => /(token|secret|password|passwd|credential|api[_-]?key|telegram|whoop)/i.test(n));
+
+    cleanupItems = [
+      backups.length
+        ? `${backups.length} backup(s) dashboard.backup.*.js en raíz — revisar antes de borrar`
+        : "Sin backups dashboard.backup.*.js sueltos en raíz",
+      largeLogs.length
+        ? `${largeLogs.length} log(s) >1MB detectado(s): ${largeLogs.slice(0, 3).map(x => `${x.name} ${x.mb.toFixed(1)}MB`).join(", ")}`
+        : "Sin logs grandes >1MB en raíz",
+      sensitiveNames.length
+        ? `${sensitiveNames.length} archivo(s) con nombre sensible detectado(s) — nombre oculto, revisar manualmente`
+        : "Sin nombres sensibles obvios en raíz",
+    ];
+  } catch (err) {
+    cleanupItems = [`Error escaneando raíz: ${err.message || "desconocido"}`];
+  }
+
   const backlog = [
     { cat: "Seguridad", color: "#fb923c", items: [
       "CSRF: token explícito en formularios (SameSite=Lax mitiga parcialmente)",
@@ -4776,11 +4814,7 @@ function renderCordeliusDoctor() {
       "Badge LIVE/CACHED/FALLBACK por noticia individual",
       "External radar: investigar por qué /api/external-radar no devuelve items",
     ]},
-    { cat: "Limpieza técnica", color: "#9fb3c8", items: [
-      "~100 dashboard.backup.*.js en raíz (no en git) — no borrar automáticamente",
-      "cloudflare-quick.log >4MB y creciendo — considerar rotación",
-      "Archivo 'k-ant|TELEGRAM_BOT_TOKEN=...' (~17KB) — revisar y borrar manualmente",
-    ]},
+    { cat: "Limpieza técnica", color: "#9fb3c8", items: cleanupItems },
   ];
 
   const backlogHtml = backlog.map(cat => `
