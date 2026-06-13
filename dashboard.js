@@ -2613,7 +2613,7 @@ function renderPortfolioRows(assets) {
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
           <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
-          <button onclick="setAlfredoQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+          <button onclick="setJarvisQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
         </div>
       </div>
     </details>`;
@@ -4413,178 +4413,6 @@ function renderHealthReadinessPanel() {
 }
 
 
-
-function renderHealthOSPanel() {
-  const h = computeHealthReadiness();
-
-  function clamp(n, min, max) {
-    n = Number(n);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(min, Math.min(max, n));
-  }
-
-  function fmt(v, suffix) {
-    if (v === null || v === undefined || v === "") return "—";
-    if (typeof v === "number") {
-      const out = Math.abs(v) % 1 ? v.toFixed(1) : String(v);
-      return esc(out + (suffix || ""));
-    }
-    return esc(String(v) + (suffix || ""));
-  }
-
-  const recovery = clamp(h.recovery, 0, 100);
-  const sleep = clamp(h.sleep, 0, 100);
-  const strainRaw = Number(h.strain || 0);
-  const strainPct = clamp((strainRaw / 21) * 100, 0, 100);
-  const hrvScore = clamp((Number(h.hrv || 0) / 160) * 100, 0, 100);
-  const rhrScore = h.restingHeartRate ? clamp(100 - Math.max(0, Number(h.restingHeartRate) - 38) * 2, 0, 100) : 70;
-
-  const healthScore = Math.round(
-    recovery * 0.34 +
-    sleep * 0.24 +
-    hrvScore * 0.18 +
-    rhrScore * 0.12 +
-    (100 - strainPct) * 0.12
-  );
-
-  const status =
-    healthScore >= 85 ? "EXCELENTE" :
-    healthScore >= 70 ? "BUENO" :
-    healthScore >= 55 ? "MEDIO" :
-    healthScore >= 40 ? "BAJO" : "CRÍTICO";
-
-  const statusColor =
-    healthScore >= 70 ? "#00ff99" :
-    healthScore >= 55 ? "#ffd35c" :
-    "#ff4d6d";
-
-  const badgeLabel = h.connected ? "WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "WHOOP PENDIENTE";
-  const mode = h.operatingMode || "NORMAL";
-
-  function donut(label, value, raw, color) {
-    const v = clamp(value, 0, 100);
-    return `<div class="health-os-card health-os-donut-card">
-      <div class="health-os-donut" style="background:conic-gradient(${color} ${v}%, rgba(120,160,210,.13) 0)">
-        <div class="health-os-donut-inner">
-          <div class="health-os-donut-value">${esc(raw)}</div>
-          <div class="health-os-donut-label">${esc(label)}</div>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  const aiText = `Hoy tu sistema está en modo ${mode}. Recovery ${h.recovery ?? "—"}%, Sleep ${h.sleep ?? "—"}%, HRV ${h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—"} y Strain ${h.strain != null ? Number(h.strain).toFixed(1) : "—"}. Esto significa que tu cuerpo debe guiar el nivel de agresividad del día. Si la recuperación baja o el strain sube, conviene priorizar decisiones más lentas, menos impulsivas y con menor exposición. Para trading: evita sobreoperar, revenge trading y entradas grandes si estás cansado. Para estudio: enfócate en bloques profundos si la energía mental está alta; si no, usa tareas mecánicas. Para social: mantén planes que no drenen demasiado si el sistema nervioso está cargado. Prioridad: dormir bien, hidratarte, comer completo y registrar hábitos como sauna, cannabis, estrés o entrenamiento para detectar correlaciones.`;
-
-  return `<section id="health-os-shell" class="health-os-shell">
-    <style>
-      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.20),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
-      .health-os-hero{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
-      .health-os-title{font-size:44px;font-weight:950;letter-spacing:-.04em;background:linear-gradient(90deg,#f9a8d4,#3b9dff,#00ff99);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:6px 0}
-      .health-os-kicker{font-size:11px;font-weight:950;letter-spacing:.18em;text-transform:uppercase;color:#f472b6}
-      .health-os-sub{color:#9fb3c8;font-size:13px;line-height:1.6}
-      .health-os-badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;background:rgba(0,255,153,.12);border:1px solid rgba(0,255,153,.24);color:#00ff99;font-size:12px;font-weight:900}
-      .health-os-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
-      .health-os-card{border:1px solid rgba(120,160,210,.14);background:rgba(255,255,255,.045);border-radius:22px;padding:16px;box-shadow:inset 0 1px rgba(255,255,255,.04)}
-      .health-os-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px}
-      .health-os-value{font-size:30px;font-weight:950;color:#eaf6ff;line-height:1}
-      .health-os-small{font-size:12px;color:#9fb3c8;margin-top:7px;line-height:1.5}
-      .health-os-donut-row{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:14px;margin-bottom:14px}
-      .health-os-donut-card{display:flex;align-items:center;justify-content:center;min-height:230px}
-      .health-os-donut{width:178px;height:178px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 45px rgba(0,0,0,.35)}
-      .health-os-donut-inner{width:126px;height:126px;border-radius:50%;background:rgba(4,10,22,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.08)}
-      .health-os-donut-value{font-size:28px;font-weight:950;color:#eaf6ff}
-      .health-os-donut-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-top:4px}
-      .health-os-wide{grid-column:1/-1}
-      .health-os-ai{font-size:14px;color:#dbeafe;line-height:1.75}
-      .health-os-chip{display:inline-flex;border-radius:999px;padding:6px 11px;margin:4px;background:rgba(244,114,182,.08);border:1px solid rgba(244,114,182,.18);color:#f9a8d4;font-size:12px;font-weight:800}
-      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:24px}}
-    </style>
-
-    <div class="health-os-hero">
-      <div class="health-os-card">
-        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
-          <div>
-            <div class="health-os-kicker">Cordelius Health</div>
-            <div class="health-os-title">Biological Operating System</div>
-            <div class="health-os-sub">WHOOP-first · Health no depende del Journal · sistema educativo para energía, enfoque y riesgo de sobreoperar.</div>
-          </div>
-          <span id="health-os-whoop-badge" class="health-os-badge">● ${esc(badgeLabel)}</span>
-        </div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Health Score</div>
-        <div id="health-os-score" class="health-os-value" style="color:${statusColor}">${healthScore}</div>
-        <div id="health-os-status" class="health-os-small" style="font-weight:900;color:${statusColor}">${status}</div>
-        <div class="health-os-small">Modo operativo: <b id="health-os-mode" style="color:#ffd35c">${esc(mode)}</b></div>
-      </div>
-    </div>
-
-    <div class="health-os-grid">
-      <div class="health-os-card"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">${fmt(h.recovery, "%")}</div><div class="health-os-small">Capacidad de carga del día</div></div>
-      <div class="health-os-card"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">${fmt(h.sleep, "%")}</div><div class="health-os-small">Base de recuperación mental</div></div>
-      <div class="health-os-card"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">${fmt(h.hrv, " ms")}</div><div class="health-os-small">Sistema nervioso</div></div>
-      <div class="health-os-card"><div class="health-os-label">Resting HR</div><div id="health-os-rhr" class="health-os-value">${fmt(h.restingHeartRate, " bpm")}</div><div class="health-os-small">Carga fisiológica</div></div>
-      <div class="health-os-card"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">${fmt(h.strain, "")}</div><div class="health-os-small">Carga acumulada</div></div>
-      <div class="health-os-card"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">${esc(status)}</div><div class="health-os-small">Lectura Cordelius</div></div>
-    </div>
-
-    <div class="health-os-donut-row">
-      ${donut("Recovery", recovery, h.recovery != null ? h.recovery + "%" : "—", "#00ff99")}
-      ${donut("Sleep", sleep, h.sleep != null ? h.sleep + "%" : "—", "#3b9dff")}
-      ${donut("Strain", strainPct, h.strain != null ? Number(h.strain).toFixed(1) : "—", "#f472b6")}
-    </div>
-
-    <div class="health-os-grid">
-      <div class="health-os-card">
-        <div class="health-os-label">Energy Engine</div>
-        <div class="health-os-small">Physical Energy: <b id="health-os-energy-physical">${Math.round((recovery + sleep) / 2)}</b>/100</div>
-        <div class="health-os-small">Mental Energy: <b id="health-os-energy-mental">${Math.round((sleep + hrvScore) / 2)}</b>/100</div>
-        <div class="health-os-small">Focus Capacity: <b id="health-os-energy-focus">${Math.round((sleep + recovery + hrvScore) / 3)}</b>/100</div>
-        <div class="health-os-small">Deep Work: <b id="health-os-energy-deepwork">${Math.round((sleep + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
-        <div class="health-os-small">Trading Capacity: <b id="health-os-energy-trading">${Math.round((recovery + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Radar Health</div>
-        <div id="health-os-radar" class="health-os-small">
-          Recovery ${Math.round(recovery)} · Sleep ${Math.round(sleep)} · HRV ${Math.round(hrvScore)} · Nervous System ${Math.round(hrvScore)} · Energy ${Math.round((recovery + sleep)/2)} · Focus ${Math.round((sleep + hrvScore)/2)}
-        </div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Behavior Tracker</div>
-        <div id="health-os-behaviors">
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('sauna')">Sauna</button>
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('cannabis')">Cannabis</button>
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('training')">Training</button>
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('stress')">High Stress</button>
-        </div>
-        <div class="health-os-small">Opcional. Sin formularios grandes.</div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Correlation Engine</div>
-        <div id="health-os-correlations" class="health-os-small">Recolectando datos. Se activará con más snapshots diarios.</div>
-      </div>
-
-      <div class="health-os-card health-os-wide">
-        <div class="health-os-label">Jarvis Health AI</div>
-        <div id="health-os-ai" class="health-os-ai">${esc(aiText)}</div>
-      </div>
-
-      <div class="health-os-card health-os-wide">
-        <div class="health-os-label">Trading Integration</div>
-        <div id="health-os-trading-risk" class="health-os-small">
-          Recovery &lt; 50 → modo defensivo · Recovery &gt; 80 → modo normal · Strain alto → bajar agresividad · Overtrading alto → no operar impulsivo.
-          <br>Educativo. No es asesoría médica ni financiera.
-        </div>
-      </div>
-    </div>
-  </section>`;
-
-}
-
 function renderPortfolioSnapshot(pv, reg) {
   const best = pv.assets.slice().sort((a, b) => b.score - a.score)[0];
   const cripto = pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
@@ -5073,7 +4901,7 @@ function renderJournalModule() {
       <div style="font-size:13px;color:#c8d8f0;line-height:1.6">${esc(aj.alfredoNote)}</div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         ${["resumen de mi día","cómo me he sentido","resume mi diario"].map(q =>
-          `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+          `<button onclick="setJarvisQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
         ).join("")}
       </div>
     </div>
