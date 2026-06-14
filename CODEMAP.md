@@ -48,65 +48,66 @@ Control: `showMod(name)` — persiste en `localStorage.corde_mod` y URL hash.
 | `autopilot` | `renderAutopilotPanel()` | `getAutopilotDatabaseState()`, `computeAutopilotLearning()` |
 | `doctor` | `renderCordeliusDoctor()` | `buildSecurityAudit()`, `computeJarvisBrain()` |
 
-> `renderCordeliusDoctor`, `buildSecurityAudit`, `computeJarvisBrain`, `buildTodayFeed`, `getAutomationState` — **PENDIENTE DE VERIFICAR** en `dashboard.js` del tablet:
-> `grep -n "renderCordeliusDoctor\|buildSecurityAudit\|computeJarvisBrain\|buildTodayFeed\|getAutomationState" dashboard.js`
+> Las 5 funciones anteriores están confirmadas en `dashboard.js` (b0cffa7):
+> `renderCordeliusDoctor`, `buildSecurityAudit`, `computeJarvisBrain`, `buildTodayFeed`, `getAutomationState`
 
 ---
 
 ## 3. Mapa de endpoints
 
-### publicRead — sin auth
-| Método | Ruta | Descripción |
-|---|---|---|
-| GET | `/health` | Health check JSON |
-| GET | `/api/paper/status` | Estado simulador paper trading |
-| GET | `/api/whoop/status` | Conexión WHOOP (sin datos personales) |
+Fuente de verdad: `ENDPOINT_PERMISSIONS` en `dashboard.js`. Clasificaciones verificadas contra ese objeto.
 
-### privateRead — requieren auth (esquema exacto **PENDIENTE DE VERIFICAR**)
+### publicRead — sin auth requerida
 ```
-/api/status               /api/portfolio            /api/intel
-/api/quiver               /api/quiver/matches        /api/quiver/trending
-/api/daily-scan           /api/market-radar          /api/intelligence
-/api/daily-brief          /api/market-intelligence   /api/external-radar
-/api/morning-report       /api/whoop/profile         /api/whoop/cycle
-/api/whoop/today          /api/health-readiness      /api/journal
-/api/journal/auto         /api/journal/status        /api/os-status
-/api/daily/today          /api/daily/learning        /api/jarvis/context
-/api/jarvis/memory        /api/jarvis/private-memory /api/jarvis/brain
-/api/portfolio/editable   /api/alerts                /api/intelligence/today
-/api/executive            /api/executive/history     /api/executive/score
-/api/project/status       /api/project/memory        /api/project/log
-/api/project/roadmap      /api/market/brain          /api/market/watchlist
-/api/decisions            /api/decisions/patterns    /api/decisions/playbook
-/api/autopilot/database   /api/autopilot/progress    /api/autopilot/decisions
+/login            /logout           /health           /healthz
+/api/ui-diagnostics                 /api/security/audit
+/whoop/auth       /whoop/callback   /api/whoop/callback
 ```
 
-### mutateProtected — ≥18 endpoints, todos requieren auth ⚠️
+### privateRead — requieren sesión o X-Cordelius-Key
 ```
-POST /api/portfolio/update       POST /api/portfolio/add
-POST /api/portfolio/remove       POST /api/daily/checkin
-POST /api/daily/snapshot         POST /api/alerts/check
-POST /api/alerts/ack             POST /api/executive/run
-POST /api/market/brain/run       POST /api/market/watchlist/add
-POST /api/market/watchlist/remove POST /api/decisions/add
-POST /api/decisions/outcome      POST /api/autopilot/snapshot
-POST /api/autopilot/decision     POST /api/autopilot/decision/outcome
-POST /api/jarvis/check-in        POST /api/project/log
-POST /research
+/api/status                /api/portfolio             /api/intel
+/api/quiver                /api/quiver/matches         /api/quiver/trending
+/api/executive             /api/executive/score        /api/project/status
+/api/project/memory        /api/decisions              /api/decisions/patterns
+/api/decisions/playbook    /api/opportunities          /api/research/queue
+/api/watchlist/opportunities                           /api/jarvis/memory
+/api/jarvis/brain          /api/feed/today             /api/automations
+/api/ledger                /api/alerts                 /api/daily-scan
+/api/market-radar          /api/intelligence           /api/intelligence/feed
+/api/daily-brief           /api/market-intelligence    /api/external-radar
+/api/paper/status          /api/morning-report         /api/whoop/status
+/api/whoop/profile         /api/whoop/cycle            /api/whoop/today
+/api/autopilot/database    /api/autopilot/progress     /api/journal/auto
+/api/journal/status        /api/health-readiness       /api/health/behaviors/today
+/api/health/snapshot       /api/health/insights        /api/trading/summary
+/api/alfredo/context       /api/os-status
+```
+> Rutas adicionales como `/api/jarvis/private-memory`, `/api/daily/today`, `/api/executive/history` pueden existir como handlers pero no están en `ENDPOINT_PERMISSIONS` — **PENDIENTE DE VERIFICAR**.
+
+### mutateProtected — requieren auth ⚠️
+Fuente: `ENDPOINT_PERMISSIONS` — lista exacta:
+```
+POST /ask                         POST /research
+POST /intel                       POST /intel/delete
+POST /api/health/behavior         POST /alerts/dismiss
+POST /api/opportunities/run       POST /api/research/queue/add
+POST /api/research/queue/remove   POST /api/research/queue/run
+POST /api/mode/defensive          POST /api/alerts/dry-run
+POST /api/autopilot/snapshot
+```
+> Total confirmado: 13. El invariante `protectedMutationEndpoints ≥ 18` puede incluir rutas no registradas en `ENDPOINT_PERMISSIONS` — **PENDIENTE DE VERIFICAR**.
+
+### mutateLocal — toggles locales de bajo riesgo
+```
+GET /toggle-thinking    GET /bot/start    GET /bot/pause
 ```
 
-### mutateLocal — estado interno
+### dangerous — destructivo, sin posibilidad de deshacer
 ```
-GET  /toggle-thinking    GET  /bot/start     GET  /bot/pause    GET  /bot/reset
-POST /ask                POST /intel         POST /intel/delete POST /intel/clear
-POST /api/journal
+POST /intel/clear    GET /bot/reset
 ```
-
-### dangerous — OAuth / tokens reales ⚠️
-```
-GET /whoop/auth          GET /whoop/callback       GET /api/whoop/callback
-```
-No modificar sin revisión de seguridad explícita.
+> `/whoop/auth`, `/whoop/callback`, `/api/whoop/callback` son `publicRead` según `ENDPOINT_PERMISSIONS` (inician OAuth pero no escriben datos directamente).
 
 ---
 
@@ -114,7 +115,7 @@ No modificar sin revisión de seguridad explícita.
 
 ### Árbol de dependencias crítico
 ```
-computeJarvisBrain()  [PENDIENTE DE VERIFICAR]
+computeJarvisBrain()  ← sirve GET /api/jarvis/brain
   ├─ buildJarvisPrivateSummary()
   │     └─ computeJarvisOperatingMode()
   │           └─ computeHealthReadiness()  ← whoopCache IN-MEMORY
@@ -127,8 +128,8 @@ renderHomePortal(pv, reg)
   ├─ computeDailyNewsletter() → computeIntelligence() → news[] + Quiver
   └─ portfolioValue()
 
-buildSecurityAudit()  [PENDIENTE DE VERIFICAR]
-  └─ mapeo dinámico de ROUTE_ACCESS / publicRead / privateRead / mutateProtected
+buildSecurityAudit()  ← sirve GET /api/security/audit (publicRead)
+  └─ lee ENDPOINT_PERMISSIONS, clasifica por nivel, retorna totales e invariantes
 ```
 
 ### Tabla de funciones por área
@@ -150,6 +151,11 @@ buildSecurityAudit()  [PENDIENTE DE VERIFICAR]
 | Jarvis | `buildJarvisContext()` | Contexto completo para prompt Claude |
 | Jarvis | `buildExecutiveBriefing()` | Briefing ejecutivo AI |
 | Jarvis | `readPrivateJarvisMemory()` | Perfil privado, reglas, preguntas diarias |
+| Doctor | `computeJarvisBrain()` | Fused context: health + portfolio + oportunidades |
+| Doctor | `buildTodayFeed()` | Feed del día: noticias + intel + alertas |
+| Doctor | `getAutomationState()` | Estado de automations + reglas disparadas |
+| Doctor | `buildSecurityAudit()` | Auditoría de endpoints vs ENDPOINT_PERMISSIONS |
+| Doctor | `renderCordeliusDoctor()` | Panel Doctor con diagnóstico en vivo |
 | Autopilot | `getAutopilotDatabaseState()` | Estado completo autopilot |
 | Autopilot | `analyzeDecisionPatterns()` | Patrones estadísticos de decisiones |
 | Autopilot | `buildPersonalPlaybook(patterns)` | Playbook desde patterns |
@@ -218,18 +224,19 @@ whoopCache    quotes{}    news[]    intelItems[]    chatHistory[]    bot{}
 |---|---|
 | `dashboardProtected` | `true` — login wall en `GET /` |
 | `privateReadProtected` | `true` — API reads requieren auth |
-| `accessKeyConfigured` | `true` — `CORDE_ACCESS_KEY` en env |
+| `accessKeyConfigured` | `true` — `CORDELIUS_ACCESS_KEY` en env |
 | `protectedMutationEndpoints` | ≥ 18 |
 | `unprotectedMutationEndpoints` | 0 — cero mutaciones sin auth |
 
-`buildSecurityAudit()` verifica estos valores dinámicamente. **PENDIENTE DE VERIFICAR** su implementación exacta.
+`buildSecurityAudit()` calcula estos valores dinámicamente desde `ENDPOINT_PERMISSIONS`.
+Verificar en vivo: `curl -s http://127.0.0.1:3000/api/security/audit | python3 -m json.tool`
 
 ### Variables de entorno (solo nombres, sin valores)
 ```
 ANTHROPIC_API_KEY   TELEGRAM_BOT_TOKEN   FINNHUB_API_KEY
 USD_MXN             PORT                 CLAUDE_MODEL
 CLAUDE_MODEL_BOT    QUIVER_API_KEY       TELEGRAM_CHAT_ID
-CORDE_ACCESS_KEY    WHOOP_CLIENT_ID      WHOOP_CLIENT_SECRET
+CORDELIUS_ACCESS_KEY  WHOOP_CLIENT_ID      WHOOP_CLIENT_SECRET
 ```
 Siempre via `process.env.VAR || "default_seguro"`. Nunca hardcodeados.
 
@@ -265,7 +272,7 @@ sleep 4
 curl -s http://127.0.0.1:3000/health | python3 -m json.tool
 
 # 7. Security audit (verifica invariantes)
-curl -s http://127.0.0.1:3000/api/doctor | python3 -m json.tool
+curl -s http://127.0.0.1:3000/api/security/audit | python3 -m json.tool
 
 # 8. Commit solo después de confirmación visual
 git add dashboard.js && git commit -m "feat/fix: descripción"
@@ -292,7 +299,6 @@ git push origin jarvis-ui-overhaul
 showMod(name)              — navegación frontend
 renderHomePortal(pv, reg)  — home module
 <meta http-equiv="refresh"> — eliminada (Android hash-drop bug)
-/whoop/auth  /whoop/callback  /api/whoop/callback — OAuth real
 main branch  — nunca pushear directo
 ```
 
@@ -378,21 +384,20 @@ Lee el CODEMAP y confirma que entendiste la arquitectura antes de proponer cambi
 ### Comandos de diagnóstico rápido
 
 ```bash
-# Verificar funciones clave en tablet
-grep -n "buildSecurityAudit\|computeJarvisBrain\|buildTodayFeed\|getAutomationState" dashboard.js
-
 # Ver módulos frontend
 grep -n "^function render" dashboard.js
 
-# Contar endpoints mutateProtected
-grep -c "method.*POST\b" dashboard.js
+# Ver clasificación real de endpoints
+grep -n "ENDPOINT_PERMISSIONS" dashboard.js
 
 # Verificar modelos Claude (no deben ser obsoletos)
 grep -n "claude-3-5\|claude-sonnet-4-5\b\|claude-haiku-4-5\b" dashboard.js bot.js
 
 # Estado del sistema
 curl -s http://127.0.0.1:3000/health | python3 -m json.tool
-curl -s http://127.0.0.1:3000/api/doctor | python3 -m json.tool
+
+# Security audit (invariantes en vivo)
+curl -s http://127.0.0.1:3000/api/security/audit | python3 -m json.tool
 ```
 
 ### Cuándo actualizar este CODEMAP
