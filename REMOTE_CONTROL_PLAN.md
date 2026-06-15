@@ -61,6 +61,34 @@ Todos los comandos remotos pasan por validación con `CORDELIUS_ACCESS_KEY` ante
 | `/paper-pause` | `POST /api/paper/pause` (pausa engine) | mutate | bajo |
 | `/paper-resume` | `POST /api/paper/resume` (reanuda engine) | mutate | bajo |
 
+### Comandos de research intake — futuros, NO en whitelist activa
+
+Los siguientes comandos están diseñados en `RESEARCH_INTAKE_PIPELINE.md` pero **no están
+habilitados** y no deben ser aceptados por el bot hasta que se complete un PR separado
+con revisión de seguridad y actualización explícita de esta whitelist.
+
+| Comando | Acción planificada | Requiere para habilitar |
+|---|---|---|
+| `/watchlist TICKER` | Mover research item a WATCHLIST | PR separado + security review |
+| `/paper TICKER` | Intentar PAPER_BUY (re-valida condiciones) | PR separado + security review |
+| `/reject TICKER` | Mover a REJECT y archivar | PR separado + security review |
+| `/research_more TICKER` | Mantener en RESEARCH_MORE, pedir aclaración | PR separado + security review |
+| `/import` | Iniciar ingesta de análisis externo (siguiente mensaje = texto a procesar) | PR separado + security review |
+
+> ⚠️ Ninguno de estos comandos debe estar en bot.js hasta que aparezca aquí en la
+> whitelist activa. Cualquier expansión de whitelist requiere PR dedicado,
+> revisión de seguridad y aprobación explícita de Pedro.
+>
+> ⚠️ **Seguridad de slash commands:** la implementación actual de bot.js debe auditarse.
+> Slash commands desconocidos pueden no ser rechazados de forma segura hoy — podrían
+> reenviarse al handler genérico de LLM en vez de rechazarse explícitamente.
+> Un PR futuro debe agregar fail-closed routing antes de habilitar cualquier comando
+> de research intake: cualquier mensaje que comience con `/` y no esté en la whitelist
+> activa debe rechazarse y no reenviarse al handler genérico.
+> "Current implementation must be audited; unknown slash commands may not be safely
+>  rejected today. A future PR must add fail-closed slash command routing before any
+>  research commands are enabled."
+
 ### Flujo de validación de comando
 
 ```
