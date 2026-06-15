@@ -115,11 +115,21 @@ scripts/cloudflare.sh    — cloudflared tunnel info (solo lectura)
 tmux kill-session -t cordelius 2>/dev/null || true
 sleep 2
 
-# Arrancar en nueva sesión tmux con env cargado
+# Guardia: verificar que el proceso viejo realmente terminó.
+# Si /healthz sigue respondiendo, el proceso quedó huérfano fuera de tmux —
+# arrancar un segundo proceso sería incorrecto y peligroso.
+if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
+  echo "ERROR: old server still running outside tmux; manual cleanup required"
+  echo "Diagnóstico: ps aux | grep 'node dashboard.js' | grep -v grep"
+  echo "Intervención manual (no default): pkill -f 'node dashboard.js'"
+  exit 1
+fi
+
+# Puerto libre — arrancar en nueva sesión tmux con env cargado
 TERMUX_HOME=/data/data/com.termux/files/home
 tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 
-# Verificar que el servidor arrancó (nunca iniciar segundo proceso si el puerto ya está ocupado)
+# Verificar arranque — nunca confirmar éxito sin verificar
 sleep 4
 if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
   echo "OK: Cordelius arrancó correctamente"
@@ -129,7 +139,9 @@ else
 fi
 ```
 
-> ⚠️ El script **nunca** inicia un segundo proceso si el puerto 3000 ya está ocupado.
+> ⚠️ El script **nunca** arranca un segundo proceso si el puerto 3000 sigue ocupado.
+> Si `tmux kill-session` no bastó (proceso huérfano fuera de tmux), el script aborta
+> con error y sugiere diagnóstico manual — no fuerza un arranque ciego.
 > Siempre verifica `/healthz` después del restart. Si falla, el comando `/restart`
 > responde en Telegram con error — no confirma éxito silenciosamente.
 

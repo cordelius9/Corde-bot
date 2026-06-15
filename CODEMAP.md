@@ -266,12 +266,16 @@ node --check dashboard.js
 # 5. Reiniciar
 tmux kill-session -t cordelius 2>/dev/null || true
 sleep 2
+# Guardia: si /healthz sigue respondiendo, hay proceso huérfano fuera de tmux.
+# NO arrancar un segundo proceso. Diagnóstico: ps aux | grep "node dashboard.js" | grep -v grep
+# Intervención manual (no default): pkill -f "node dashboard.js"
+curl -sf http://127.0.0.1:3000/healthz && echo "PROCESO HUERFANO — limpiar manualmente antes de continuar" && exit 1 || true
 TERMUX_HOME=/data/data/com.termux/files/home
 tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 sleep 4
 
 # 6. Health check
-curl -s http://127.0.0.1:3000/health | python3 -m json.tool
+curl -s http://127.0.0.1:3000/healthz | python3 -m json.tool
 
 # 7. Security audit (verifica invariantes)
 curl -s http://127.0.0.1:3000/api/security/audit | python3 -m json.tool
