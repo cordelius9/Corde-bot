@@ -95,3 +95,4 @@ dashboard.backup.health-os-direct-*.js
 # Platform dirs
 .railway/
 .render/
+.claude/

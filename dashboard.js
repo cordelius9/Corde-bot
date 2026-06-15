@@ -1,6 +1,7 @@
 const http = require("http");
 const https = require("https");
 const fs = require("fs");
+const crypto = require("crypto");
 
 const PORT = process.env.PORT || 3000;
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
@@ -13,6 +14,12 @@ const WHOOP_CONFIGURED = !!(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLI
 // Alpaca — always paper unless explicitly disabled
 const ALPACA_PAPER = process.env.ALPACA_PAPER !== "false";
 const ALPACA_CONFIGURED = !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY);
+
+const SERVER_STARTED_AT = Date.now();
+const GIT_COMMIT = (() => {
+  try { return require("child_process").execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim(); }
+  catch (e) { return "unknown"; }
+})();
 
 const BOT_FILE = "bot_state.json";
 const HISTORY_FILE = "portfolio_history.json";
@@ -109,7 +116,15 @@ let portfolioHistory = loadJSON(HISTORY_FILE, []);
 let intelItems = loadJSON(INTEL_FILE, []);
 let journalEntries = loadJSON(JOURNAL_FILE, []);
 let whoopTokens = loadJSON(WHOOP_TOKEN_FILE, null);
-let whoopCache = { profile: null, cycle: null, recovery: null, lastFetch: 0, connected: false };
+let whoopCache = { profile: null, cycle: null, recovery: null, sleep: null, lastFetch: 0, connected: false };
+// Warm start: reuse the last persisted WHOOP reading until a live refresh succeeds,
+// but only if it is recent (< 6h) — never present stale data as current.
+{
+  const _wc = loadJSON("whoop_today_cache.json", null);
+  if (_wc && typeof _wc === "object" && !Array.isArray(_wc) && _wc.lastFetch && Date.now() - _wc.lastFetch < 6 * 3600 * 1000) {
+    whoopCache = { ...whoopCache, ..._wc, lastFetch: 0 };
+  }
+}
 let quiverData = { congressional: [], insider: [], contracts: [], lastFetch: 0, configured: false, error: null };
 let quiverDataFull = { congressional: [], insider: [], contracts: [] };
 
@@ -153,7 +168,8 @@ let bot = loadJSON(BOT_FILE, {
 
 function apiGet(url) {
   return new Promise(resolve => {
-    const req = https.get(url, res => {
+    // CoinGecko (y otros con Cloudflare) responden 403 sin User-Agent.
+    const req = https.get(url, { headers: { "User-Agent": "Cordelius/1.0 (personal dashboard)", Accept: "application/json" } }, res => {
       let data = "";
       res.on("data", c => data += c);
       res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
@@ -202,6 +218,21 @@ function apiPost(url, bodyStr, extraHeaders = {}) {
 const WHOOP_API_BASE = "https://api.prod.whoop.com";
 const WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token";
 
+// Non-secret WHOOP health reason for diagnostics: token_missing, token_expired_refresh_failed,
+// api_unavailable, no_today_reading, ok
+let whoopStatusReason = whoopTokens && whoopTokens.access_token ? "pending_first_fetch" : "token_missing";
+
+// Tokens saved by older flows have savedAt+expires_in instead of expires_at.
+function whoopTokenExpiryMs() {
+  if (!whoopTokens) return 0;
+  if (whoopTokens.expires_at) return whoopTokens.expires_at;
+  if (whoopTokens.savedAt && whoopTokens.expires_in) {
+    const base = Date.parse(whoopTokens.savedAt);
+    if (Number.isFinite(base)) return base + whoopTokens.expires_in * 1000;
+  }
+  return 0;
+}
+
 async function refreshWhoopToken() {
   if (!whoopTokens || !whoopTokens.refresh_token) return false;
   const cid = process.env.WHOOP_CLIENT_ID || "";
@@ -225,11 +256,22 @@ async function refreshWhoopToken() {
   return false;
 }
 
+// WHOOP rotates refresh tokens (single-use): concurrent refreshes race and all but
+// the first fail. Share one in-flight refresh across parallel fetchWhoopAPI calls.
+let whoopRefreshInFlight = null;
+function refreshWhoopTokenOnce() {
+  if (!whoopRefreshInFlight) {
+    whoopRefreshInFlight = refreshWhoopToken().finally(() => { whoopRefreshInFlight = null; });
+  }
+  return whoopRefreshInFlight;
+}
+
 async function fetchWhoopAPI(path) {
-  if (!whoopTokens || !whoopTokens.access_token) return null;
-  if (whoopTokens.expires_at && Date.now() > whoopTokens.expires_at - 60000) {
-    const ok = await refreshWhoopToken();
-    if (!ok) return null;
+  if (!whoopTokens || !whoopTokens.access_token) { whoopStatusReason = "token_missing"; return null; }
+  const expiry = whoopTokenExpiryMs();
+  if (expiry && Date.now() > expiry - 60000) {
+    const ok = await refreshWhoopTokenOnce();
+    if (!ok) { whoopStatusReason = "token_expired_refresh_failed"; return null; }
   }
   return apiGetAuth(WHOOP_API_BASE + path, whoopTokens.access_token);
 }
@@ -259,6 +301,10 @@ async function refreshWhoopCache() {
       (recovery && recovery.records && recovery.records.length) ||
       (sleep && sleep.records && sleep.records.length)
     );
+    if (whoopCache.connected) whoopStatusReason = "ok";
+    else if (!profile && !cycle && !recovery && !sleep) {
+      if (whoopStatusReason !== "token_expired_refresh_failed" && whoopStatusReason !== "token_missing") whoopStatusReason = "api_unavailable";
+    } else whoopStatusReason = "no_today_reading";
     whoopCache.lastFetch = Date.now();
 
     saveJSON("whoop_today_cache.json", {
@@ -275,7 +321,15 @@ async function refreshWhoopCache() {
   }
 }
 
-function assetLiveValue(a) { if (a.source === "GBM" || a.source === "Bitso" || a.currency === "MXN") return a.valueManual; const q = quotes[a.symbol]; if (q && Number.isFinite(q.value)) return q.value; return a.valueManual; }
+function assetLiveValue(a) {
+  if (a.type === "crypto") {
+    const cq = cryptoQuotes[a.symbol];
+    if (cq && Number.isFinite(cq.priceMXN) && cq.priceMXN > 0) return cq.priceMXN * a.units; // MXN live (Bitso/CoinGecko)
+    return a.valueManual;
+  }
+  if (a.source === "GBM" || a.source === "Bitso" || a.currency === "MXN") return a.valueManual;
+  const q = quotes[a.symbol]; if (q && Number.isFinite(q.value)) return q.value; return a.valueManual;
+}
 function assetValueMXN(a) { const v = assetLiveValue(a); return a.currency === "USD" ? v * FX_USD_MXN : v; }
 function assetCostMXN(a) { const c = a.costManual || 0; return a.currency === "USD" ? c * FX_USD_MXN : c; }
 function assetGainPct(a) {
@@ -350,7 +404,18 @@ function portfolioValue() {
     const gainMXN = valueMXN - costMXN;
     const gainPct = costMXN ? (gainMXN / costMXN) * 100 : assetGainPct(a);
     const q = quotes[a.symbol] || {};
-    return { ...a, liveValue: assetLiveValue(a), valueMXN, costMXN, gainMXN, gainPct, day: Number(q.day || 0), score: assetScore(a), risk: assetRisk(a), signal: assetSignal(a), zones: tradeZones(a), quoteSource: q.source || "manual", ind: indicators(a) };
+    const cq = a.type === "crypto" ? cryptoQuotes[a.symbol] : null;
+    const tech = assetTechnical(a);
+    const simInd = indicators(a); // heurístico seeded (legacy)
+    const quoteSource = assetQuoteSource(a);
+    // `ind` (legacy UI) usa valores reales cuando existen; si no, el simulado de siempre.
+    const ind = tech
+      ? { rsi: tech.rsi, macd: +tech.macd.macd.toFixed(2), momentum: tech.momentum, volatility: tech.volatility, trend: tech.trend }
+      : simInd;
+    const indicatorsFull = tech
+      ? { rsi: tech.rsi, macd: tech.macd.macd, signal: tech.macd.signal, histogram: tech.macd.histogram, momentum: tech.momentum, trend: tech.trend, volatility: tech.volatility, source: tech.source, status: "LIVE" }
+      : { rsi: simInd.rsi, macd: simInd.macd, signal: null, histogram: null, momentum: simInd.momentum, trend: simInd.trend, volatility: simInd.volatility, source: "heuristic-seed", status: "SIMULATED" };
+    return { ...a, liveValue: assetLiveValue(a), valueMXN, costMXN, gainMXN, gainPct, day: cq ? cq.day : Number(q.day || 0), score: assetScore(a), risk: assetRisk(a), signal: assetSignal(a), zones: tradeZones(a), quoteSource, priceQuoteStatus: quoteSource === "manual" ? "MANUAL" : "LIVE", indicatorStatus: indicatorsFull.status, indicatorSource: indicatorsFull.source, ind, indicators: indicatorsFull };
   });
   const totalValueMXN = assets.reduce((s, a) => s + a.valueMXN, 0);
   const totalCostMXN = assets.reduce((s, a) => s + a.costMXN, 0);
@@ -370,8 +435,76 @@ function marketRegime() {
 function savePortfolioPoint() {
   const pv = portfolioValue();
   portfolioHistory.push({ t: Date.now(), total: pv.totalValueMXN, pnl: pv.totalGainPct });
-  if (portfolioHistory.length > 600) portfolioHistory = portfolioHistory.slice(-600);
+  // Retención multi-día: antes el cap de 600 puntos/minuto borraba todo lo
+  // anterior a ~10h. Ahora: resolución por minuto las últimas 24h, 1 punto
+  // por hora para lo más viejo. Se conserva el rango completo de fechas.
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
+  const old = portfolioHistory.filter(p => p.t < dayAgo);
+  const recent = portfolioHistory.filter(p => p.t >= dayAgo);
+  const hourly = [];
+  let lastHour = null;
+  for (const p of old) {
+    const hr = Math.floor(p.t / 3600000);
+    if (hr !== lastHour) { hourly.push(p); lastHour = hr; }
+  }
+  portfolioHistory = hourly.concat(recent).slice(-2000);
   saveJSON(HISTORY_FILE, portfolioHistory);
+}
+
+// ── ANTI-REPETICIÓN / HISTORIA REAL ──
+// Reduce series con puntos casi idénticos: 1 representativo por bucket
+// temporal, y solo si el valor cambió lo suficiente vs el último mostrado.
+function dedupeTimeline(points, { bucketMs = 6 * 3600 * 1000, minDeltaPct = 0.4, max = 3, key = "total" } = {}) {
+  const out = [];
+  let lastBucket = null, lastVal = null;
+  for (const p of points) {
+    if (!p || !Number.isFinite(p.t)) continue;
+    const bucket = Math.floor(p.t / bucketMs);
+    const v = Number(p[key]);
+    const changed = lastVal === null || Math.abs((v - lastVal) / (lastVal || 1)) * 100 >= minDeltaPct;
+    if (bucket !== lastBucket && (changed || out.length === 0)) {
+      out.push(p); lastBucket = bucket; lastVal = v;
+    }
+  }
+  // siempre incluir el último punto si difiere del último mostrado
+  const last = points[points.length - 1];
+  if (last && out[out.length - 1] !== last && lastVal !== null && Math.abs((Number(last[key]) - lastVal) / (lastVal || 1)) * 100 >= minDeltaPct) out.push(last);
+  return out.slice(-max);
+}
+
+// Historia de equity multi-día: ancla diaria desde data/portfolio_snapshots.json
+// (summary.equity, último de cada día) + intradía de hoy desde portfolioHistory.
+// No inventa fechas: si solo hay un día, lo dice (mode: "limited").
+function buildDailyEquityHistory() {
+  const points = [];
+  const snaps = loadJSON(PORTFOLIO_SNAPSHOT_FILE, []);
+  const byDay = {};
+  for (const s of (Array.isArray(snaps) ? snaps : [])) {
+    const ts = Date.parse(s.timestamp || (s.summary && s.summary.timestamp) || "");
+    const eq = s.summary && Number(s.summary.equity);
+    if (!Number.isFinite(ts) || !Number.isFinite(eq)) continue;
+    const day = new Date(ts).toISOString().slice(0, 10);
+    if (!byDay[day] || ts > byDay[day].t) byDay[day] = { t: ts, total: eq, pnl: Number(s.summary.pnl) || 0 };
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  for (const [day, p] of Object.entries(byDay)) if (day !== today) points.push(p);
+  // intradía de hoy: 1 punto por hora + el último
+  let lastHour = null;
+  for (const p of portfolioHistory) {
+    const hr = Math.floor(p.t / 3600000);
+    if (hr !== lastHour) { points.push(p); lastHour = hr; }
+  }
+  const lastLive = portfolioHistory[portfolioHistory.length - 1];
+  if (lastLive && points[points.length - 1] !== lastLive) points.push(lastLive);
+  points.sort((a, b) => a.t - b.t);
+  const days = new Set(points.map(p => new Date(p.t).toISOString().slice(0, 10)));
+  return {
+    points,
+    rangeDays: days.size,
+    mode: days.size >= 2 ? "real" : "limited",
+    firstDate: points.length ? new Date(points[0].t).toISOString().slice(0, 10) : null,
+    lastDate: points.length ? new Date(points[points.length - 1].t).toISOString().slice(0, 10) : null
+  };
 }
 
 // ---- CHART SVG — ejes visibles, tooltips, tabla de datos ----
@@ -413,20 +546,27 @@ function spark(data, opts = {}) {
     yTicks.push(`<text x="${padLeft - 5}" y="${(y + 5).toFixed(1)}" fill="#9fb3c8" font-size="15" text-anchor="end">${fmtV(v)}</text>`);
   }
 
-  // X-axis: up to 7 date labels
+  // X-axis: up to 7 labels. Si el rango es intradía (<36h) mostrar hora;
+  // multi-día mostrar fecha — evita "jun 11, jun 11, jun 11…" repetido.
+  const tsAll = rawData.filter(d => d.t != null).map(d => d.t);
+  const spanMs = tsAll.length ? Math.max(...tsAll) - Math.min(...tsAll) : 0;
+  const intraday = spanMs > 0 && spanMs < 36 * 3600 * 1000;
+  const fmtT = t => intraday
+    ? new Date(t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })
+    : new Date(t).toLocaleDateString("es-MX", { month: "short", day: "numeric" });
   const xTicks = [];
   const xStep = Math.ceil(rawData.length / 6);
   rawData.forEach((d, i) => {
     if (i % xStep !== 0 && i !== rawData.length - 1) return;
     const p = xy[i];
-    const label = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric" }) : String(i + 1);
+    const label = d.t ? fmtT(d.t) : String(i + 1);
     xTicks.push(`<text x="${p.x.toFixed(1)}" y="${height - 6}" fill="#9fb3c8" font-size="13" text-anchor="middle">${label}</text>`);
   });
 
   // Dots with SVG <title> tooltips
   const dots = xy.map((p, i) => {
     if (i !== 0 && i !== rawData.length - 1 && i % Math.ceil(rawData.length / 8) !== 0) return "";
-    const tooltip = (p.t ? new Date(p.t).toLocaleDateString("es-MX") + " · " : "") + fmtV(p.v).replace("$", "$");
+    const tooltip = (p.t ? (intraday ? new Date(p.t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : new Date(p.t).toLocaleDateString("es-MX")) + " · " : "") + fmtV(p.v).replace("$", "$");
     return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${color}" stroke="#02040a" stroke-width="2"><title>${tooltip}</title></circle>`;
   }).join("");
 
@@ -435,7 +575,9 @@ function spark(data, opts = {}) {
   if (showTable && rawData.some(d => d.t != null) && rawData.length >= 3) {
     const recent = rawData.slice(-6);
     const rows = recent.map(d => {
-      const dateStr = d.t ? new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+      const dateStr = d.t ? (intraday
+        ? new Date(d.t).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) + " hoy"
+        : new Date(d.t).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })) : "-";
       return `<tr><td style="color:var(--muted);font-size:11px;padding:4px 8px">${dateStr}</td><td style="font-weight:700;text-align:right;padding:4px 8px">${fmtV(d.v)}</td></tr>`;
     }).join("");
     tableHtml = `<div style="overflow-x:auto;margin-top:6px"><table style="width:auto;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table></div>`;
@@ -463,6 +605,204 @@ function miniSpark(symbol, color = "#3b9dff") {
   const vals = []; let v = 50 + (seed % 25);
   for (let i = 0; i < 20; i++) { v += Math.sin((i + seed) / 2) * 2 + ((seed % 7) - 3) * 0.18; vals.push(v); }
   return spark(vals, { color, height: 115, showTable: false });
+}
+
+// ---- QUOTES REALES — Finnhub /quote para tickers USD ----
+// El boot y el interval ya invocaban refreshQuotes(); la función no existía y los
+// precios quedaban congelados en valueManual + pseudo-quotes seeded.
+let quotesLastFetch = 0;
+let quotesLastError = null;
+async function refreshQuotes() {
+  if (!FINNHUB_API_KEY) { quotesLastError = "no_api_key"; return; }
+  const targets = PORTFOLIO.filter(a => a.currency === "USD" && a.liveTicker && (a.type === "stock" || a.type === "etf"));
+  let okCount = 0;
+  for (const a of targets) {
+    const q = await apiGet(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(a.liveTicker)}&token=${FINNHUB_API_KEY}`);
+    if (q && Number.isFinite(q.c) && q.c > 0) {
+      quotes[a.symbol] = { price: q.c, value: q.c * a.units, day: Number.isFinite(q.dp) ? q.dp : 0, ok: true, source: "finnhub", t: Date.now() };
+      okCount++;
+    }
+  }
+  if (okCount > 0) { quotesLastFetch = Date.now(); quotesLastError = null; }
+  else quotesLastError = "api_unavailable";
+}
+function quotesFreshness() {
+  if (!FINNHUB_API_KEY) return "SIMULATED";
+  if (!quotesLastFetch) return "FALLBACK";
+  return Date.now() - quotesLastFetch > 30 * 60 * 1000 ? "STALE" : "LIVE";
+}
+
+// ---- CRYPTO QUOTES REALES — Bitso público (pares MXN, sin API key) con
+// fallback CoinGecko para libros que Bitso no tiene (p.ej. SHIB). Si todo
+// falla, el activo conserva valueManual y badge FALLBACK; nunca crashea. ----
+let cryptoQuotes = {};            // por símbolo: { priceMXN, day, source, t }
+let cryptoQuotesLastFetch = 0;
+let cryptoQuotesError = null;
+const BITSO_BOOKS = { BTC: "btc_mxn", ETH: "eth_mxn", XRP: "xrp_mxn", BCH: "bch_mxn", MANA: "mana_mxn" };
+const COINGECKO_IDS = { BTC: "bitcoin", ETH: "ethereum", XRP: "ripple", BCH: "bitcoin-cash", MANA: "decentraland", SHIB: "shiba-inu" };
+
+async function refreshCryptoQuotes() {
+  const symbols = PORTFOLIO.filter(a => a.type === "crypto").map(a => a.symbol);
+  let okCount = 0;
+  const missing = [];
+  for (const sym of symbols) {
+    const book = BITSO_BOOKS[sym];
+    if (!book) { missing.push(sym); continue; }
+    const r = await apiGet(`https://api.bitso.com/v3/ticker/?book=${book}`);
+    const p = r && r.success && r.payload ? r.payload : null;
+    const last = p ? Number(p.last) : NaN;
+    if (Number.isFinite(last) && last > 0) {
+      const ch = Number(p.change_24); // Bitso reporta cambio absoluto en MXN
+      const day = Number.isFinite(ch) && last - ch !== 0 ? (ch / (last - ch)) * 100 : 0;
+      cryptoQuotes[sym] = { priceMXN: last, day: +day.toFixed(2), source: "bitso", t: Date.now() };
+      okCount++;
+    } else missing.push(sym);
+  }
+  if (missing.length) {
+    const ids = missing.map(s => COINGECKO_IDS[s]).filter(Boolean).join(",");
+    if (ids) {
+      const cg = await apiGet(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=mxn&include_24hr_change=true`);
+      for (const sym of missing) {
+        const row = cg && cg[COINGECKO_IDS[sym]];
+        if (row && Number.isFinite(row.mxn) && row.mxn > 0) {
+          cryptoQuotes[sym] = { priceMXN: row.mxn, day: Number.isFinite(row.mxn_24h_change) ? +row.mxn_24h_change.toFixed(2) : 0, source: "coingecko", t: Date.now() };
+          okCount++;
+        }
+      }
+    }
+  }
+  if (okCount > 0) { cryptoQuotesLastFetch = Date.now(); cryptoQuotesError = null; }
+  else cryptoQuotesError = "api_unavailable";
+}
+function cryptoFreshness() {
+  if (!cryptoQuotesLastFetch) return "FALLBACK";
+  return Date.now() - cryptoQuotesLastFetch > 30 * 60 * 1000 ? "STALE" : "LIVE";
+}
+// ---- TECHNICAL INDICATORS REALES — series de cierres diarios ----
+// Acciones: Finnhub candle si la key tiene acceso (free tier suele dar 403)
+// con fallback a Yahoo chart v8 (público). Cripto: CoinGecko market_chart.
+// Sin serie suficiente: NO se inventa; el activo queda SIMULATED/FALLBACK.
+let technicalIndicators = {};   // sym → { rsi, macd:{macd,signal,histogram}, momentum, trend, volatility, source, closes, t }
+let technicalLastFetch = 0;
+let technicalLastError = null;
+let finnhubCandlesBlocked = false;
+const TECH_TTL_MS = 2 * 3600 * 1000; // velas diarias: refrescar cada 2h basta
+
+function emaSeries(values, period) {
+  const k = 2 / (period + 1);
+  const out = [values[0]];
+  for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
+  return out;
+}
+function computeIndicatorsFromCloses(closes) {
+  const c = (closes || []).filter(v => Number.isFinite(v) && v > 0);
+  if (c.length < 35) return null; // serie insuficiente: no inventar
+  // RSI(14) Wilder
+  let gain = 0, loss = 0;
+  for (let i = 1; i <= 14; i++) { const d = c[i] - c[i - 1]; if (d >= 0) gain += d; else loss -= d; }
+  let avgG = gain / 14, avgL = loss / 14;
+  for (let i = 15; i < c.length; i++) {
+    const d = c[i] - c[i - 1];
+    avgG = (avgG * 13 + Math.max(d, 0)) / 14;
+    avgL = (avgL * 13 + Math.max(-d, 0)) / 14;
+  }
+  const rsi = avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL);
+  // MACD(12,26,9)
+  const e12 = emaSeries(c, 12), e26 = emaSeries(c, 26);
+  const macdLine = c.map((_, i) => e12[i] - e26[i]);
+  const sigLine = emaSeries(macdLine.slice(25), 9);
+  const macd = macdLine[macdLine.length - 1];
+  const signal = sigLine[sigLine.length - 1];
+  const histogram = macd - signal;
+  // Momentum 10 períodos (%)
+  const momentum = c.length > 11 ? ((c[c.length - 1] / c[c.length - 11]) - 1) * 100 : 0;
+  // Volatilidad: stdev de retornos diarios (últimos 20)
+  const rets = [];
+  for (let i = Math.max(1, c.length - 20); i < c.length; i++) rets.push(c[i] / c[i - 1] - 1);
+  const mean = rets.reduce((s, r) => s + r, 0) / rets.length;
+  const stdev = Math.sqrt(rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length) * 100;
+  const volatility = stdev > 3 ? "ALTA" : stdev > 1.2 ? "MEDIA" : "BAJA";
+  // Tendencia: histograma MACD + precio vs SMA20
+  const sma20 = c.slice(-20).reduce((s, v) => s + v, 0) / 20;
+  const last = c[c.length - 1];
+  const trend = histogram > 0 && last > sma20 ? "ALCISTA" : histogram < 0 && last < sma20 ? "BAJISTA" : "LATERAL";
+  return {
+    rsi: Math.round(rsi),
+    macd: { macd: +macd.toFixed(4), signal: +signal.toFixed(4), histogram: +histogram.toFixed(4) },
+    momentum: +momentum.toFixed(2),
+    trend, volatility,
+    closes: c.length
+  };
+}
+
+async function fetchDailyCloses(a) {
+  if (a.type === "crypto") {
+    const id = COINGECKO_IDS[a.symbol];
+    if (!id) return null;
+    const r = await apiGet(`https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=mxn&days=60&interval=daily`);
+    const prices = r && Array.isArray(r.prices) ? r.prices.map(p => Number(p[1])) : null;
+    return prices && prices.length >= 35 ? { closes: prices, source: "coingecko" } : null;
+  }
+  const ticker = a.liveTicker || a.symbol;
+  if (FINNHUB_API_KEY && !finnhubCandlesBlocked) {
+    const to = Math.floor(Date.now() / 1000), from = to - 86400 * 100;
+    const r = await apiGet(`https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(ticker)}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`);
+    if (r && r.s === "ok" && Array.isArray(r.c) && r.c.length >= 35) return { closes: r.c, source: "finnhub" };
+    if (r && r.error) finnhubCandlesBlocked = true; // free tier sin acceso: no insistir
+  }
+  const y = await apiGet(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=3mo&interval=1d`);
+  const res = y && y.chart && y.chart.result && y.chart.result[0];
+  const closes = res && res.indicators && res.indicators.quote && res.indicators.quote[0] ? (res.indicators.quote[0].close || []).filter(v => Number.isFinite(v)) : null;
+  return closes && closes.length >= 35 ? { closes, source: "yahoo" } : null;
+}
+
+let technicalLastGapRetry = 0;
+async function refreshTechnicalIndicators(force) {
+  const now = Date.now();
+  const fullDue = force || !technicalLastFetch || now - technicalLastFetch >= TECH_TTL_MS;
+  // Entre refresques completos, solo reintentar huecos (máx 1 pasada cada 5 min).
+  const targets = fullDue ? PORTFOLIO : PORTFOLIO.filter(a => !assetTechnical(a));
+  if (!targets.length) return;
+  if (!fullDue && now - technicalLastGapRetry < 5 * 60 * 1000) return;
+  if (!fullDue) technicalLastGapRetry = now;
+  let ok = 0, fail = 0;
+  for (const a of targets) {
+    try {
+      const serie = await fetchDailyCloses(a);
+      const ind = serie ? computeIndicatorsFromCloses(serie.closes) : null;
+      if (ind) { technicalIndicators[a.symbol] = { ...ind, source: serie.source, t: Date.now() }; ok++; }
+      else fail++;
+    } catch (e) { fail++; }
+    // CoinGecko free tolera ~5-6 req/min: espaciar las llamadas cripto.
+    if (a.type === "crypto") await new Promise(r => setTimeout(r, 7000));
+  }
+  if (ok > 0) {
+    if (fullDue) technicalLastFetch = Date.now();
+    technicalLastError = fail ? `${fail}_sin_serie` : null;
+  } else if (fullDue) technicalLastError = "no_series_available";
+}
+
+function assetTechnical(a) {
+  const t = technicalIndicators[a.symbol];
+  return t && Date.now() - t.t < 24 * 3600 * 1000 ? t : null; // >24h: ya no es confiable
+}
+function indicatorsFreshness() {
+  const live = PORTFOLIO.filter(a => assetTechnical(a)).length;
+  if (live === PORTFOLIO.length && live > 0) return "LIVE";
+  if (live > 0) return "MIXED";
+  return technicalLastError ? "FALLBACK" : "SIMULATED";
+}
+function indicatorCounts() {
+  const live = PORTFOLIO.filter(a => assetTechnical(a)).length;
+  return { live, simulated: PORTFOLIO.length - live };
+}
+
+// Fuente real con la que se valuó cada activo (para badges y conteos honestos).
+function assetQuoteSource(a) {
+  if (a.type === "crypto") { const cq = cryptoQuotes[a.symbol]; return cq && Number.isFinite(cq.priceMXN) ? cq.source : "manual"; }
+  if (a.source === "GBM" || a.currency === "MXN") return "manual";
+  const q = quotes[a.symbol];
+  return q && q.source === "finnhub" && Number.isFinite(q.value) ? "finnhub" : "manual";
 }
 
 async function fetchNews() {
@@ -1227,6 +1567,223 @@ function buildMemorySummary() {
   };
 }
 
+// ════════════════════════════════════════════════════════════════
+// COMMAND CENTER LAYER — Automations · Jarvis Brain · Today Feed
+// Solo lectura + alertas educativas. Nunca ejecuta órdenes reales.
+// ════════════════════════════════════════════════════════════════
+const AUTOMATION_EVENTS_FILE = "data/automation_events.json";
+
+function cryptoConcentrationPct(pv) {
+  if (!pv.totalValueMXN) return 0;
+  return pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0) / pv.totalValueMXN * 100;
+}
+
+// Motor de reglas local: evalúa condiciones y devuelve eventos sugeridos.
+// "suggestedMode" es una sugerencia educativa — no cambia nada por sí solo.
+function evaluateAutomationRules() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const jd = computeJournalData();
+  const criptoPct = cryptoConcentrationPct(pv);
+  const bigNews = news.filter(n => n.classification && /alto|high/i.test(n.classification.impact || "")).slice(0, 3);
+  const lastMood = (journalEntries[0] && journalEntries[0].mood) || null;
+  const rules = [
+    {
+      id: "health_low_defensive",
+      name: "Salud baja → modo defensivo",
+      fired: h.recovery !== null && h.recovery < 50,
+      severity: "WARNING",
+      suggestedMode: "DEFENSIVO",
+      message: h.recovery !== null ? `Recovery ${h.recovery}% (<50%). Sugerencia educativa: modo defensivo, decisiones simples, sin riesgo nuevo.` : ""
+    },
+    {
+      id: "crypto_concentration",
+      name: "Concentración cripto alta",
+      fired: criptoPct > 60,
+      severity: criptoPct > 75 ? "CRITICAL" : "WARNING",
+      suggestedMode: null,
+      message: `Cripto es ${criptoPct.toFixed(1)}% del portafolio (umbral 60%). Revisar diversificación. No es consejo financiero.`
+    },
+    {
+      id: "big_market_news",
+      name: "Noticia de mercado relevante",
+      fired: bigNews.length > 0,
+      severity: "INFO",
+      suggestedMode: null,
+      message: bigNews.length ? `Noticias de impacto alto: ${bigNews.map(n => n.headline).join(" · ").slice(0, 220)}` : ""
+    },
+    {
+      id: "recovery_mode",
+      name: "Journal negativo + sueño bajo → recovery mode",
+      fired: lastMood === "negativo" && h.sleep !== null && h.sleep < 60,
+      severity: "WARNING",
+      suggestedMode: "RECOVERY",
+      message: h.sleep !== null ? `Último mood negativo y sleep ${h.sleep}% (<60%). Sugerencia: recovery mode — descanso, sin decisiones grandes hoy.` : ""
+    }
+  ];
+  const fired = rules.filter(r => r.fired).map(r => ({
+    id: r.id, name: r.name, severity: r.severity, suggestedMode: r.suggestedMode,
+    message: r.message, date: todayKey(), ts: Date.now()
+  }));
+  return { rules, fired, criptoPct };
+}
+
+// Persiste eventos disparados (1 por regla por día, append-only con cap).
+function recordAutomationEvents(fired) {
+  if (!fired.length) return loadJSON(AUTOMATION_EVENTS_FILE, []);
+  const events = loadJSON(AUTOMATION_EVENTS_FILE, []);
+  let changed = false;
+  for (const ev of fired) {
+    if (!events.some(e => e.id === ev.id && e.date === ev.date)) { events.push(ev); changed = true; }
+  }
+  const capped = events.slice(-200);
+  if (changed) saveJSON(AUTOMATION_EVENTS_FILE, capped);
+  return capped;
+}
+
+function getAutomationState() {
+  const { rules, fired, criptoPct } = evaluateAutomationRules();
+  const events = recordAutomationEvents(fired);
+  return {
+    ok: true, ts: Date.now(),
+    defensiveMode: !!settings.defensiveMode,
+    rules: rules.map(r => ({ id: r.id, name: r.name, fired: !!r.fired, severity: r.severity, suggestedMode: r.suggestedMode, message: r.fired ? r.message : null })),
+    firedToday: events.filter(e => e.date === todayKey()),
+    history: events.slice(-30).reverse(),
+    criptoPct: +criptoPct.toFixed(1),
+    educationalNote: "Reglas locales educativas. Nunca ejecutan compras ni órdenes reales."
+  };
+}
+
+// Readiness 0-100 por dominio, con heurísticas transparentes.
+function computeDomainReadiness(h, pv, jd, automation) {
+  const clamp = v => Math.max(0, Math.min(100, Math.round(v)));
+  const health = h.recovery !== null && h.sleep !== null ? clamp(h.recovery * 0.6 + h.sleep * 0.4)
+    : h.recovery !== null ? clamp(h.recovery) : null;
+  let trading = 60;
+  if (health !== null) trading += (health - 60) * 0.4;
+  trading -= automation.firedToday.filter(e => e.severity !== "INFO").length * 12;
+  if (settings.defensiveMode) trading -= 20;
+  const study = h.sleep !== null ? clamp(h.sleep * 0.7 + (h.recovery || h.sleep) * 0.3) : null;
+  const social = h.strain !== null ? clamp(95 - Math.max(0, h.strain - 8) * 6 + (h.recovery ? (h.recovery - 50) / 5 : 0)) : null;
+  return {
+    health: { score: health, status: h.configured ? "LIVE" : "FALLBACK" },
+    trading: { score: clamp(trading), status: "HEURISTIC" },
+    study: { score: study, status: study === null ? "FALLBACK" : "HEURISTIC" },
+    social: { score: social, status: social === null ? "FALLBACK" : "HEURISTIC" }
+  };
+}
+
+function computeJarvisBrain() {
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const jd = computeJournalData();
+  const opp = getOpportunityState();
+  const automation = getAutomationState();
+  const alerts = loadAlerts().filter(a => !a.acknowledged).slice(-5);
+  const quickNotes = loadJSON("data/jarvis_quick_notes.json", []);
+  const readiness = computeDomainReadiness(h, pv, jd, automation);
+  const mode = settings.defensiveMode ? "DEFENSIVO (manual)" : (h.operatingMode || "NORMAL");
+
+  const warnings = [];
+  for (const e of automation.firedToday) warnings.push({ severity: e.severity, text: e.message, source: "automation" });
+  for (const a of alerts.slice(0, 3)) warnings.push({ severity: a.severity || "WARNING", text: a.title, source: "alerts" });
+
+  const nextActions = [];
+  if (settings.defensiveMode) nextActions.push("Modo defensivo activo: hoy solo observar, nada de riesgo nuevo.");
+  if (h.recovery !== null && h.recovery < 50) nextActions.push("Prioriza descanso: recovery bajo. Mueve lo no urgente a mañana.");
+  if (automation.criptoPct > 60) nextActions.push(`Revisar concentración cripto (${automation.criptoPct}%) — educativo.`);
+  if (jd.count === 0 || !journalEntries.some(e => (e.date || "").slice(0, 10) === todayKey())) nextActions.push("Registrar nota del día en Journal (2 min).");
+  const topOpp = (opp.topOpportunities || [])[0];
+  if (topOpp) nextActions.push(`Leer research de ${topOpp.symbol} (${topOpp.score}/100) — paper only.`);
+  const rsiExtremes = pv.assets.filter(x => x.indicatorStatus === "LIVE" && (x.ind.rsi >= 70 || x.ind.rsi <= 30)).slice(0, 3);
+  if (rsiExtremes.length) nextActions.push(`RSI extremo (real, educativo): ${rsiExtremes.map(x => `${x.symbol} ${x.ind.rsi}`).join(", ")} — solo contexto técnico, no es consejo financiero.`);
+  if (!nextActions.length) nextActions.push("Todo en orden: revisa el Today Feed y sigue con tu día.");
+
+  const topFocus = warnings.find(w => w.severity === "CRITICAL")?.text
+    || warnings.find(w => w.severity === "WARNING")?.text
+    || (topOpp ? `Oportunidad educativa: ${topOpp.symbol} ${topOpp.score}/100` : "Mantener rutina: salud y journal al día.");
+
+  return {
+    ok: true, ts: Date.now(),
+    state: {
+      mode,
+      summary: `Patrimonio ${money(pv.totalValueMXN)} (${pct(pv.totalGainPct)}) · Mercado ${reg.label} · Recovery ${h.recovery !== null ? h.recovery + "%" : "—"} · Sleep ${h.sleep !== null ? h.sleep + "%" : "—"}`,
+      dataStatus: {
+        whoop: h.configured ? "LIVE" : "FALLBACK",
+        quotes: quotesFreshness(),
+        cryptoQuotes: cryptoFreshness(),
+        news: FINNHUB_API_KEY ? "LIVE" : "FALLBACK",
+        mxAssets: "MANUAL",
+        indicators: indicatorsFreshness()
+      }
+    },
+    topFocus,
+    warnings: warnings.slice(0, 6),
+    nextActions: nextActions.slice(0, 5),
+    readiness,
+    memory: {
+      journalEntries: jd.count,
+      topMood: jd.topMood,
+      quickNotes: Array.isArray(quickNotes) ? quickNotes.length : 0,
+      summary: buildMemorySummary().summary
+    },
+    educationalNote: "Resumen educativo. No es asesoría financiera ni médica."
+  };
+}
+
+// Today Feed: timeline unificado de eventos del día (y ayer como contexto).
+let feedDedupeStats = { candidates: 0, shown: 0 };
+function buildTodayFeed() {
+  const items = [];
+  const push = (ts, type, title, detail, status) => {
+    if (!ts || !Number.isFinite(ts)) return;
+    items.push({ ts, type, title: String(title).slice(0, 160), detail: detail ? String(detail).slice(0, 240) : null, status: status || "LIVE" });
+  };
+  const cutoff = Date.now() - 36 * 3600 * 1000;
+
+  const h = computeHealthReadiness();
+  if (h.configured && whoopCache.lastFetch) {
+    push(whoopCache.lastFetch, "health", `WHOOP · Recovery ${h.recovery !== null ? h.recovery + "%" : "—"} · Sleep ${h.sleep !== null ? h.sleep + "%" : "—"}`,
+      h.strain !== null ? `Strain ${h.strain.toFixed ? h.strain.toFixed(1) : h.strain} · HRV ${h.hrv || "—"} ms` : null, "LIVE");
+  }
+
+  // Snapshots deduplicados: máx 3 representativos (1 por bloque de 6h y solo
+  // si el total cambió ≥0.4%) en vez de 6 casi idénticos del mismo minuto.
+  const snapCandidates = portfolioHistory.slice(-360);
+  const snapShown = dedupeTimeline(snapCandidates, { bucketMs: 6 * 3600 * 1000, minDeltaPct: 0.4, max: 3 });
+  feedDedupeStats = { candidates: snapCandidates.length, shown: snapShown.length };
+  for (const p of snapShown) push(p.t, "portfolio", `Snapshot portafolio: ${money(p.total)}`, `P&L global ${pct(p.pnl)}`, "LIVE");
+
+  for (const e of journalEntries.slice(0, 5)) {
+    const ts = e.ts || Date.parse(e.date || "") || null;
+    push(ts, "journal", `Journal · ${e.mood || "nota"}`, (e.text || e.note || "").slice(0, 200), "LIVE");
+  }
+
+  for (const n of news.slice(0, 6)) push((n.datetime || 0) * 1000, "news", n.headline, n.source, FINNHUB_API_KEY ? "LIVE" : "FALLBACK");
+
+  for (const d of loadJSON(TRADING_DECISION_FILE, []).slice(-5)) {
+    const ts = d.ts || Date.parse(d.timestamp || d.date || "") || null;
+    push(ts, "decision", `Decisión (paper): ${d.title || d.action || d.type || "registro"}`, d.summary || d.message || null, "SIMULATED");
+  }
+
+  for (const ev of loadJSON(AUTOMATION_EVENTS_FILE, []).slice(-8)) push(ev.ts, "automation", `Regla: ${ev.name}`, ev.message, "LIVE");
+
+  for (const a of loadAlerts().slice(-5)) {
+    const ts = Date.parse(a.timestamp || "") || null;
+    push(ts, "alert", a.title, null, ts && Date.now() - ts > 24 * 3600 * 1000 ? "STALE" : "LIVE");
+  }
+
+  for (const t of (bot.thoughts || []).slice(-4)) {
+    const ts = t.ts || t.t || null;
+    push(ts, "autopilot", `Bot paper: ${(t.text || t.msg || "").slice(0, 120)}`, null, "SIMULATED");
+  }
+
+  const feed = items.filter(i => i.ts >= cutoff).sort((a, b) => b.ts - a.ts).slice(0, 40);
+  return { ok: true, ts: Date.now(), count: feed.length, items: feed, note: "Eventos de las últimas 36h. Badges indican origen del dato." };
+}
+
 
 function buildDecisionRecords() {
   const stored = loadJSON(TRADING_DECISION_FILE, []);
@@ -1518,7 +2075,16 @@ function botTick() {
   }
   const eq = botValue();
   bot.equityHistory.push({ t: Date.now(), v: eq });
-  bot.equityHistory = bot.equityHistory.slice(-500);
+  // Retención multi-día (antes el cap de 500 minutos borraba todo lo >8h):
+  // minuto a minuto las últimas 24h, 1 punto/hora para lo anterior.
+  {
+    const dayAgo = Date.now() - 24 * 3600 * 1000;
+    const old = bot.equityHistory.filter(p => p.t < dayAgo);
+    const recent = bot.equityHistory.filter(p => p.t >= dayAgo);
+    const hourly = []; let lastHr = null;
+    for (const p of old) { const hr = Math.floor(p.t / 3600000); if (hr !== lastHr) { hourly.push(p); lastHr = hr; } }
+    bot.equityHistory = hourly.concat(recent).slice(-2000);
+  }
   const peak = Math.max(...bot.equityHistory.map(x => x.v), bot.initialCapital);
   bot.maxDrawdown = Math.max(bot.maxDrawdown || 0, peak ? ((peak - eq) / peak) * 100 : 0);
   bot.lastTick = new Date().toISOString();
@@ -2047,7 +2613,7 @@ function renderPortfolioRows(assets) {
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
           <a class="tv-link" target="_blank" href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(TV_SYMBOL[a.symbol] || a.symbol)}">Ver en TradingView ↗</a>
-          <button onclick="setAlfredoQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
+          <button onclick="setJarvisQ('analiza ${a.symbol}')" class="btn" style="font-size:12px;padding:7px 14px;color:#818cf8;border-color:rgba(129,140,248,.3)">Preguntar a Alfredo</button>
         </div>
       </div>
     </details>`;
@@ -2302,6 +2868,14 @@ function renderQuiverPanel() {
   }
   if (quiverData.error) {
     return '<div class="panel"><div class="muted">Quiver error: ' + esc(quiverData.error) + '</div></div>';
+  }
+  const _qRows = (quiverData.congressional || []).length + (quiverData.insider || []).length + (quiverData.contracts || []).length;
+  if (_qRows === 0) {
+    return '<div class="panel" style="border-color:rgba(255,211,92,.2)"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      + statusBadge("LIVE")
+      + '<b style="font-size:14px">Quiver conectado, sin filas hoy</b>'
+      + '<span class="muted" style="font-size:12px">La API respondió pero congreso/insiders/contratos vienen vacíos para tus tickers. Se muestra "—" en vez de inventar datos.</span>'
+      + '</div></div>';
   }
 
   const allM = [
@@ -3234,10 +3808,14 @@ function computeHealthCorrelations(history, behaviorsByDate) {
     { label: "Sauna vs Recovery", value: notReady ? null : metric("sauna", "recovery") }, { label: "Cannabis vs Sleep", value: notReady ? null : metric("cannabis", "sleep") }, { label: "Cannabis vs HRV", value: notReady ? null : metric("cannabis", "hrv") }, { label: "Stress vs Recovery", value: notReady ? null : metric("stress", "recovery") }, { label: "Training vs Sleep", value: notReady ? null : metric("training", "sleep") }
   ] };
 }
-function buildHealthInsight(whoop, scores) {
+function buildHealthInsight(whoop, scores, fresh = whoop.connected === true) {
   const recovery = whoop.recovery ?? "—", sleep = whoop.sleep ?? "—", strain = whoop.strain ?? "—", hrv = whoop.hrv ?? "—";
+  const noData = [whoop.recovery, whoop.sleep, whoop.strain, whoop.hrv].every(v => v == null);
+  if (noData) return `Sin lectura WHOOP disponible hoy (tokens pendientes o cache vacío). No se muestran números inventados; conecta WHOOP para ver recovery, sleep, HRV y strain reales. Educativo. No es asesoría médica ni financiera.`;
+  const recDate = whoop.date || (whoop.timestamp ? String(whoop.timestamp).slice(0, 10) : null);
+  const lead = fresh ? "Hoy tu lectura WHOOP-first marca" : `Última lectura WHOOP registrada${recDate ? ` (${recDate})` : ""} — no es de hoy — marca`;
   const social = Math.round(clamp((scores.energy * 0.45) + (scores.mentalClarity * 0.35) + (100 - scores.stressLoad) * 0.2));
-  return `Hoy tu lectura WHOOP-first marca recovery ${recovery}%, sleep ${sleep}%, HRV ${hrv} ms y strain ${strain}. El Health Score está en ${scores.healthScore}/100 (${scores.status}) con modo ${whoop.operatingMode || whoop.mode || "NORMAL"}. Esto sugiere energía física ${scores.physicalEnergy}/100, claridad mental ${scores.mentalClarity}/100 y sistema nervioso ${scores.nervousSystem}/100. Qué hacer: prioriza decisiones simples, bloques de trabajo claros y recuperación si el score baja. Qué evitar: sobreoperar, perseguir movimientos, estudiar sin pausas o cargar más estrés si el overtrading risk está alto (${scores.overtradingRisk}/100). Capacidad educativa de trading: ${scores.tradingCapacity}/100; capacidad de estudio profundo: ${scores.deepWorkCapacity}/100; capacidad social estimada: ${social}/100. Riesgo de burnout: ${scores.stressLoad >= 70 || scores.recoveryPriority >= 70 ? "elevado" : "controlado"}. Educativo. No es asesoría médica ni financiera.`;
+  return `${lead} recovery ${recovery}%, sleep ${sleep}%, HRV ${hrv} ms y strain ${strain}. El Health Score está en ${scores.healthScore}/100 (${scores.status}) con modo ${whoop.operatingMode || whoop.mode || "NORMAL"}. Esto sugiere energía física ${scores.physicalEnergy}/100, claridad mental ${scores.mentalClarity}/100 y sistema nervioso ${scores.nervousSystem}/100. Qué hacer: prioriza decisiones simples, bloques de trabajo claros y recuperación si el score baja. Qué evitar: sobreoperar, perseguir movimientos, estudiar sin pausas o cargar más estrés si el overtrading risk está alto (${scores.overtradingRisk}/100). Capacidad educativa de trading: ${scores.tradingCapacity}/100; capacidad de estudio profundo: ${scores.deepWorkCapacity}/100; capacidad social estimada: ${social}/100. Riesgo de burnout: ${scores.stressLoad >= 70 || scores.recoveryPriority >= 70 ? "elevado" : "controlado"}. Educativo. No es asesoría médica ni financiera.`;
 }
 
 function saveJournalEntry(entry) {
@@ -3264,7 +3842,7 @@ function renderTradingAIStatus() {
   return `<div style="max-width:1280px;margin:0 auto 8px;border:1px solid rgba(255,211,92,.18);border-radius:24px;padding:18px 22px;background:linear-gradient(135deg,rgba(255,211,92,.04),rgba(59,157,255,.04))">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
       <div>
-        <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">TRADING AI · PAPER MODE</div>
+        <div style="font-size:11px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c">TRADING AI · PAPER MODE ${statusBadge("SIMULATED")}</div>
         <div style="color:#9fb3c8;font-size:13px;margin-top:2px">Simulación educativa — sin dinero real — Alpaca pendiente de conexión</div>
       </div>
       <div style="display:flex;gap:8px">
@@ -3285,7 +3863,26 @@ function renderTradingAIStatus() {
 function renderPaperTradingPanel() {
   const idea = computeTradeIdea();
   const bt = renderBotTables();
+  const trades = bot.history || [];
+  const buys = trades.filter(t => t.type === "BUY");
+  const sells = trades.filter(t => t.type === "SELL");
+  const symbols = [...new Set(trades.map(t => t.symbol))];
+  const realizedPnl = trades.reduce((s, t) => s + (Number(t.pnl) || 0), 0);
+  const eq = bot.equityHistory || [];
+  const eqSpanH = eq.length > 1 ? (eq[eq.length - 1].t - eq[0].t) / 3600000 : 0;
+  const opsSummary = trades.length
+    ? `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;border:1px solid rgba(0,255,153,.14);border-radius:14px;padding:11px 16px;margin-bottom:12px;background:rgba(0,0,0,.18)">
+        ${statusBadge("SIMULATED")}
+        <span style="font-size:13px;color:#dbeafe"><b>${trades.length}</b> operaciones paper</span>
+        <span style="font-size:12px;color:#00ff99">${buys.length} BUY</span>
+        <span style="font-size:12px;color:#ff4d6d">${sells.length} SELL</span>
+        <span style="font-size:12px;color:#9fb3c8">Símbolos: ${symbols.map(esc).join(", ")}</span>
+        <span style="font-size:12px;color:${realizedPnl >= 0 ? "#00ff99" : "#ff4d6d"}">P&L realizado (sim): ${money(realizedPnl)}</span>
+        <span style="font-size:11px;color:#5a6674">${esc(trades[trades.length - 1] ? trades[trades.length - 1].time : "")} → ${esc(trades[0] ? trades[0].time : "")}</span>
+      </div>`
+    : `<div class="muted" style="border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:11px 16px;margin-bottom:12px;font-size:13px">Sin operaciones paper registradas todavía. Las decisiones disponibles aparecen abajo y en Autopilot.</div>`;
   return `<div style="max-width:1280px;margin:0 auto 16px">
+    ${opsSummary}
     ${idea.hasIdea ? `<div style="border:1px solid rgba(0,255,153,.18);border-radius:18px;padding:14px 20px;margin-bottom:14px;background:rgba(0,255,153,.03)">
       <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#00ff99;margin-bottom:8px">Idea de paper trade (hipotético — no ejecutar)</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
@@ -3295,6 +3892,7 @@ function renderPaperTradingPanel() {
       </div>
     </div>` : ""}
     ${spark(bot.equityHistory, { key: "v", color: "#00ff99", height: 220 })}
+    <div style="font-size:11px;color:${eqSpanH >= 36 ? "#9fb3c8" : "#ffd35c"};margin-top:4px">${eqSpanH >= 36 ? `Equity simulado · rango ${(eqSpanH / 24).toFixed(1)} días (timestamps reales)` : `Equity simulado intradía (~${eqSpanH.toFixed(1)}h) — historial limitado, se extiende solo. La bitácora de abajo sí cruza días.`}</div>
     <h2 style="font-size:18px;margin:16px 0 8px">Posiciones simuladas</h2>
     <div class="panel table-wrap"><table><thead><tr><th>Activo</th><th>Unidades</th><th>Avg</th><th>Precio</th><th>Valor</th><th>P&L</th><th>SL</th><th>TP</th></tr></thead><tbody>${bt.posRows}</tbody></table></div>
     <h2 style="font-size:18px;margin:16px 0 8px">Bitácora del bot</h2>
@@ -3646,12 +4244,31 @@ function renderAutopilotPanel() {
     { label: "PAPER MODE",   value: "ON",       sub: "Sin dinero real",   bg: "rgba(0,255,153,.07)",    border: "rgba(0,255,153,.18)",    color: "#00ff99" },
     { label: "REAL TRADING", value: "OFF",      sub: "Desactivado",       bg: "rgba(255,77,109,.07)",   border: "rgba(255,77,109,.18)",   color: "#ff4d6d" },
     { label: "QUIVER",       value: quiverData.configured ? "ON" : "—",  sub: quiverData.configured ? "Datos en vivo" : "Agrega API key", bg: quiverData.configured ? "rgba(0,255,153,.07)" : "rgba(255,211,92,.07)", border: quiverData.configured ? "rgba(0,255,153,.18)" : "rgba(255,211,92,.18)", color: quiverData.configured ? "#00ff99" : "#ffd35c" },
-    { label: "ALPACA",       value: "PENDIENTE",sub: "Paper solo (F3)",   bg: "rgba(129,140,248,.07)",  border: "rgba(129,140,248,.18)",  color: "#818cf8" },
+    { label: "ALPACA",       value: "NO CONECTADO", sub: "Nunca órdenes reales", bg: "rgba(129,140,248,.07)",  border: "rgba(129,140,248,.18)",  color: "#818cf8" },
     { label: "WHOOP",        value: WHOOP_CONFIGURED ? "DETECTADO" : "PENDIENTE", sub: WHOOP_CONFIGURED ? "API key lista" : "Conecta para readiness", bg: WHOOP_CONFIGURED ? "rgba(0,255,153,.07)" : "rgba(244,114,182,.07)", border: WHOOP_CONFIGURED ? "rgba(0,255,153,.18)" : "rgba(244,114,182,.18)", color: WHOOP_CONFIGURED ? "#00ff99" : "#f472b6" },
   ];
+  const _apReal = (function(){
+    const decisions = loadJSON(TRADING_DECISION_FILE, []);
+    const lastDec = decisions[decisions.length - 1];
+    const snaps = loadJSON(PORTFOLIO_SNAPSHOT_FILE, []);
+    const lastSnap = Array.isArray(snaps) && snaps.length ? snaps[snaps.length - 1] : null;
+    const mem = loadJSON("data/autopilot_memory.json", null);
+    const memEntries = Array.isArray(mem) ? mem.length : mem && typeof mem === "object" ? Object.keys(mem).length : 0;
+    const opp = getOpportunityState();
+    return `<div style="border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:13px 16px;margin-bottom:14px;background:rgba(0,0,0,.18)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#818cf8;margin-bottom:8px">Estado real — qué hace y qué no</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;font-size:12px;color:#c8d8f0">
+        <div><b style="color:#3b9dff">Observa:</b> ${PORTFOLIO.length} activos del portafolio, ${MARKET_WATCHLIST.length} tickers de watchlist, ${(opp.topOpportunities || []).length} oportunidades scoring.</div>
+        <div><b style="color:#00ff99">Última decisión:</b> ${lastDec ? esc((lastDec.title || lastDec.action || lastDec.type || "registro") + " · " + (lastDec.timestamp || lastDec.date || "")) : "ninguna registrada"} ${statusBadge("SIMULATED")}</div>
+        <div><b style="color:#ffd35c">Último snapshot:</b> ${lastSnap ? esc(new Date(lastSnap.timestamp).toLocaleString("es-MX")) : "—"} · memoria: ${memEntries} entradas</div>
+        <div><b style="color:#ff4d6d">NO puede:</b> ejecutar órdenes reales, tocar dinero, conectarse a exchanges, modificar .env/tokens. Todo es paper/educativo.</div>
+      </div>
+    </div>`;
+  })();
   return `<div style="max-width:1280px;margin:0 auto 16px">
     <div class="panel" style="border:1px solid rgba(129,140,248,.18);background:rgba(129,140,248,.04)">
       <div style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#818cf8;margin-bottom:12px">Autopilot — Estado del sistema</div>
+      ${_apReal}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
         ${statusCards.map(c => `<div style="background:${c.bg};border:1px solid ${c.border};border-radius:12px;padding:10px 12px;text-align:center">
           <div style="font-size:9px;font-weight:900;letter-spacing:.1em;color:${c.color};margin-bottom:3px">${c.label}</div>
@@ -3796,178 +4413,6 @@ function renderHealthReadinessPanel() {
 }
 
 
-
-function renderHealthOSPanel() {
-  const h = computeHealthReadiness();
-
-  function clamp(n, min, max) {
-    n = Number(n);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(min, Math.min(max, n));
-  }
-
-  function fmt(v, suffix) {
-    if (v === null || v === undefined || v === "") return "—";
-    if (typeof v === "number") {
-      const out = Math.abs(v) % 1 ? v.toFixed(1) : String(v);
-      return esc(out + (suffix || ""));
-    }
-    return esc(String(v) + (suffix || ""));
-  }
-
-  const recovery = clamp(h.recovery, 0, 100);
-  const sleep = clamp(h.sleep, 0, 100);
-  const strainRaw = Number(h.strain || 0);
-  const strainPct = clamp((strainRaw / 21) * 100, 0, 100);
-  const hrvScore = clamp((Number(h.hrv || 0) / 160) * 100, 0, 100);
-  const rhrScore = h.restingHeartRate ? clamp(100 - Math.max(0, Number(h.restingHeartRate) - 38) * 2, 0, 100) : 70;
-
-  const healthScore = Math.round(
-    recovery * 0.34 +
-    sleep * 0.24 +
-    hrvScore * 0.18 +
-    rhrScore * 0.12 +
-    (100 - strainPct) * 0.12
-  );
-
-  const status =
-    healthScore >= 85 ? "EXCELENTE" :
-    healthScore >= 70 ? "BUENO" :
-    healthScore >= 55 ? "MEDIO" :
-    healthScore >= 40 ? "BAJO" : "CRÍTICO";
-
-  const statusColor =
-    healthScore >= 70 ? "#00ff99" :
-    healthScore >= 55 ? "#ffd35c" :
-    "#ff4d6d";
-
-  const badgeLabel = h.connected ? "WHOOP LIVE" : h.configured ? "WHOOP DETECTADO" : "WHOOP PENDIENTE";
-  const mode = h.operatingMode || "NORMAL";
-
-  function donut(label, value, raw, color) {
-    const v = clamp(value, 0, 100);
-    return `<div class="health-os-card health-os-donut-card">
-      <div class="health-os-donut" style="background:conic-gradient(${color} ${v}%, rgba(120,160,210,.13) 0)">
-        <div class="health-os-donut-inner">
-          <div class="health-os-donut-value">${esc(raw)}</div>
-          <div class="health-os-donut-label">${esc(label)}</div>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  const aiText = `Hoy tu sistema está en modo ${mode}. Recovery ${h.recovery ?? "—"}%, Sleep ${h.sleep ?? "—"}%, HRV ${h.hrv != null ? Number(h.hrv).toFixed(1) + " ms" : "—"} y Strain ${h.strain != null ? Number(h.strain).toFixed(1) : "—"}. Esto significa que tu cuerpo debe guiar el nivel de agresividad del día. Si la recuperación baja o el strain sube, conviene priorizar decisiones más lentas, menos impulsivas y con menor exposición. Para trading: evita sobreoperar, revenge trading y entradas grandes si estás cansado. Para estudio: enfócate en bloques profundos si la energía mental está alta; si no, usa tareas mecánicas. Para social: mantén planes que no drenen demasiado si el sistema nervioso está cargado. Prioridad: dormir bien, hidratarte, comer completo y registrar hábitos como sauna, cannabis, estrés o entrenamiento para detectar correlaciones.`;
-
-  return `<section id="health-os-shell" class="health-os-shell">
-    <style>
-      .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.20),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
-      .health-os-hero{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
-      .health-os-title{font-size:44px;font-weight:950;letter-spacing:-.04em;background:linear-gradient(90deg,#f9a8d4,#3b9dff,#00ff99);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:6px 0}
-      .health-os-kicker{font-size:11px;font-weight:950;letter-spacing:.18em;text-transform:uppercase;color:#f472b6}
-      .health-os-sub{color:#9fb3c8;font-size:13px;line-height:1.6}
-      .health-os-badge{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;background:rgba(0,255,153,.12);border:1px solid rgba(0,255,153,.24);color:#00ff99;font-size:12px;font-weight:900}
-      .health-os-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
-      .health-os-card{border:1px solid rgba(120,160,210,.14);background:rgba(255,255,255,.045);border-radius:22px;padding:16px;box-shadow:inset 0 1px rgba(255,255,255,.04)}
-      .health-os-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-bottom:6px}
-      .health-os-value{font-size:30px;font-weight:950;color:#eaf6ff;line-height:1}
-      .health-os-small{font-size:12px;color:#9fb3c8;margin-top:7px;line-height:1.5}
-      .health-os-donut-row{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:14px;margin-bottom:14px}
-      .health-os-donut-card{display:flex;align-items:center;justify-content:center;min-height:230px}
-      .health-os-donut{width:178px;height:178px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 18px 45px rgba(0,0,0,.35)}
-      .health-os-donut-inner{width:126px;height:126px;border-radius:50%;background:rgba(4,10,22,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.08)}
-      .health-os-donut-value{font-size:28px;font-weight:950;color:#eaf6ff}
-      .health-os-donut-label{font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#9fb3c8;margin-top:4px}
-      .health-os-wide{grid-column:1/-1}
-      .health-os-ai{font-size:14px;color:#dbeafe;line-height:1.75}
-      .health-os-chip{display:inline-flex;border-radius:999px;padding:6px 11px;margin:4px;background:rgba(244,114,182,.08);border:1px solid rgba(244,114,182,.18);color:#f9a8d4;font-size:12px;font-weight:800}
-      @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:24px}}
-    </style>
-
-    <div class="health-os-hero">
-      <div class="health-os-card">
-        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
-          <div>
-            <div class="health-os-kicker">Cordelius Health</div>
-            <div class="health-os-title">Biological Operating System</div>
-            <div class="health-os-sub">WHOOP-first · Health no depende del Journal · sistema educativo para energía, enfoque y riesgo de sobreoperar.</div>
-          </div>
-          <span id="health-os-whoop-badge" class="health-os-badge">● ${esc(badgeLabel)}</span>
-        </div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Health Score</div>
-        <div id="health-os-score" class="health-os-value" style="color:${statusColor}">${healthScore}</div>
-        <div id="health-os-status" class="health-os-small" style="font-weight:900;color:${statusColor}">${status}</div>
-        <div class="health-os-small">Modo operativo: <b id="health-os-mode" style="color:#ffd35c">${esc(mode)}</b></div>
-      </div>
-    </div>
-
-    <div class="health-os-grid">
-      <div class="health-os-card"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">${fmt(h.recovery, "%")}</div><div class="health-os-small">Capacidad de carga del día</div></div>
-      <div class="health-os-card"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">${fmt(h.sleep, "%")}</div><div class="health-os-small">Base de recuperación mental</div></div>
-      <div class="health-os-card"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">${fmt(h.hrv, " ms")}</div><div class="health-os-small">Sistema nervioso</div></div>
-      <div class="health-os-card"><div class="health-os-label">Resting HR</div><div id="health-os-rhr" class="health-os-value">${fmt(h.restingHeartRate, " bpm")}</div><div class="health-os-small">Carga fisiológica</div></div>
-      <div class="health-os-card"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">${fmt(h.strain, "")}</div><div class="health-os-small">Carga acumulada</div></div>
-      <div class="health-os-card"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">${esc(status)}</div><div class="health-os-small">Lectura Cordelius</div></div>
-    </div>
-
-    <div class="health-os-donut-row">
-      ${donut("Recovery", recovery, h.recovery != null ? h.recovery + "%" : "—", "#00ff99")}
-      ${donut("Sleep", sleep, h.sleep != null ? h.sleep + "%" : "—", "#3b9dff")}
-      ${donut("Strain", strainPct, h.strain != null ? Number(h.strain).toFixed(1) : "—", "#f472b6")}
-    </div>
-
-    <div class="health-os-grid">
-      <div class="health-os-card">
-        <div class="health-os-label">Energy Engine</div>
-        <div class="health-os-small">Physical Energy: <b id="health-os-energy-physical">${Math.round((recovery + sleep) / 2)}</b>/100</div>
-        <div class="health-os-small">Mental Energy: <b id="health-os-energy-mental">${Math.round((sleep + hrvScore) / 2)}</b>/100</div>
-        <div class="health-os-small">Focus Capacity: <b id="health-os-energy-focus">${Math.round((sleep + recovery + hrvScore) / 3)}</b>/100</div>
-        <div class="health-os-small">Deep Work: <b id="health-os-energy-deepwork">${Math.round((sleep + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
-        <div class="health-os-small">Trading Capacity: <b id="health-os-energy-trading">${Math.round((recovery + hrvScore + (100 - strainPct)) / 3)}</b>/100</div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Radar Health</div>
-        <div id="health-os-radar" class="health-os-small">
-          Recovery ${Math.round(recovery)} · Sleep ${Math.round(sleep)} · HRV ${Math.round(hrvScore)} · Nervous System ${Math.round(hrvScore)} · Energy ${Math.round((recovery + sleep)/2)} · Focus ${Math.round((sleep + hrvScore)/2)}
-        </div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Behavior Tracker</div>
-        <div id="health-os-behaviors">
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('sauna')">Sauna</button>
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('cannabis')">Cannabis</button>
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('training')">Training</button>
-          <button class="health-os-chip" onclick="toggleHealthBehavior && toggleHealthBehavior('stress')">High Stress</button>
-        </div>
-        <div class="health-os-small">Opcional. Sin formularios grandes.</div>
-      </div>
-
-      <div class="health-os-card">
-        <div class="health-os-label">Correlation Engine</div>
-        <div id="health-os-correlations" class="health-os-small">Recolectando datos. Se activará con más snapshots diarios.</div>
-      </div>
-
-      <div class="health-os-card health-os-wide">
-        <div class="health-os-label">Jarvis Health AI</div>
-        <div id="health-os-ai" class="health-os-ai">${esc(aiText)}</div>
-      </div>
-
-      <div class="health-os-card health-os-wide">
-        <div class="health-os-label">Trading Integration</div>
-        <div id="health-os-trading-risk" class="health-os-small">
-          Recovery &lt; 50 → modo defensivo · Recovery &gt; 80 → modo normal · Strain alto → bajar agresividad · Overtrading alto → no operar impulsivo.
-          <br>Educativo. No es asesoría médica ni financiera.
-        </div>
-      </div>
-    </div>
-  </section>`;
-
-}
-
 function renderPortfolioSnapshot(pv, reg) {
   const best = pv.assets.slice().sort((a, b) => b.score - a.score)[0];
   const cripto = pv.assets.filter(a => a.type === "crypto").reduce((s, a) => s + a.valueMXN, 0);
@@ -4037,6 +4482,453 @@ function alfredoDailyContext(h, pv, reg) {
     { mod: "health", label: "Ver Cordelius Health" }
   ];
   return { mode, oneLiner, question, nextActions };
+}
+
+// ── Badges honestos de origen de dato ──
+const BADGE_META = {
+  LIVE:      { color: "#00ff99", title: "Dato en vivo de API real" },
+  FALLBACK:  { color: "#ffd35c", title: "Sin API activa; valor local o ausente" },
+  STALE:     { color: "#fb923c", title: "Dato real pero viejo" },
+  SIMULATED: { color: "#a78bfa", title: "Simulado/determinista, no real" },
+  MANUAL:    { color: "#3b9dff", title: "Capturado a mano" },
+  HEURISTIC: { color: "#9fb3c8", title: "Calculado con reglas locales" },
+  MIXED:     { color: "#67e8f9", title: "Parte real, parte simulado — ver detalle por activo" }
+};
+function statusBadge(status) {
+  const m = BADGE_META[status] || BADGE_META.HEURISTIC;
+  return `<span title="${esc(m.title)}" style="display:inline-block;border-radius:99px;padding:2px 8px;font-size:9px;font-weight:900;letter-spacing:.08em;color:${m.color};background:${m.color}14;border:1px solid ${m.color}33;vertical-align:middle">${esc(status)}</span>`;
+}
+
+// Sección colapsable con estado persistido en localStorage (clave data-clps).
+function collapsibleSection(id, title, summaryHtml, contentHtml, defaultOpen = false) {
+  return `<details class="clps" data-clps="${esc(id)}" ${defaultOpen ? "open" : ""} style="max-width:1280px;margin:0 auto 12px">
+    <summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 20px;background:var(--panel);border:1px solid rgba(120,160,210,.14);border-radius:18px;user-select:none">
+      <span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:15px">${title}</b>${summaryHtml || ""}</span>
+      <span class="clps-caret" style="font-size:11px;opacity:.55;transition:.2s">▼</span>
+    </summary>
+    <div style="padding-top:10px">${contentHtml}</div>
+  </details>`;
+}
+
+// Header neural: red de nodos SVG animada + estado del sistema en vivo.
+// Sin imágenes externas; todo inline. Premium/minimal/oscuro.
+function renderNeuralHeader() {
+  const h = computeHealthReadiness();
+  const nodes = [
+    [78, 34], [34, 70], [120, 62], [76, 100], [168, 32], [196, 78], [152, 104], [228, 52], [212, 110]
+  ];
+  const links = [[0,1],[0,2],[1,3],[2,3],[2,4],[4,5],[5,6],[3,6],[0,4],[4,7],[5,7],[5,8],[7,8],[6,8]];
+  const linkColor = i => i % 3 === 0 ? "0,255,153" : i % 3 === 1 ? "59,157,255" : "255,211,92";
+  const svg = `<svg width="248" height="128" viewBox="0 0 248 128" fill="none" style="flex:0 0 auto;filter:drop-shadow(0 0 14px rgba(0,255,153,.18))">
+    ${links.map(([a, b], i) => {
+      const [x1, y1] = nodes[a], [x2, y2] = nodes[b];
+      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(${linkColor(i)},.4)" stroke-width="1" stroke-dasharray="4 7" style="animation:dash ${2.2 + (i % 5) * .6}s linear infinite"/>
+      <circle r="2.2" fill="rgb(${linkColor(i)})" opacity=".95"><animateMotion dur="${2.6 + (i % 4) * .9}s" repeatCount="indefinite" path="M${x1},${y1} L${x2},${y2}"/></circle>`;
+    }).join("")}
+    ${nodes.map(([x, y], i) => `<g>
+      <circle cx="${x}" cy="${y}" r="${i === 0 ? 7 : 4.5}" fill="rgba(${linkColor(i)},.16)" stroke="rgb(${linkColor(i)})" stroke-width="1.1"><animate attributeName="r" values="${i === 0 ? "7;9;7" : "4.5;6;4.5"}" dur="${2.4 + (i % 3)}s" repeatCount="indefinite"/></circle>
+      <circle cx="${x}" cy="${y}" r="1.8" fill="rgb(${linkColor(i)})"/>
+    </g>`).join("")}
+  </svg>`;
+  const pills = [
+    { label: "SECURITY", on: true },
+    { label: "SESSION", on: !!CORDELIUS_ACCESS_KEY },
+    { label: "WHOOP", badge: h.configured ? "LIVE" : "FALLBACK" },
+    { label: "QUOTES", badge: quotesFreshness() },
+    { label: "CRYPTO", badge: cryptoFreshness() },
+    { label: "INDICATORS", badge: indicatorsFreshness() }
+  ];
+  return `<div class="panel" style="max-width:1280px;margin:8px auto 14px;padding:16px 24px;display:flex;gap:24px;align-items:center;flex-wrap:wrap;border:1px solid rgba(0,255,153,.18);background:linear-gradient(120deg,rgba(0,255,153,.06),rgba(59,157,255,.05) 55%,rgba(255,211,92,.04));position:relative;overflow:hidden">
+    <div style="position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,transparent 0%,rgba(0,255,153,.04) 50%,transparent 100%);background-size:100% 220%;animation:nscan 7s linear infinite"></div>
+    ${svg}
+    <div style="flex:1;min-width:250px;position:relative">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <div style="font-size:24px;font-weight:900;background:linear-gradient(90deg,#00ff99,#9bd3ff,#ffd35c);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.06em;text-shadow:0 0 28px rgba(0,255,153,.15)">CORDELIUS · NEURAL OS</div>
+        <span style="display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:900;letter-spacing:.14em;color:#00ff99"><span class="status-dot"></span>SISTEMA VIVO</span>
+      </div>
+      <div style="font-size:11px;color:#9fb3c8;margin:5px 0 11px;letter-spacing:.04em">datos → análisis → señales → decisiones · pensamiento en tiempo real · <span style="color:#5a6674">educativo — no asesoría financiera ni médica</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        ${pills.map(p => p.badge
+          ? `<span style="display:inline-flex;align-items:center;gap:5px;font-size:9px;font-weight:900;letter-spacing:.08em;color:#9fb3c8;border:1px solid rgba(120,160,210,.12);border-radius:99px;padding:3px 9px;background:rgba(0,0,0,.2)">${esc(p.label)} ${statusBadge(p.badge)}</span>`
+          : `<span style="display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:4px 11px;font-size:9px;font-weight:900;letter-spacing:.08em;background:${p.on ? "rgba(0,255,153,.1)" : "rgba(255,211,92,.1)"};color:${p.on ? "#00ff99" : "#ffd35c"};border:1px solid ${p.on ? "rgba(0,255,153,.3)" : "rgba(255,211,92,.3)"}">${esc(p.label)} ${p.on ? "ON" : "OFF"}</span>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
+// Action Center: ÚNICO lugar para preguntas, next actions, alerts y
+// automations. Los demás módulos referencian aquí en vez de duplicar.
+function renderActionCenter() {
+  const b = computeJarvisBrain();
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const ctx = alfredoDailyContext(h, pv, reg);
+  const automation = getAutomationState();
+  const alerts = loadAlerts().filter(a => !a.acknowledged).slice(-3).reverse();
+  const notes = loadJSON("data/jarvis_quick_notes.json", []);
+  const sevColor = s => s === "CRITICAL" ? "#ff4d6d" : s === "WARNING" ? "#ffd35c" : "#3b9dff";
+  const alertRow = (icon, color, text, tag) => `<div style="display:flex;gap:8px;align-items:start;border-left:3px solid ${color};padding:5px 9px;background:rgba(0,0,0,.18);border-radius:0 9px 9px 0;margin-bottom:5px">
+    <span style="color:${color};font-weight:900;font-size:12px">${icon}</span>
+    <div style="flex:1"><div style="font-size:12px;color:#dbeafe;line-height:1.3">${esc(text)}</div>${tag ? `<div style="font-size:9px;color:#5a6674;text-transform:uppercase;letter-spacing:.08em;margin-top:1px">${esc(tag)}</div>` : ""}</div>
+  </div>`;
+  return `<div class="panel" id="action-center" style="max-width:1280px;margin:0 auto 16px;padding:16px 22px;border:1px solid rgba(255,211,92,.2);background:rgba(255,211,92,.03)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:900;letter-spacing:.2em;text-transform:uppercase;color:#ffd35c">◈ Action Center</div>
+      <div style="font-size:10px;color:#5a6674">único inbox de preguntas y acciones · <span class="cmdk-kbd">⌘K</span> para actuar · notas: ${Array.isArray(notes) ? notes.length : 0}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px">
+      <div class="ac-block">
+        <div class="ac-title" style="color:#ffd35c">⌾ Pregunta actual</div>
+        <div style="font-size:14px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
+      </div>
+      <div class="ac-block">
+        <div class="ac-title" style="color:#3b9dff">→ Next actions</div>
+        <ol style="margin:0;padding-left:16px">${b.nextActions.slice(0, 4).map(a => `<li style="font-size:12px;color:#c8d8f0;margin-bottom:4px;line-height:1.35">${esc(a)}</li>`).join("")}</ol>
+      </div>
+      <div class="ac-block">
+        <div class="ac-title" style="color:#ff4d6d">! Alerts (${alerts.length})</div>
+        ${alerts.length ? alerts.map(a => alertRow("!", sevColor(a.severity || "WARNING"), a.title, Date.parse(a.timestamp || "") < Date.now() - 24 * 3600 * 1000 ? "vieja · detalle en Autopilot" : "activa")).join("") : `<div class="muted" style="font-size:12px">— Sin alertas activas.</div>`}
+      </div>
+      <div class="ac-block">
+        <div class="ac-title" style="color:#fb923c">⚙ Automations hoy (${automation.firedToday.length})</div>
+        ${automation.firedToday.length ? automation.firedToday.map(e => alertRow("⚙", sevColor(e.severity), e.message, e.suggestedMode ? "sugiere " + e.suggestedMode : null)).join("") : `<div class="muted" style="font-size:12px">— Ninguna regla disparada hoy.</div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderJarvisBrainPanel() {
+  const b = computeJarvisBrain();
+  const h = computeHealthReadiness();
+  const pv = portfolioValue();
+  const reg = marketRegime();
+  const modeColor = settings.defensiveMode ? "#ff4d6d" : "#00ff99";
+  // Live Signals: solo señales reales (indicadores LIVE), compactas.
+  const liveAssets = pv.assets.filter(a => a.indicatorStatus === "LIVE");
+  const extremes = liveAssets.filter(a => a.ind.rsi >= 70 || a.ind.rsi <= 30)
+    .sort((a, c) => Math.abs(c.ind.rsi - 50) - Math.abs(a.ind.rsi - 50)).slice(0, 4);
+  const bears = liveAssets.filter(a => a.ind.trend === "BAJISTA").length;
+  const bulls = liveAssets.filter(a => a.ind.trend === "ALCISTA").length;
+  const criptoPct = cryptoConcentrationPct(pv);
+  const signals = [
+    `<span class="brain-chip" style="border-color:${reg.color}40;color:${reg.color}">◈ ${esc(reg.label)} <span style="color:#5a6674;font-size:10px">${pct(reg.avg)}</span></span>`,
+    `<span class="brain-chip">↑${bulls} <span style="color:#5a6674">alcistas</span> · ↓${bears} <span style="color:#5a6674">bajistas</span> <span style="color:#5a6674;font-size:10px">(${liveAssets.length} reales)</span></span>`,
+    `<span class="brain-chip" style="${criptoPct > 60 ? "border-color:rgba(255,77,109,.35);color:#ff8aa0" : ""}">cripto ${criptoPct.toFixed(0)}%</span>`,
+    ...extremes.map(a => `<span class="brain-chip" style="border-color:${a.ind.rsi <= 30 ? "rgba(0,255,153,.3)" : "rgba(255,77,109,.3)"}"><b>${esc(a.symbol)}</b> RSI ${a.ind.rsi} <span style="color:#5a6674;font-size:10px">${a.ind.rsi <= 30 ? "sobreventa" : "sobrecompra"}</span></span>`)
+  ];
+  const lastDec = (() => { const d = loadJSON(TRADING_DECISION_FILE, []); return d[d.length - 1] || null; })();
+  const lastTrade = (bot.history || [])[0] || null;
+  const ready = (label, r) => `<div style="text-align:center;border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:9px 6px;background:rgba(255,255,255,.03)">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8">${esc(label)}</div>
+      <div style="font-size:23px;font-weight:900;color:${r.score === null ? "#5a6674" : r.score >= 70 ? "#00ff99" : r.score >= 45 ? "#ffd35c" : "#ff4d6d"};margin:3px 0 2px">${r.score === null ? "—" : r.score}</div>
+      ${statusBadge(r.status)}
+    </div>`;
+  return `<div class="panel" id="jarvis-brain" style="max-width:1280px;margin:0 auto 16px;padding:20px 24px;border:1px solid rgba(0,255,153,.2);background:linear-gradient(135deg,rgba(0,255,153,.06),rgba(59,157,255,.04) 70%);box-shadow:0 16px 50px rgba(0,0,0,.3),0 0 40px rgba(0,255,153,.05)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:900;letter-spacing:.2em;text-transform:uppercase;color:#00ff99">⚡ Cordelius Brain</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${Object.entries(b.state.dataStatus).map(([k, v]) => `<span style="font-size:8px;color:#5a6674">${esc(k)}</span>${statusBadge(v)}`).join(" ")}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(230px,.6fr);gap:18px">
+      <div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#9fb3c8;margin-bottom:7px">Estado</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">
+          <span class="brain-chip" style="border-color:${modeColor}40;color:${modeColor};font-weight:900">${esc(b.state.mode)}</span>
+          <span class="brain-chip"><b>${money(pv.totalValueMXN)}</b> <span style="color:${pv.totalGainPct >= 0 ? "#00ff99" : "#ff4d6d"};font-size:11px">${pct(pv.totalGainPct)}</span></span>
+          <span class="brain-chip">R <b style="color:#f472b6">${h.recovery !== null ? h.recovery + "%" : "—"}</b> · S <b style="color:#f472b6">${h.sleep !== null ? h.sleep + "%" : "—"}</b></span>
+        </div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#ffd35c;margin-bottom:6px">Top Focus</div>
+        <div style="font-size:19px;font-weight:900;color:#fff;line-height:1.3;margin-bottom:14px">${esc(b.topFocus)}</div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#3b9dff;margin-bottom:7px">Live Signals</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">${signals.join("")}</div>
+        <div style="font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;color:#a78bfa;margin-bottom:6px">Decisions</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+          ${lastTrade ? `<span class="brain-chip">${statusBadge("SIMULATED")} <b style="color:${lastTrade.type === "BUY" ? "#00ff99" : "#ff4d6d"}">${esc(lastTrade.type)}</b> ${esc(lastTrade.symbol)} <span style="color:#5a6674;font-size:10px">${esc(lastTrade.time || "")}</span></span>` : `<span class="brain-chip" style="color:#5a6674">sin trades paper recientes</span>`}
+          ${lastDec ? `<span class="brain-chip"><span style="color:#5a6674;font-size:10px">decisión:</span> ${esc(String(lastDec.title || lastDec.action || lastDec.type || "registro").slice(0, 50))}</span>` : ""}
+          <span style="font-size:11px;color:#5a6674">${b.warnings.length} aviso(s) → <a href="#action-center" style="color:#ffd35c;text-decoration:none;font-weight:900">Action Center</a></span>
+        </div>
+      </div>
+      <div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px">
+          ${ready("Health", b.readiness.health)}${ready("Trading", b.readiness.trading)}${ready("Study", b.readiness.study)}${ready("Social", b.readiness.social)}
+        </div>
+        <div style="border:1px solid rgba(120,160,210,.12);border-radius:14px;padding:10px 12px;background:rgba(255,255,255,.03)">
+          <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#9fb3c8;margin-bottom:5px">Memoria</div>
+          <div style="font-size:12px;color:#c8d8f0;line-height:1.4">${esc(b.memory.summary)}</div>
+          <div style="font-size:10px;color:#5a6674;margin-top:5px">Journal ${b.memory.journalEntries} · notas ${b.memory.quickNotes} · mood ${esc(b.memory.topMood || "—")}</div>
+        </div>
+        ${settings.defensiveMode ? `<div style="margin-top:8px;border:1px solid rgba(255,77,109,.3);border-radius:12px;padding:8px 10px;font-size:11px;font-weight:900;color:#ff4d6d;background:rgba(255,77,109,.07)">MODO DEFENSIVO ACTIVO (manual · educativo)</div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderTodayFeed() {
+  const feed = buildTodayFeed();
+  const typeMeta = {
+    health: { icon: "◉", color: "#f472b6" }, portfolio: { icon: "◈", color: "#3b9dff" },
+    journal: { icon: "◇", color: "#818cf8" }, news: { icon: "◆", color: "#00ff99" },
+    decision: { icon: "✓", color: "#ffd35c" }, automation: { icon: "⚙", color: "#fb923c" },
+    alert: { icon: "!", color: "#ff4d6d" }, autopilot: { icon: "⊕", color: "#a78bfa" }
+  };
+  const fmtTime = ts => new Date(ts).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+  const fmtDay = ts => new Date(ts).toDateString() === new Date().toDateString() ? "hoy" : "ayer";
+  return `<div class="panel" id="today-feed" style="max-width:1280px;margin:0 auto 16px;padding:18px 22px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#3b9dff">◷ Today Feed</div>
+      <div style="font-size:11px;color:#5a6674">${feed.count} eventos · 36h</div>
+    </div>
+    ${feed.count === 0 ? `<div class="muted" style="font-size:13px">— Sin eventos registrados aún. Los eventos aparecen conforme llegan datos reales.</div>` : `
+    <div style="display:flex;flex-direction:column;gap:0;max-height:420px;overflow-y:auto">
+      ${feed.items.map(i => { const m = typeMeta[i.type] || { icon: "·", color: "#9fb3c8" }; return `
+      <div style="display:grid;grid-template-columns:54px 26px 1fr auto;gap:8px;align-items:start;padding:8px 4px;border-bottom:1px solid rgba(120,160,210,.07)">
+        <div style="font-size:11px;color:#5a6674;padding-top:2px">${fmtTime(i.ts)}<div style="font-size:9px">${fmtDay(i.ts)}</div></div>
+        <div style="color:${m.color};font-weight:900;text-align:center">${m.icon}</div>
+        <div><div style="font-size:13px;font-weight:700;color:#dbeafe;line-height:1.3">${esc(i.title)}</div>
+        ${i.detail ? `<div style="font-size:11px;color:#9fb3c8;margin-top:2px">${esc(i.detail)}</div>` : ""}</div>
+        <div style="padding-top:2px">${statusBadge(i.status)}</div>
+      </div>`; }).join("")}
+    </div>`}
+  </div>`;
+}
+
+function renderAutomationsPanel() {
+  const st = getAutomationState();
+  return `<div class="panel" id="automations-panel" style="max-width:1280px;margin:0 auto 16px;padding:18px 22px;border-color:rgba(251,146,60,.18)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#fb923c">⚙ Automations · Reglas locales</div>
+      <div style="font-size:10px;color:#5a6674">Solo alertas educativas — nunca órdenes reales</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px">
+      ${st.rules.map(r => `<div style="border:1px solid ${r.fired ? "rgba(251,146,60,.35)" : "rgba(120,160,210,.1)"};border-radius:14px;padding:12px 14px;background:${r.fired ? "rgba(251,146,60,.06)" : "rgba(255,255,255,.025)"}">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:5px">
+          <div style="font-size:12px;font-weight:900;color:${r.fired ? "#fb923c" : "#9fb3c8"}">${esc(r.name)}</div>
+          <span style="font-size:9px;font-weight:900;border-radius:99px;padding:2px 8px;background:${r.fired ? "rgba(251,146,60,.15)" : "rgba(120,160,210,.08)"};color:${r.fired ? "#fb923c" : "#5a6674"}">${r.fired ? "ACTIVA" : "OK"}</span>
+        </div>
+        ${r.fired && r.message ? `<div style="font-size:11px;color:#c8d8f0;line-height:1.4">${esc(r.message)}</div>` : `<div style="font-size:11px;color:#5a6674">Condición no cumplida hoy.</div>`}
+        ${r.suggestedMode ? `<div style="font-size:10px;color:#9fb3c8;margin-top:5px">Sugiere: <b>${esc(r.suggestedMode)}</b></div>` : ""}
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
+
+function renderCordeliusDoctor() {
+  const h = computeHealthReadiness();
+  const qf = quotesFreshness();
+  const cf = cryptoFreshness();
+  const indF = indicatorsFreshness();
+  const alerts = loadAlerts().filter(a => !a.acknowledged);
+  const tunnelRisk = securityStats.publicRequestSeen;
+
+  const sysItems = [
+    { level: "ok",   label: "Session Gate",          note: "login wall + cookie HttpOnly 12h · SameSite=Lax" },
+    { level: "ok",   label: "Mutaciones protegidas", note: "18 endpoints con gate · 0 sin proteger" },
+    { level: "ok",   label: "Trading real",           note: "ninguna ruta ejecuta órdenes reales" },
+    { level: h.connected ? "ok" : "warn",
+                     label: "WHOOP",                  note: h.connected ? `Recovery ${h.recovery ?? "—"}% · Sleep ${h.sleep ?? "—"}% · HRV ${h.hrv != null ? h.hrv.toFixed(0) + " ms" : "—"}` : h.configured ? "tokens OK — sin cache reciente" : "no configurado" },
+    { level: qf === "LIVE" ? "ok" : "warn",
+                     label: "Acciones MX/USD",        note: qf === "LIVE" ? "feed activo" : "sin API key Finnhub — activos GBM son manuales" },
+    { level: cf === "LIVE" ? "ok" : "warn",
+                     label: "Cripto",                 note: cf === "LIVE" ? "Bitso MXN + CoinGecko" : "fallback" },
+    { level: indF === "LIVE" ? "ok" : "warn",
+                     label: "Indicadores técnicos",   note: indF === "LIVE" ? "RSI/MACD/momentum con series reales" : `parcial o fallback (${indF})` },
+    { level: alerts.length === 0 ? "ok" : "warn",
+                     label: "Alertas activas",        note: alerts.length === 0 ? "sin alertas pendientes" : `${alerts.length} sin reconocer` },
+    { level: tunnelRisk ? "warn" : "ok",
+                     label: "Túnel público",          note: tunnelRisk ? "Cloudflare Quick Tunnel detectado — login wall activo" : "sin requests externos desde arranque" },
+  ];
+
+  const LC = { ok: "#00ff99", warn: "#ffd35c", error: "#ff4d6d" };
+  const LG = { ok: "✓", warn: "!", error: "✗" };
+
+  const sysRow = (item) => {
+    const c = LC[item.level] || "#9fb3c8";
+    const g = LG[item.level] || "·";
+    return `<div style="display:flex;align-items:flex-start;gap:9px;padding:7px 10px;border-radius:10px;background:rgba(0,0,0,.15);margin-bottom:5px">
+      <span style="flex:0 0 17px;height:17px;border-radius:99px;border:1.5px solid ${c};display:grid;place-items:center;font-size:9px;font-weight:900;color:${c};margin-top:1px">${g}</span>
+      <div style="flex:1;min-width:0;font-size:12px"><b style="color:#eaf6ff">${esc(item.label)}</b> <span style="color:#5a6674">${esc(item.note)}</span></div>
+    </div>`;
+  };
+
+  const rootDir = process.env.APP_DIR || process.cwd();
+  let cleanupItems = [
+    "No se pudo escanear raíz del proyecto — revisar permisos/manual",
+  ];
+  try {
+    const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+    const files = entries.filter(e => e.isFile()).map(e => e.name);
+    const backups = files.filter(n => /^dashboard\.backup.*\.js$/i.test(n));
+    const largeLogs = files
+      .filter(n => /\.log$/i.test(n))
+      .map(n => {
+        try {
+          const st = fs.statSync(path.join(rootDir, n));
+          return { name: n, mb: st.size / 1024 / 1024 };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .filter(x => x.mb >= 1)
+      .sort((a, b) => b.mb - a.mb);
+    const sensitiveNames = files.filter(n => /(token|secret|password|passwd|credential|api[_-]?key|telegram|whoop)/i.test(n));
+
+    cleanupItems = [
+      backups.length
+        ? `${backups.length} backup(s) dashboard.backup.*.js en raíz — revisar antes de borrar`
+        : "Sin backups dashboard.backup.*.js sueltos en raíz",
+      largeLogs.length
+        ? `${largeLogs.length} log(s) >1MB detectado(s): ${largeLogs.slice(0, 3).map(x => `${x.name} ${x.mb.toFixed(1)}MB`).join(", ")}`
+        : "Sin logs grandes >1MB en raíz",
+      sensitiveNames.length
+        ? `${sensitiveNames.length} archivo(s) con nombre sensible detectado(s) — nombre oculto, revisar manualmente`
+        : "Sin nombres sensibles obvios en raíz",
+    ];
+  } catch (err) {
+    cleanupItems = [`Error escaneando raíz: ${err.message || "desconocido"}`];
+  }
+
+  const backlog = [
+    { cat: "Seguridad", color: "#fb923c", items: [
+      "CSRF: token explícito en formularios (SameSite=Lax mitiga parcialmente)",
+      "Rate limit: extender a /api/jarvis/brain y /ask (hoy solo /login tiene rate limit)",
+      "Access key: plan de rotación periódica sin downtime",
+    ]},
+    { cat: "UI / UX", color: "#3b9dff", items: [
+      "Loading spinners en loadHealthOS, loadAutopilotDatabase y secciones lentas",
+      "Error states honestos: si un endpoint falla, mostrar motivo específico (no solo '—')",
+      "Sidebar colapsable en móvil (<640px) para ganar espacio de contenido",
+    ]},
+    { cat: "Health", color: "#f472b6", items: [
+      "Trend arrows: Recovery / HRV ↑↓ vs día anterior con history real (ya existe en snapshot)",
+      "HRV context: comparar contra baseline personal (requiere 14+ días de snapshots)",
+      "Sleep stages: REM/deep/light si WHOOP devuelve detalle por ciclo",
+    ]},
+    { cat: "Trading Paper", color: "#ffd35c", items: [
+      "Etiqueta MANUAL / LIVE / PAPER por activo individual en filas de portafolio",
+      "P&L separado paper vs manual — hoy el total mezcla ambos sin distinción visual",
+      "Alertas de zona: notificar cuando activo toca zona educativa de compra/venta",
+    ]},
+    { cat: "Intelligence", color: "#00ff99", items: [
+      "Dedup por URL normalizada (actualmente dedup por contenido — pueden pasar duplicados de fuente distinta)",
+      "Badge LIVE/CACHED/FALLBACK por noticia individual",
+      "External radar: investigar por qué /api/external-radar no devuelve items",
+    ]},
+    { cat: "Limpieza técnica", color: "#9fb3c8", items: cleanupItems },
+  ];
+
+  const endpointAudit = (() => {
+    try { return buildSecurityAudit(); }
+    catch (e) { return { error: e.message, endpoints: {}, totals: {}, dashboardProtected: false, privateReadProtected: false, accessKeyConfigured: false }; }
+  })();
+
+  const privateReads = endpointAudit.endpoints?.privateRead || [];
+  const publicReads = endpointAudit.endpoints?.publicRead || [];
+  const protectedWrites = endpointAudit.endpoints?.mutateProtected || [];
+  const hasPublic = (route) => publicReads.includes(route);
+  const hasPrivate = (route) => privateReads.includes(route);
+  const hasProtectedWrite = (route) => protectedWrites.includes(route);
+
+  const brainDiag = (() => {
+    try {
+      const b = computeJarvisBrain();
+      return { ok: !!b, note: b?.mode ? `responde · ${b.mode}` : "responde" };
+    } catch (e) {
+      return { ok: false, note: `error: ${e.message}` };
+    }
+  })();
+
+  const feedDiag = (() => {
+    try {
+      const f = buildTodayFeed();
+      const n = Array.isArray(f?.items) ? f.items.length : Array.isArray(f?.feed) ? f.feed.length : null;
+      return { ok: !!f, note: n === null ? "responde" : `responde · ${n} item(s)` };
+    } catch (e) {
+      return { ok: false, note: `error: ${e.message}` };
+    }
+  })();
+
+  const automationDiag = (() => {
+    try {
+      const a = getAutomationState();
+      return { ok: !!a, note: `${a.rules?.length ?? 0} regla(s) · ${a.firedToday?.length ?? 0} disparada(s) hoy` };
+    } catch (e) {
+      return { ok: false, note: `error: ${e.message}` };
+    }
+  })();
+
+  const securityOk = !!(
+    endpointAudit.dashboardProtected &&
+    endpointAudit.privateReadProtected &&
+    endpointAudit.accessKeyConfigured &&
+    endpointAudit.totals?.unprotectedMutationEndpoints === 0
+  );
+
+  const liveEndpoints = [
+    { level: hasPublic("/api/ui-diagnostics") ? "ok" : "warn", label: "UI Diagnostics", endpoint: "/api/ui-diagnostics", note: hasPublic("/api/ui-diagnostics") ? "publicRead · clasificado" : "no clasificado como publicRead" },
+    { level: securityOk && hasPublic("/api/security/audit") ? "ok" : "warn", label: "Security Audit", endpoint: "/api/security/audit", note: securityOk ? "gates OK · 0 mutaciones sin proteger" : "revisar gates/security audit" },
+    { level: brainDiag.ok && hasPrivate("/api/jarvis/brain") ? "ok" : "warn", label: "Jarvis Brain", endpoint: "/api/jarvis/brain", note: hasPrivate("/api/jarvis/brain") ? `privateRead · ${brainDiag.note}` : "ruta no clasificada como privateRead" },
+    { level: feedDiag.ok && hasPrivate("/api/feed/today") ? "ok" : "warn", label: "Today Feed", endpoint: "/api/feed/today", note: hasPrivate("/api/feed/today") ? `privateRead · ${feedDiag.note}` : "ruta no clasificada como privateRead" },
+    { level: automationDiag.ok && hasPrivate("/api/automations") ? "ok" : "warn", label: "Automations", endpoint: "/api/automations", note: hasPrivate("/api/automations") ? `privateRead · ${automationDiag.note}` : "ruta no clasificada como privateRead" },
+    { level: hasProtectedWrite("/api/mode/defensive") ? "ok" : "warn", label: "Defensive Mode", endpoint: "POST /api/mode/defensive", note: hasProtectedWrite("/api/mode/defensive") ? "mutateProtected · etiqueta educativa, sin órdenes" : "mutación no protegida" },
+  ];
+
+  const endpointHtml = liveEndpoints.map(item => {
+    const c = LC[item.level] || "#9fb3c8";
+    const g = LG[item.level] || "·";
+    return `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 9px;border-radius:10px;background:rgba(0,0,0,.14);margin-bottom:5px">
+      <span style="flex:0 0 16px;height:16px;border-radius:99px;border:1.5px solid ${c};display:grid;place-items:center;font-size:8px;font-weight:900;color:${c};margin-top:1px">${g}</span>
+      <div style="flex:1;min-width:0;font-size:11px;line-height:1.35">
+        <b style="color:#eaf6ff">${esc(item.label)}</b>
+        <span style="color:#3b9dff;font-weight:800">${esc(item.endpoint)}</span>
+        <span style="color:#5a6674">${esc(item.note)}</span>
+      </div>
+    </div>`;
+  }).join("");
+
+  const backlogHtml = backlog.map(cat => `
+    <div style="margin-bottom:11px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:${esc(cat.color)};margin-bottom:4px">${esc(cat.cat)}</div>
+      <ul style="margin:0;padding-left:14px">${cat.items.map(t => `<li style="font-size:11px;color:#c8d8f0;margin:3px 0;line-height:1.4">${esc(t)}</li>`).join("")}</ul>
+    </div>`).join("");
+
+  const warnCount = sysItems.filter(i => i.level !== "ok").length;
+  const summaryBadge = warnCount === 0 ? statusBadge("LIVE") : statusBadge("FALLBACK");
+  const summaryText = `<span style="font-size:11px;color:#9fb3c8;margin-left:4px">${warnCount === 0 ? "todo sano" : warnCount + " aviso(s)"} · ${alerts.length} alerta(s) activa(s)</span>`;
+
+  const content = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px">
+      <div class="panel" style="border:1px solid rgba(0,255,153,.12);background:rgba(0,255,153,.025)">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#00ff99;margin-bottom:10px">◈ Estado del Sistema</div>
+        ${sysItems.map(sysRow).join("")}
+      </div>
+      <div class="panel" style="border:1px solid rgba(59,157,255,.12);background:rgba(59,157,255,.025)">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:10px">◇ Implementation Backlog</div>
+        ${backlogHtml}
+      </div>
+      <div class="panel" style="border:1px solid rgba(129,140,248,.14);background:rgba(129,140,248,.025)">
+        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#818cf8;margin-bottom:10px">◆ Live Endpoints</div>
+        ${endpointHtml}
+      </div>
+    </div>
+    <div class="panel" style="border:1px solid rgba(244,114,182,.12);background:rgba(244,114,182,.02);margin-top:12px">
+      <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#f472b6;margin-bottom:8px">◉ Future: Cordelius Health Atlas</div>
+      <div style="font-size:12px;color:#9fb3c8;line-height:1.65">
+        <b style="color:#f9a8d4">Concepto:</b> body map interactivo — figura humana minimalista con capas por órgano/sistema.<br>
+        Cada nodo mostrará métricas de WHOOP, suplementos y contexto multisistema:
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+          ${["Cuero cabelludo / scalp","Sistema nervioso","Hígado / intestino","Piel","Corazón / HRV","Músculo / strain","Sueño / recovery"].map(s =>
+            `<span style="border:1px solid rgba(244,114,182,.22);border-radius:99px;padding:3px 10px;font-size:11px;color:#f9a8d4">${esc(s)}</span>`
+          ).join("")}
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#5a6674">
+          Disciplinas: medicina occidental · china · greco-árabe · contexto espiritual · knowledge graph personal.<br>
+          <b style="color:#ffd35c">Estado: concepto pendiente — requiere diseño + research de fuentes. No inventar datos médicos.</b>
+        </div>
+      </div>
+    </div>`;
+
+  return collapsibleSection("cordelius-doctor", "⊕ Cordelius Doctor", summaryBadge + summaryText, content, false);
 }
 
 function renderHomePortal(pv, reg) {
@@ -4114,12 +5006,12 @@ function renderHomePortal(pv, reg) {
         <div style="font-size:13px;font-weight:900;color:${m.color};letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">${esc(m.label)}</div>
         <div style="font-size:22px;font-weight:900;color:#eaf6ff;margin-bottom:6px;line-height:1.1">${esc(m.sub)}</div>
         <div style="font-size:11px;color:#9fb3c8;margin-bottom:12px">${esc(m.desc)}</div>
-        <div style="display:inline-flex;align-items:center;gap:6px;border:1px solid ${m.color}40;border-radius:99px;padding:5px 12px;font-size:12px;font-weight:900;color:${m.badgeColor}">${esc(m.badge)} Entrar →</div>
+        <div style="display:inline-flex;align-items:center;gap:6px;border:1px solid ${m.color}40;border-radius:99px;padding:5px 12px;font-size:12px;font-weight:900;color:${m.color}">Entrar →</div>
       </div>`).join("")}
     </div>
 
     <!-- Mini daily brief -->
-    <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px">
+    <div style="margin-bottom:16px">
       <div class="panel" style="border:1px solid rgba(59,157,255,.18);background:rgba(59,157,255,.04);padding:16px 20px">
         <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#3b9dff;margin-bottom:8px">Daily Brief</div>
         <div style="font-size:15px;font-weight:700;color:#dbeafe;margin-bottom:10px">${esc(nl.greeting)}</div>
@@ -4128,24 +5020,12 @@ function renderHomePortal(pv, reg) {
         </ul>
 
       </div>
-    </section>
-
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:16px">
-      ${cards.map(c => `<div class="card" style="padding:14px 15px;border-color:${c.color}24;background:rgba(255,255,255,.035)"><div class="label">${esc(c.label)}</div><div ${c.id ? `id="${esc(c.id)}"` : ""} class="big" style="font-size:21px;color:${c.color}">${esc(c.value)}</div><div class="muted" style="font-size:11px">${esc(c.sub)}</div></div>`).join("")}
     </div>
 
-    <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(260px,.8fr);gap:12px;margin-bottom:16px">
-      <div class="panel" style="padding:16px 18px;border-color:rgba(255,211,92,.16);background:rgba(255,211,92,.035)">
-        <div style="font-size:9px;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:#ffd35c;margin-bottom:8px">Jarvis asks</div>
-        <div id="home-alfredo-question" style="font-size:17px;font-weight:800;color:#fff;line-height:1.35">${esc(ctx.question)}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          ${ctx.nextActions.map(a => `<button class="btn" onclick="showMod('${a.mod}')" style="font-size:12px;padding:7px 12px">${esc(a.label)}</button>`).join("")}
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
-        ${modules.map(m => `<div onclick="showMod('${m.id}')" class="panel" style="cursor:pointer;padding:15px;border-color:${m.color}28;background:rgba(255,255,255,.03)"><div style="color:${m.color};font-size:18px;font-weight:950">${esc(m.emoji)}</div><div style="font-size:13px;font-weight:900;margin-top:7px">${esc(m.label)}</div><div class="muted" style="font-size:11px;margin-top:4px">${esc(m.sub)}</div></div>`).join("")}
-      </div>
-    </div>
+    ${renderCordeliusDoctor()}
+    ${renderTodayFeed()}
+
+    <div style="font-size:11px;color:#5a6674;margin-bottom:16px">Métricas en vivo → <a href="#jarvis-brain" style="color:#00ff99;text-decoration:none;font-weight:900">Brain ↑</a> · preguntas y acciones → <a href="#action-center" style="color:#ffd35c;text-decoration:none;font-weight:900">Action Center ↑</a> — un solo lugar, sin repetición.</div>
   </div>`;
 }
 
@@ -4241,7 +5121,7 @@ function renderJournalModule() {
       <div style="font-size:13px;color:#c8d8f0;line-height:1.6">${esc(aj.alfredoNote)}</div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         ${["resumen de mi día","cómo me he sentido","resume mi diario"].map(q =>
-          `<button onclick="setAlfredoQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
+          `<button onclick="setJarvisQ('${q}')" class="btn" style="font-size:12px;padding:6px 12px;color:#818cf8;border-color:rgba(129,140,248,.25)">${q}</button>`
         ).join("")}
       </div>
     </div>
@@ -4436,11 +5316,11 @@ function renderHealthOSPanel() {
     <style>
       .health-os-shell{max-width:1440px;margin:0 auto 28px;padding:22px;border-radius:34px;background:radial-gradient(circle at 16% 0%,rgba(244,114,182,.22),transparent 35%),radial-gradient(circle at 88% 12%,rgba(59,157,255,.2),transparent 34%),linear-gradient(135deg,rgba(4,10,22,.96),rgba(9,17,32,.9));border:1px solid rgba(244,114,182,.18);box-shadow:0 24px 80px rgba(0,0,0,.42)}
       .health-os-hero{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:18px;margin-bottom:18px}.health-os-card{border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.055);backdrop-filter:blur(16px);border-radius:26px;padding:18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
-      .health-os-title{font-size:42px;font-weight:950;letter-spacing:-.05em;line-height:.95;margin:0;color:#fff}.health-os-sub{color:#f9a8d4;font-size:13px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px}.health-os-badge{display:inline-flex;border:1px solid rgba(0,255,153,.25);background:rgba(0,255,153,.09);color:#00ff99;border-radius:999px;padding:5px 11px;font-size:11px;font-weight:950;letter-spacing:.08em}
+      .health-os-title{font-size:42px;font-weight:950;letter-spacing:-.05em;line-height:.95;margin:0;color:#fff}.health-os-sub{color:#f9a8d4;font-size:13px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px}.health-os-badge{display:inline-flex;border:1px solid rgba(0,255,153,.25);background:rgba(0,255,153,.09);color:#00ff99;border-radius:999px;padding:5px 11px;font-size:11px;font-weight:950;letter-spacing:.08em}.health-os-badge.fallback{border-color:rgba(255,211,92,.35);background:rgba(255,211,92,.09);color:#ffd35c}.health-os-reconnect{display:inline-flex;border:1px solid rgba(255,211,92,.3);background:rgba(255,211,92,.06);color:#ffd35c;border-radius:999px;padding:5px 11px;font-size:11px;font-weight:900;text-decoration:none;letter-spacing:.05em}
       .health-os-metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px;margin-top:18px}.health-os-metric{border:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.18);border-radius:18px;padding:13px}.health-os-label{font-size:10px;text-transform:uppercase;letter-spacing:.13em;color:#9fb3c8;font-weight:900}.health-os-value{font-size:26px;font-weight:950;color:#fff;margin-top:4px}.health-os-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.health-os-span-4{grid-column:span 4}.health-os-span-6{grid-column:span 6}.health-os-span-8{grid-column:span 8}.health-os-span-12{grid-column:span 12}.health-os-donut-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.health-os-donut{min-height:220px;display:grid;place-items:center;text-align:center}.health-os-ai{font-size:15px;line-height:1.75;color:#eaf6ff}.health-os-chip{border:1px solid rgba(244,114,182,.24);background:rgba(244,114,182,.08);color:#f9a8d4;border-radius:999px;padding:8px 12px;font-size:12px;font-weight:900;cursor:pointer}.health-os-chip.active{background:rgba(0,255,153,.13);border-color:rgba(0,255,153,.35);color:#00ff99}.health-os-mini-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}.health-os-risk{border-left:3px solid #ffd35c;padding-left:12px;color:#dbeafe;line-height:1.55}.health-os-disclaimer{color:#9fb3c8;font-size:12px;text-align:center;margin-top:16px}.health-os-history-row{display:grid;grid-template-columns:110px 1fr 80px;gap:8px;align-items:center;margin:9px 0}.health-os-trend{height:42px;border-radius:12px;background:rgba(0,0,0,.18);overflow:hidden}
       @media(max-width:900px){.health-os-shell{padding:14px;border-radius:24px}.health-os-hero{grid-template-columns:1fr}.health-os-title{font-size:34px}.health-os-grid{display:block}.health-os-card{margin-bottom:12px}.health-os-donut-row{grid-template-columns:1fr}.health-os-value{font-size:22px}}
     </style>
-    <div class="health-os-hero"><div class="health-os-card"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><div class="health-os-sub">Cordelius Health</div><h2 class="health-os-title">WHOOP-first readiness</h2><div class="muted" style="margin-top:10px">Última actualización: <span id="health-os-updated">—</span></div></div><span id="health-os-whoop-badge" class="health-os-badge">WHOOP LIVE</span></div><div class="health-os-metric-grid"><div class="health-os-metric"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">RHR</div><div id="health-os-rhr" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Modo</div><div id="health-os-mode" class="health-os-value">${esc(h.operatingMode || "NORMAL")}</div></div></div></div><div class="health-os-card" id="health-os-score-card"><div class="health-os-label">Health Score</div><div id="health-os-score" style="font-size:64px;font-weight:950;color:#f472b6;line-height:1">—</div><div id="health-os-status" style="font-size:18px;font-weight:950;color:#fff">—</div><div class="muted" style="margin-top:10px">Estado: EXCELENTE / BUENO / MEDIO / BAJO / CRÍTICO</div></div></div>
+    <div class="health-os-hero"><div class="health-os-card"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><div class="health-os-sub">Cordelius Health</div><h2 class="health-os-title">WHOOP-first readiness</h2><div class="muted" style="margin-top:10px">Última actualización: <span id="health-os-updated">—</span></div></div><div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end"><span id="health-os-whoop-badge" class="health-os-badge${h.connected ? "" : " fallback"}">${h.connected ? "WHOOP LIVE" : "WHOOP FALLBACK"}</span><a id="health-os-reconnect" class="health-os-reconnect" href="/whoop/auth" style="display:${h.connected ? "none" : "inline-flex"}">Reconectar WHOOP ↗</a></div></div><div class="health-os-metric-grid"><div class="health-os-metric"><div class="health-os-label">Recovery</div><div id="health-os-recovery" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Sleep</div><div id="health-os-sleep" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Strain</div><div id="health-os-strain" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">HRV</div><div id="health-os-hrv" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">RHR</div><div id="health-os-rhr" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Readiness</div><div id="health-os-readiness" class="health-os-value">—</div></div><div class="health-os-metric"><div class="health-os-label">Modo</div><div id="health-os-mode" class="health-os-value">${esc(h.operatingMode || "NORMAL")}</div></div></div></div><div class="health-os-card" id="health-os-score-card"><div class="health-os-label">Health Score</div><div id="health-os-score" style="font-size:64px;font-weight:950;color:#f472b6;line-height:1">—</div><div id="health-os-status" style="font-size:18px;font-weight:950;color:#fff">—</div><div class="muted" style="margin-top:10px">Estado: EXCELENTE / BUENO / MEDIO / BAJO / CRÍTICO</div></div></div>
     <div class="health-os-grid"><div class="health-os-card health-os-span-8"><div class="health-os-sub">Main Grid</div><div class="health-os-donut-row"><div id="health-os-donut-recovery" class="health-os-donut"></div><div id="health-os-donut-sleep" class="health-os-donut"></div><div id="health-os-donut-strain" class="health-os-donut"></div></div></div><div class="health-os-card health-os-span-4"><div class="health-os-sub">Radar</div><div id="health-os-radar"></div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Health Intelligence Scores</div><div id="health-os-score-list" class="health-os-mini-grid"></div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Energy Engine</div><div class="health-os-mini-grid"><div><div class="health-os-label">Physical Energy</div><div id="health-os-energy-physical" class="health-os-value">—</div></div><div><div class="health-os-label">Mental Energy</div><div id="health-os-energy-mental" class="health-os-value">—</div></div><div><div class="health-os-label">Focus Capacity</div><div id="health-os-energy-focus" class="health-os-value">—</div></div><div><div class="health-os-label">Deep Work</div><div id="health-os-energy-deepwork" class="health-os-value">—</div></div><div><div class="health-os-label">Trading Capacity</div><div id="health-os-energy-trading" class="health-os-value">—</div></div></div></div><div class="health-os-card health-os-span-12"><div class="health-os-sub">Jarvis Health AI</div><div id="health-os-ai" class="health-os-ai">Cargando lectura health OS...</div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">WHOOP History</div><div id="health-os-history">Cargando tendencias...</div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Correlation Engine</div><div id="health-os-correlations">Recolectando datos. Se activará con 3+ días de snapshots.</div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Behavior Tracker</div><div id="health-os-behaviors" style="display:flex;gap:8px;flex-wrap:wrap"></div></div><div class="health-os-card health-os-span-6"><div class="health-os-sub">Trading Integration</div><div id="health-os-trading-risk" class="health-os-risk">Recovery &lt; 50 ⇒ DEFENSIVE / reducir riesgo educativo. Recovery &gt; 80 ⇒ NORMAL. Strain alto ⇒ bajar agresividad. Overtrading Risk alto ⇒ no operar impulsivo.</div></div></div>
     <div class="health-os-disclaimer">Educativo. No es asesoría médica ni financiera.</div>
   </section>`;
@@ -4535,10 +5415,10 @@ function render() {
   const chatHtml = chatHistory.map(c => `<div class="msg"><b>Tu:</b> ${esc(c.question)}<br><b>Jarvis AI:</b><div>${md(c.reply)}</div><small>${esc(c.time)}</small></div>`).join("");
   const botTables = renderBotTables();
   const topTV = TV_SYMBOL.BBVA || "BMV:BBVA";
+  const whoopLive = computeHealthReadiness().connected;
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="${settings.autoRefreshSeconds}">
 <title>${esc(CORDA_APP_NAME)}</title>
 <style>
 :root{--bg:#02040a;--panel:rgba(7,16,30,.72);--line:rgba(120,160,210,.16);--muted:#9fb3c8;--green:#00ff99;--red:#ff4d6d;--blue:#3b9dff;--gold:#ffd35c;--text:#eaf6ff}
@@ -4635,7 +5515,9 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .float{position:fixed;right:20px;bottom:20px;width:68px;height:68px;border-radius:22px;display:grid;place-items:center;text-decoration:none;font-size:30px;background:linear-gradient(135deg,#00ff99,#3b9dff);box-shadow:0 0 36px rgba(0,255,153,.55);z-index:30;border:none;cursor:pointer}
 .disclaimer{max-width:1280px;margin:34px auto 0;color:#5a6674;font-size:12px;text-align:center;padding:16px;border-top:1px solid rgba(120,160,210,.08)}
 @media(max-width:820px){h1{font-size:34px}.brain-card{grid-template-columns:1fr}.news-card{grid-template-columns:1fr}.asset-row summary{grid-template-columns:1fr}.asset-money{text-align:left}.rank{grid-template-columns:1fr}.chatbox{flex-direction:column}.tv-embed{height:380px}}
-.mod{display:none!important}.mod.active-mod{display:block!important}
+.mod{display:block !important;visibility:visible !important;opacity:1 !important;min-height:120px;position:relative;z-index:2;margin:48px 0 24px;padding-top:16px;border-top:2px solid rgba(59,157,255,.22);scroll-margin-top:14px}
+.mod::before{content:attr(data-title);display:block;max-width:1280px;margin:0 auto 14px;padding:9px 16px;font-size:12px;font-weight:900;letter-spacing:.22em;text-transform:uppercase;color:#9bd3ff;background:linear-gradient(90deg,rgba(59,157,255,.16),transparent 70%);border-left:3px solid #3b9dff;border-radius:8px}
+#mod-home{margin-top:18px;border-top:none}
 .nav-mod{border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);border-radius:14px;padding:10px 16px;font-weight:700;cursor:pointer;transition:.2s;font-size:14px;font-family:inherit;white-space:nowrap}
 .nav-mod:hover,.nav-mod.nav-active{background:rgba(59,157,255,.14);border-color:#3b9dff;color:#3b9dff}
 .status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#00ff99;box-shadow:0 0 12px rgba(0,255,153,.7);margin-right:5px}
@@ -4657,6 +5539,25 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 .news-item .ni-caret{transition:.2s;flex:0 0 auto;opacity:.5;font-size:11px}
 .news-item[open] .ni-caret{transform:rotate(180deg)}
 #research-result{animation:fade .3s ease}
+#cmdk-overlay{position:fixed;inset:0;z-index:200;display:none;background:rgba(2,4,10,.62);backdrop-filter:blur(7px)}
+#cmdk{width:min(640px,calc(100vw - 32px));margin:9vh auto 0;background:rgba(7,16,30,.97);border:1px solid rgba(0,255,153,.25);border-radius:20px;box-shadow:0 30px 90px rgba(0,0,0,.6),0 0 60px rgba(0,255,153,.1);overflow:hidden;animation:fade .18s ease}
+#cmdk-input{width:100%;background:transparent;border:none;outline:none;color:#eaf6ff;font-size:17px;padding:18px 20px;border-bottom:1px solid rgba(120,160,210,.12);font-family:inherit}
+#cmdk-list{max-height:44vh;overflow-y:auto;padding:8px}
+.cmdk-item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;cursor:pointer;font-size:14px;color:#c8d8f0}
+.cmdk-item.sel{background:rgba(0,255,153,.1);color:#fff;border-left:2px solid #00ff99}
+.cmdk-hint{color:#5a6674;font-size:11px;white-space:nowrap}
+#cmdk-result{padding:14px 18px;border-top:1px solid rgba(120,160,210,.12);font-size:13px;color:#c8d8f0;max-height:32vh;overflow-y:auto;display:none;line-height:1.5}
+#cmdk-result b{color:#00ff99}
+.cmdk-kbd{border:1px solid rgba(120,160,210,.25);border-radius:6px;padding:1px 6px;font-size:10px;color:#9fb3c8;background:rgba(0,0,0,.3)}
+.cmdk-open-btn{cursor:pointer;font-family:inherit}
+details.clps summary::-webkit-details-marker{display:none}
+details.clps[open] .clps-caret{transform:rotate(180deg)}
+details.clps[open] > summary{border-color:rgba(59,157,255,.3)}
+@keyframes nscan{0%{background-position:0 -120%}100%{background-position:0 120%}}
+.brain-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(120,160,210,.14);border-radius:10px;padding:5px 11px;font-size:12px;background:rgba(0,0,0,.22);color:#dbeafe;white-space:nowrap}
+.brain-chip b{font-size:13px}
+.ac-block{border:1px solid rgba(120,160,210,.1);border-radius:14px;padding:11px 14px;background:rgba(0,0,0,.16)}
+.ac-title{font-size:9px;font-weight:900;letter-spacing:.13em;text-transform:uppercase;margin-bottom:7px}
 </style></head><body>
 <aside class="sidebar">
   <div class="sidebar-brand">
@@ -4722,26 +5623,40 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.table-wrap{overfl
 </header>
 
 <div class="toolbar">
+  <button class="switch cmdk-open-btn" onclick="openCmdk()" style="border-color:rgba(0,255,153,.3);background:rgba(0,255,153,.06)"><b style="color:#00ff99">⌘K</b>&nbsp;Ask Jarvis · Command</button>
   <a class="switch" href="/toggle-thinking"><span class="dot"></span>Thinking Mode: <b>${settings.thinkingEnabled ? "ON" : "OFF"}</b></a>
   <span class="switch">Refresh: <b>${settings.autoRefreshSeconds}s</b></span>
   <span class="switch">Finnhub: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
   <span class="switch"><span class="status-dot"></span>Server OK</span>
-  <span class="switch">WHOOP: <b class="${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "OK" : "PENDIENTE"}</b></span>
-  <span class="switch">Market Data: <b class="${FINNHUB_API_KEY ? "green" : "yellow"}">${FINNHUB_API_KEY ? "OK" : "LOCAL"}</b></span>
+  <span class="switch">WHOOP: ${statusBadge(whoopLive ? "LIVE" : WHOOP_CONFIGURED ? "STALE" : "FALLBACK")}</span>
+  <span class="switch">Precios USD: ${statusBadge(quotesFreshness())}</span>
+  <span class="switch">Noticias: ${statusBadge(FINNHUB_API_KEY ? "LIVE" : "FALLBACK")}</span>
   <span class="switch">Journal: <b class="green">OK</b></span>
 </div>
 
+${renderNeuralHeader()}
+${renderJarvisBrainPanel()}
+${renderActionCenter()}
+
 <!-- ── MOD: HOME ─────────────────────────────────────────── -->
-<div id="mod-home" class="mod">
+<div id="mod-home" class="mod" data-title="Módulo · Home">
 ${renderHomePortal(pv, reg)}
 </div>
 
 <!-- ── MOD: TRADING ──────────────────────────────────────── -->
-<div id="mod-trading" class="mod">
+<div id="mod-trading" class="mod" data-title="Módulo · Trading">
 <h2>Cordelius Trading</h2>
+<div style="max-width:1280px;margin:0 auto 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:11px;color:#5a6674">
+  <span>Acciones USD ${statusBadge(quotesFreshness())}</span>
+  <span>Cripto Bitso/CoinGecko ${statusBadge(cryptoFreshness())}</span>
+  <span>México/GBM ${statusBadge("MANUAL")}</span>
+  <span>Indicadores ${statusBadge(indicatorsFreshness())}${indicatorsFreshness() === "MIXED" ? `<span style="font-size:9px;color:#67e8f9"> ${indicatorCounts().live}/${PORTFOLIO.length} reales</span>` : ""}</span>
+  <span>Scores ${statusBadge("SIMULATED")}</span>
+  <span>Paper trading ${statusBadge("SIMULATED")}</span>
+</div>
 <div style="max-width:1280px;margin:0 auto 8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
   ${(function(){var A=pv.assets||[];var tot=pv.totalValueMXN||1;var gbm=A.filter(function(a){return a.source==="GBM";}).reduce(function(s,a){return s+a.valueMXN;},0);var plata=A.filter(function(a){return a.source==="Plata";}).reduce(function(s,a){return s+a.valueMXN;},0);var bitso=A.filter(function(a){return a.source==="Bitso";}).reduce(function(s,a){return s+a.valueMXN;},0);var cripto=A.filter(function(a){return a.type==="crypto";}).reduce(function(s,a){return s+a.valueMXN;},0);var cp=cripto/tot*100;function pp(x){return (x/tot*100).toFixed(1)+"%";}return `<div class="card" style="padding:14px 16px"><div class="label">Patrimonio</div><div class="big green glow" style="font-size:26px">${money(pv.totalValueMXN)}</div><div class="${pv.totalGainPct >= 0 ? "green" : "red"}" style="font-size:13px">${pct(pv.totalGainPct)} · ${money(pv.totalGainMXN)}</div></div><div class="card" style="padding:14px 16px"><div class="label">Tipo de cambio</div><div class="big" style="font-size:26px">$${FX_USD_MXN.toFixed(2)}</div><div class="muted" style="font-size:11px">USD/MXN · ${nowMX()}</div></div><div class="card" style="padding:14px 16px"><div class="label">Exposición</div><div style="font-size:13px">GBM ${pp(gbm)}</div><div style="font-size:13px">Plata ${pp(plata)}</div><div style="font-size:13px">Bitso ${pp(bitso)}</div></div>`;})()}
-  <div class="card" style="padding:14px 16px"><div class="label">Régimen</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
+  <div class="card" style="padding:14px 16px"><div class="label">Régimen ${statusBadge(quotesFreshness() === "LIVE" ? "LIVE" : "SIMULATED")}</div><div class="big" style="color:${reg.color};font-size:22px">${esc(reg.label)}</div><div class="muted" style="font-size:11px">${pct(reg.avg)}</div></div>
   <div class="card" style="padding:14px 16px"><div class="label">Top score</div><div class="big green" style="font-size:22px">${esc(best.symbol)}</div><div class="muted" style="font-size:11px">${best.score}/100</div></div>
   <div class="card" style="padding:14px 16px"><div class="label">Vigilar</div><div class="big red" style="font-size:22px">${esc(worst.symbol)}</div><div class="muted" style="font-size:11px">${worst.score}/100</div></div>
 </div>
@@ -4758,9 +5673,16 @@ ${renderHomePortal(pv, reg)}
   </div>
 </div>
 <div class="panel" style="max-width:1280px;margin:0 auto 8px">
-  <div id="port-chart-area">${spark(portfolioHistory, { key: "total", color: "#3b9dff", height: 300 })}</div>
+  ${(function(){
+    const hist = buildDailyEquityHistory();
+    const note = hist.mode === "real"
+      ? `Historial real: ${esc(hist.firstDate || "")} → ${esc(hist.lastDate || "")} · ${hist.rangeDays} días (anclas diarias de snapshots + intradía de hoy)`
+      : `Historial limitado: solo ${esc(hist.lastDate || "hoy")} — se irá extendiendo conforme se acumulen snapshots diarios. No se inventan fechas.`;
+    return `<div id="port-chart-area">${spark(hist.points, { key: "total", color: "#3b9dff", height: 300 })}</div>
+    <div style="font-size:11px;color:${hist.mode === "real" ? "#9fb3c8" : "#ffd35c"};margin-top:4px">${note}</div>`;
+  })()}
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;align-items:center">
-    <span class="muted" id="port-chart-info" style="font-size:12px">${portfolioHistory.length} snapshots</span>
+    <span class="muted" id="port-chart-info" style="font-size:12px">${portfolioHistory.length} snapshots intradía</span>
     <span class="muted" style="font-size:11px">Actualizado: ${esc(nowMX())}</span>
     ${portfolioHistory.length >= 7 ? `<span style="font-size:11px;color:#00ff99">7D ✓</span>` : ""}
     ${portfolioHistory.length >= 30 ? `<span style="font-size:11px;color:#00ff99">30D ✓</span>` : ""}
@@ -4792,7 +5714,8 @@ ${renderHomePortal(pv, reg)}
 </div>
 <script>
 (function(){
-  var det = document.querySelector('#bbva-chart-container')?.closest('details');
+  var _bbvaEl = document.querySelector('#bbva-chart-container');
+  var det = _bbvaEl ? _bbvaEl.closest('details') : null;
   if (det) det.addEventListener('toggle', function(){
     if (det.open) {
       var fr = document.getElementById('bbva-tv-frame');
@@ -4827,22 +5750,25 @@ ${renderHomePortal(pv, reg)}
   </div>
 </details></div>
 
-<a id="portfolio"></a><h2>Portafolio real por cuenta</h2>
-${(function(){
-  const bySource = {};
-  for (const a of assets) { bySource[a.source] = bySource[a.source] || []; bySource[a.source].push(a); }
-  return Object.entries(bySource).map(([src, list]) =>
-    renderAccountSummary(src, list)
-    + `<h2 style="font-size:18px;margin:6px 0 8px;color:#9fb3c8">${esc(src)} · ${[...new Set(list.map(a => a.category))].join(", ")}</h2>`
-    + renderPortfolioRows(list)
-  ).join("");
-})()}
+<a id="portfolio"></a>${collapsibleSection("portfolio-tables", "◈ Portafolio real por cuenta",
+  `<span style="font-size:11px;color:#9fb3c8">${assets.length} activos · GBM / Plata / Bitso</span>${statusBadge(quotesFreshness() === "LIVE" || cryptoFreshness() === "LIVE" ? "LIVE" : "MANUAL")}`,
+  (function(){
+    const bySource = {};
+    for (const a of assets) { bySource[a.source] = bySource[a.source] || []; bySource[a.source].push(a); }
+    return Object.entries(bySource).map(([src, list]) =>
+      renderAccountSummary(src, list)
+      + `<h2 style="font-size:18px;margin:6px 0 8px;color:#9fb3c8">${esc(src)} · ${[...new Set(list.map(a => a.category))].join(", ")}</h2>`
+      + renderPortfolioRows(list)
+    ).join("");
+  })(), true)}
 
 
 ${renderSignalCenter(pv, reg)}
 
 
-<a id="news"></a><h2>Noticias inteligentes + activos impactados</h2>${renderNews()}
+<a id="news"></a>${collapsibleSection("news", "◆ Market News",
+  `<span style="font-size:11px;color:#9fb3c8">${news.length} noticias · ${news.filter(n => n.impacted && n.impacted.length).length} con activos impactados</span>${statusBadge(FINNHUB_API_KEY ? "LIVE" : "FALLBACK")}`,
+  renderNews(), false)}
 
 <a id="bot"></a><h2>Trading AI — Paper Mode · Laboratorio ficticio</h2>
 ${renderTradingAIStatus()}
@@ -4850,28 +5776,35 @@ ${renderPaperTradingPanel()}
 
 </div>
 <!-- ── MOD: HEALTH ────────────────────────────────────────── -->
-<div id="mod-health" class="mod">
+<div id="mod-health" class="mod" data-title="Módulo · Health">
 ${renderHealthOSPanel()}
 </div>
 <!-- ── MOD: JOURNAL ───────────────────────────────────────── -->
-<div id="mod-journal" class="mod">
+<div id="mod-journal" class="mod" data-title="Módulo · Journal">
 <h2>Cordelius Journal</h2>
 ${renderJournalModule()}
 </div>
 <!-- ── MOD: INTELLIGENCE ─────────────────────────────────── -->
-<div id="mod-intelligence" class="mod">
+<div id="mod-intelligence" class="mod" data-title="Módulo · Intelligence">
 
 <h2>Cordelius Intelligence</h2>
-${renderCordeliusIntelligenceFeedPreview()}
+${collapsibleSection("intel-feed", "◆ Intelligence Feed",
+  `<span style="font-size:11px;color:#9fb3c8">noticias + intel + quiver combinados</span>`,
+  renderCordeliusIntelligenceFeedPreview(), true)}
 ${renderStockResearch()}
 
 ${renderDailyBrief()}
-${renderMorningReport()}
 
-<a id="quiver"></a><h2>Quiver — Congreso · Insiders · Contratos · Políticos <span style="background:${QUIVER_API_KEY && quiverData.configured ? '#00ff99' : '#ffd166'};color:#000;border-radius:99px;padding:2px 10px;font-size:12px;font-weight:900;vertical-align:middle;margin-left:8px">${QUIVER_API_KEY && quiverData.configured ? 'LIVE' : 'PENDIENTE'}</span></h2>
-${renderQuiverIntelligencePanel()}
+<a id="quiver"></a>${collapsibleSection("quiver", "◇ Quiver · Institucional",
+  (function(){
+    const c = (quiverData.congressional || []).length, i = (quiverData.insider || []).length, k = (quiverData.contracts || []).length;
+    return `<span style="font-size:11px;color:#9fb3c8">Congreso ${c} · Insiders ${i} · Contratos ${k} · Watchlist ${MARKET_WATCHLIST.length}</span>${statusBadge(QUIVER_API_KEY && quiverData.configured ? (c + i + k > 0 ? "LIVE" : "LIVE") : "FALLBACK")}${QUIVER_API_KEY && quiverData.configured && c + i + k === 0 ? '<span style="font-size:10px;color:#ffd35c">sin filas hoy</span>' : ""}`;
+  })(),
+  renderQuiverIntelligencePanel(), false)}
 
-<a id="intel"></a><h2>Cordelius Intelligence — Intel manual${intelItems.length ? ' <span style="background:#3b9dff;color:#fff;border-radius:99px;padding:2px 11px;font-size:13px;vertical-align:middle;margin-left:6px">' + intelItems.length + '</span>' : ''}</h2>${renderIntelPanel()}
+<a id="intel"></a>${collapsibleSection("intel", "◎ Cordelius Intelligence · Intel manual",
+  `<span style="font-size:11px;color:#9fb3c8">${intelItems.length} items</span>`,
+  renderIntelPanel(), false)}
 
 <details style="max-width:1280px;margin:0 auto 8px"><summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:rgba(0,255,153,.05);border:1px solid rgba(0,255,153,.12);border-radius:20px;user-select:none"><span style="font-size:14px;font-weight:900;color:#00ff99">◆ Radar político · Intel manual</span><span class="btn" style="font-size:12px;padding:5px 12px">Ver detalle ▾</span></summary>
 <div>
@@ -4938,7 +5871,7 @@ ${(function(){
 </div></details>
 </div>
 <!-- ── MOD: ALFREDO ─────────────────────────────────────── -->
-<div id="mod-alfredo" class="mod">
+<div id="mod-alfredo" class="mod" data-title="Módulo · Jarvis">
 <h2>Jarvis — Command Center</h2>
 ${renderJarvisCommandCenter(pv)}
 ${renderJarvisTopPriorities(pv)}
@@ -4956,11 +5889,9 @@ ${renderJarvisChangelog(pv)}
 ${renderMorningReport()}
 </div>
 <!-- ── MOD: AUTOPILOT ─────────────────────────────────────── -->
-<div id="mod-autopilot" class="mod">
+<div id="mod-autopilot" class="mod" data-title="Módulo · Autopilot">
 
-<h2>Cordelius Autopilot</h2>
-
-<h2>Autopilot — Estado del sistema · Automatización</h2>
+<h2>Cordelius Autopilot — Estado del sistema · Automatización</h2>
 
 <section id="autopilot-db-panel" style="margin:22px 0;padding:22px;border-radius:28px;background:radial-gradient(circle at 0% 0%,rgba(0,255,170,.18),transparent 34%),linear-gradient(135deg,rgba(5,11,24,.96),rgba(8,18,35,.88));border:1px solid rgba(0,255,170,.22);box-shadow:0 20px 70px rgba(0,0,0,.42)">
   <div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px">
@@ -5056,13 +5987,16 @@ ${renderMorningReport()}
 </script>
 
 
+${renderAutomationsPanel()}
+
 ${renderAutopilotPanel()}
 
-${renderLedgerPanel()}
+${collapsibleSection("ledger", "◇ Position Ledger", `<span style="font-size:11px;color:#9fb3c8">historial de posiciones</span>${statusBadge("SIMULATED")}`, renderLedgerPanel(), false)}
 
-${renderAlertsPanel()}
+${collapsibleSection("alerts-detail", "! Alertas · historial completo", `<span style="font-size:11px;color:#9fb3c8">las activas se resumen en Action Center ↑</span>`, renderAlertsPanel(), false)}
 
-<h2>System</h2>
+<details class="clps" data-clps="system" style="max-width:1280px;margin:0 auto 12px">
+<summary style="list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 20px;background:var(--panel);border:1px solid rgba(120,160,210,.14);border-radius:18px;user-select:none"><span style="display:flex;align-items:center;gap:10px"><b style="font-size:15px">⚙ System · acceso y servicios</b></span><span class="clps-caret" style="font-size:11px;opacity:.55;transition:.2s">▼</span></summary>
 <div class="grid">
   <div class="card"><div class="label">App</div><div class="big green">${esc(CORDA_APP_NAME)}</div></div>
   <div class="card"><div class="label">Jarvis AI</div><div class="big ${settings.thinkingEnabled ? "green" : "yellow"}">${settings.thinkingEnabled ? "THINKING" : "LOCAL"}</div></div>
@@ -5071,45 +6005,236 @@ ${renderAlertsPanel()}
   <div class="card"><div class="label">WHOOP</div><div class="big ${WHOOP_CONFIGURED ? "green" : "yellow"}">${WHOOP_CONFIGURED ? "ON" : "PENDIENTE"}</div></div>
   <div class="card"><div class="label">Journal</div><div class="big" style="color:#818cf8">${journalEntries.length} entradas</div></div>
   <div class="card" style="grid-column:span 2">
-    <div class="label">Admin Token</div>
+    <div class="label">Access Key (X-Cordelius-Key)</div>
+    <div style="font-size:11px;color:#5a6674;margin-top:2px">Necesaria para acciones de escritura vía túnel público. Se guarda solo en esta sesión del navegador.</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
       <input id="corde-admin-token-input" type="password" placeholder="Token de sesión" style="background:rgba(0,0,0,.3);border:1px solid rgba(120,160,210,.25);border-radius:10px;padding:6px 10px;color:#eaf6ff;font-size:13px;width:200px">
       <button onclick="saveAdminToken()" class="btn" style="font-size:12px;padding:5px 12px">Guardar</button>
       <button onclick="clearAdminToken()" class="btn" style="font-size:12px;padding:5px 12px;border-color:rgba(255,77,109,.3);color:#ff4d6d">Limpiar</button>
       <span id="corde-admin-token-status" style="font-size:12px;color:#9fb3c8">No configurado</span>
+      <a href="/logout" style="font-size:12px;color:#ff4d6d;text-decoration:none;border:1px solid rgba(255,77,109,.25);border-radius:10px;padding:5px 12px">Cerrar sesión</a>
     </div>
   </div>
 </div>
+</details>
 </div>
 
 
 <div class="disclaimer">Cordelius es un sistema personal educativo. No es asesoría financiera ni médica. Paper trading only; no se conecta a ningún exchange real.</div>
+<div id="_corde_debug" data-commit="${GIT_COMMIT}" style="position:fixed;bottom:8px;right:8px;z-index:99999;background:rgba(0,0,0,.85);color:#00ff99;font-size:10px;padding:5px 9px;border-radius:8px;font-family:monospace;pointer-events:none;border:1px solid rgba(0,255,153,.3)">STACKED · ${GIT_COMMIT}</div>
+
+<!-- ── COMMAND PALETTE (⌘K) ── -->
+<div id="cmdk-overlay" onclick="if(event.target===this)closeCmdk()">
+  <div id="cmdk">
+    <input id="cmdk-input" placeholder="Escribe un comando o pregunta… (Esc cierra)" autocomplete="off">
+    <div id="cmdk-list"></div>
+    <div id="cmdk-result"></div>
+    <div style="display:flex;justify-content:space-between;padding:8px 16px;border-top:1px solid rgba(120,160,210,.08)">
+      <span style="font-size:10px;color:#5a6674"><span class="cmdk-kbd">↑↓</span> navegar · <span class="cmdk-kbd">↵</span> ejecutar</span>
+      <span style="font-size:10px;color:#5a6674">Cordelius Command Center · educativo</span>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var DEFENSIVE = ${settings.defensiveMode ? "true" : "false"};
+  var noteMode = false;
+  var sel = 0;
+  var ov, inp, list, result;
+
+  function fmtLines(title, lines){ return '<b>'+title+'</b><br>'+lines.map(function(l){return '· '+esc2(l);}).join('<br>'); }
+  function esc2(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function showResult(html){ result.style.display='block'; result.innerHTML=html; }
+  function getJSON(url, cb){ fetch(url).then(function(r){return r.json();}).then(cb).catch(function(e){ showResult('Error: '+esc2(e.message)); }); }
+  function secHeaders(extra){ try { return (typeof authHeaders==='function') ? authHeaders(extra) : (extra||{}); } catch(e){ return extra||{}; } }
+  function blockedMsg(status, d){ showResult('<b style="color:#ff4d6d">Acción bloqueada ('+status+')</b><br>'+esc2((d&&d.reason)||'Mutación protegida por el Security Gate.')+'<br><span style="color:#5a6674">Guarda tu access key en System → Admin Token y reintenta.</span>'); }
+  function mutate(url, opts, cb){
+    var o = opts||{}; o.headers = secHeaders(o.headers||{});
+    fetch(url, o).then(function(r){
+      if(r.status===401||r.status===403){ r.json().then(function(d){ blockedMsg(r.status, d); }).catch(function(){ blockedMsg(r.status, null); }); return null; }
+      return r.json();
+    }).then(function(d){ if(d && cb) cb(d); }).catch(function(e){ showResult('Error: '+esc2(e.message)); });
+  }
+
+  var ACTIONS = [
+    { label:'Brief de hoy', hint:'resumen ejecutivo', run:function(){ showResult('Cargando…'); getJSON('/api/daily-brief', function(d){ showResult(fmtLines(d.greeting||'Brief', d.lines||[])); }); } },
+    { label:'Qué hago ahora', hint:'next best actions', run:function(){ showResult('Pensando…'); getJSON('/api/jarvis/brain', function(b){ showResult(fmtLines('Next best actions', b.nextActions||[]) + '<br><br><b>Focus:</b> '+esc2(b.topFocus)); }); } },
+    { label:'Ver riesgo', hint:'warnings y concentración', run:function(){ showResult('Analizando…'); getJSON('/api/jarvis/brain', function(b){ var w=(b.warnings||[]).map(function(x){return '['+x.severity+'] '+x.text;}); showResult(fmtLines('Riesgo actual', w.length?w:['Sin warnings activos'])); }); } },
+    { label:'Health check', hint:'WHOOP readiness', run:function(){ showResult('Cargando…'); getJSON('/api/health-readiness', function(h){ showResult(fmtLines('Health ('+esc2(h.source||'')+')', ['Recovery: '+(h.recovery!=null?h.recovery+'%':'—'),'Sleep: '+(h.sleep!=null?h.sleep+'%':'—'),'Strain: '+(h.strain!=null?(+h.strain).toFixed(1):'—'),'HRV: '+(h.hrv!=null?Math.round(h.hrv)+' ms':'—'),'Modo: '+esc2(h.operatingMode||'—')])); }); } },
+    { label:'Explicar portafolio', hint:'abre Jarvis con la pregunta', run:function(){ closeCmdk(); try{ if(document.getElementById('alfredo-panel').style.display!=='block') toggleJarvis(); setJarvisQ('Explica mi portafolio: composición, riesgo y qué vigilar (educativo)'); }catch(e){} } },
+    { label:'Registrar nota', hint:'guarda en Journal', run:function(){ noteMode=true; result.style.display='none'; inp.value=''; inp.placeholder='Escribe tu nota y presiona Enter… (Esc cancela)'; list.innerHTML='<div style="padding:12px 14px;font-size:12px;color:#9fb3c8">Modo nota: lo que escribas se guarda en Journal como entrada rápida.</div>'; } },
+    { label:'Modo defensivo '+(DEFENSIVE?'OFF':'ON'), hint:'etiqueta educativa, sin órdenes', run:function(){ showResult('Cambiando…'); mutate('/api/mode/defensive',{method:'POST'},function(d){ DEFENSIVE=d.defensiveMode; showResult('<b>Modo defensivo: '+(d.defensiveMode?'ACTIVADO':'DESACTIVADO')+'</b><br>'+esc2(d.note)+'<br><span style="color:#5a6674">El Home lo reflejará al recargar.</span>'); }); } },
+    { label:'Ver automations', hint:'reglas locales', run:function(){ showResult('Cargando…'); getJSON('/api/automations', function(a){ var f=(a.firedToday||[]).map(function(e){return '['+e.severity+'] '+e.name+': '+e.message;}); showResult(fmtLines('Reglas activas hoy', f.length?f:['Ninguna regla disparada hoy'])+'<br><span style="color:#5a6674">Cripto: '+a.criptoPct+'% del portafolio</span>'); }); } },
+    { label:'Memoria de Jarvis', hint:'resumen de memoria', run:function(){ showResult('Cargando…'); getJSON('/api/jarvis/memory', function(m){ showResult('<b>Memoria</b><br>'+esc2(m.summary)); }); } },
+    { label:'Ir a Jarvis', hint:'módulo', run:function(){ closeCmdk(); showMod('alfredo'); } },
+    { label:'Ir a Home', hint:'módulo', run:function(){ closeCmdk(); showMod('home'); } },
+    { label:'Ir a Trading', hint:'módulo', run:function(){ closeCmdk(); showMod('trading'); } },
+    { label:'Ir a Health', hint:'módulo', run:function(){ closeCmdk(); showMod('health'); } },
+    { label:'Ir a Journal', hint:'módulo', run:function(){ closeCmdk(); showMod('journal'); } },
+    { label:'Ir a Intelligence', hint:'módulo', run:function(){ closeCmdk(); showMod('intelligence'); } },
+    { label:'Ir a Autopilot', hint:'módulo', run:function(){ closeCmdk(); showMod('autopilot'); } }
+  ];
+
+  function filtered(){
+    var q = (inp.value||'').toLowerCase().trim();
+    if(!q) return ACTIONS;
+    return ACTIONS.filter(function(a){ return (a.label+' '+a.hint).toLowerCase().indexOf(q) !== -1; });
+  }
+  function renderList(){
+    if(noteMode) return;
+    var items = filtered();
+    if(sel >= items.length) sel = Math.max(0, items.length-1);
+    list.innerHTML = items.length ? items.map(function(a,i){
+      return '<div class="cmdk-item'+(i===sel?' sel':'')+'" data-i="'+i+'"><span>'+esc2(a.label)+'</span><span class="cmdk-hint">'+esc2(a.hint)+'</span></div>';
+    }).join('') : '<div style="padding:12px 14px;font-size:13px;color:#5a6674">Sin comandos. Prueba "brief", "riesgo", "nota"…</div>';
+    Array.prototype.forEach.call(list.children, function(el){
+      el.onclick = function(){ var i = +el.getAttribute('data-i'); if(!isNaN(i)){ sel=i; runSel(); } };
+    });
+  }
+  function runSel(){ var items = filtered(); if(items[sel]) items[sel].run(); }
+  function saveNote(){
+    var text = (inp.value||'').trim();
+    if(!text) return;
+    showResult('Guardando…');
+    fetch('/api/journal', { method:'POST', headers:secHeaders({'Content-Type':'application/x-www-form-urlencoded'}), body:'text='+encodeURIComponent(text)+'&mood=neutral', redirect:'manual' })
+      .then(function(r){
+        if(r && (r.status===401||r.status===403)){ blockedMsg(r.status, null); return; }
+        noteMode=false; inp.value=''; inp.placeholder='Escribe un comando o pregunta… (Esc cierra)'; renderList(); showResult('<b>Nota guardada en Journal ✓</b><br>'+esc2(text));
+      })
+      .catch(function(e){ showResult('Error guardando: '+esc2(e.message)); });
+  }
+
+  window.openCmdk = function(){
+    ov.style.display='block'; sel=0; noteMode=false;
+    inp.value=''; inp.placeholder='Escribe un comando o pregunta… (Esc cierra)';
+    result.style.display='none'; renderList();
+    setTimeout(function(){ inp.focus(); }, 30);
+  };
+  window.closeCmdk = function(){ ov.style.display='none'; noteMode=false; };
+  window.cmdkOpen = function(){ return ov && ov.style.display==='block'; };
+
+  document.addEventListener('DOMContentLoaded', init);
+  if(document.readyState !== 'loading') init();
+  function init(){
+    if(ov) return;
+    ov = document.getElementById('cmdk-overlay');
+    inp = document.getElementById('cmdk-input');
+    list = document.getElementById('cmdk-list');
+    result = document.getElementById('cmdk-result');
+    inp.addEventListener('input', function(){ sel=0; renderList(); });
+    inp.addEventListener('keydown', function(e){
+      if(e.key==='Escape'){ e.preventDefault(); noteMode ? window.openCmdk() : closeCmdk(); return; }
+      if(noteMode){ if(e.key==='Enter'){ e.preventDefault(); saveNote(); } return; }
+      if(e.key==='ArrowDown'){ e.preventDefault(); sel=Math.min(sel+1, filtered().length-1); renderList(); }
+      else if(e.key==='ArrowUp'){ e.preventDefault(); sel=Math.max(sel-1, 0); renderList(); }
+      else if(e.key==='Enter'){ e.preventDefault(); runSel(); }
+    });
+    document.addEventListener('keydown', function(e){
+      if((e.metaKey||e.ctrlKey) && (e.key==='k'||e.key==='K')){ e.preventDefault(); window.cmdkOpen() ? closeCmdk() : openCmdk(); }
+      else if(e.key==='Escape' && window.cmdkOpen()) closeCmdk();
+    });
+  }
+
+  // Secciones colapsables: recordar abierto/cerrado en localStorage.
+  function initClps(){
+    try {
+      document.querySelectorAll('details.clps').forEach(function(d){
+        var k = 'corde_clps_' + d.getAttribute('data-clps');
+        var saved = localStorage.getItem(k);
+        if (saved === '1') d.setAttribute('open',''); else if (saved === '0') d.removeAttribute('open');
+        d.addEventListener('toggle', function(){ try { localStorage.setItem(k, d.open ? '1' : '0'); } catch(e){} });
+      });
+    } catch(e){}
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initClps); else initClps();
+
+  // Auto-reload inteligente: sustituye al meta-refresh. No recarga si el
+  // palette o el chat de Jarvis están abiertos, o si estás escribiendo.
+  var REFRESH_S = ${Math.max(15, Number(settings.autoRefreshSeconds) || 60)};
+  setInterval(function(){
+    try {
+      var jar = document.getElementById('alfredo-panel');
+      var typing = document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+      if(!window.cmdkOpen() && !(jar && jar.style.display==='block') && !typing) location.reload();
+    } catch(e){}
+  }, REFRESH_S * 1000);
+})();
+</script>
 </body>
 <script>
+var _CORDE_MODS = ['home','trading','health','journal','intelligence','alfredo','autopilot'];
 function validModName(name) {
-  return ['home','trading','health','journal','intelligence','alfredo','autopilot'].indexOf(name) !== -1;
+  return _CORDE_MODS.indexOf(name) !== -1;
 }
+// STACKED MODE: all modules are always visible, stacked vertically.
+// showMod never hides anything — nav buttons only scroll to the chosen module.
 function showMod(name) {
-  name = validModName(name) ? name : 'alfredo';
-  var mod = document.getElementById('mod-' + name);
-  if (!mod) name = 'alfredo';
+  if (!validModName(name)) name = 'alfredo';
+  var selected = document.getElementById('mod-' + name);
 
-  document.querySelectorAll('.mod').forEach(function(m){m.classList.remove('active-mod');});
-  document.querySelectorAll('.nav-mod').forEach(function(b){b.classList.remove('nav-active');});
-  mod = document.getElementById('mod-' + name);
-  if (mod) mod.classList.add('active-mod');
-  document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b){ b.classList.add('nav-active'); });
+  // Nav active state
+  try {
+    document.querySelectorAll('.nav-mod').forEach(function(b) { b.classList.remove('nav-active'); });
+    document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b) { b.classList.add('nav-active'); });
+  } catch(e) {}
+
+  // Hash + persistence
+  try {
+    if (window.location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+  } catch(e) {}
   try { localStorage.setItem('corde_mod', name); } catch(e) {}
 
-  if (window.location.hash !== '#' + name) {
-    try { history.replaceState(null, '', '#' + name); } catch(e) { window.location.hash = name; }
+  // Scroll the selected module into view
+  try {
+    if (selected) selected.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch(e) {
+    try { if (selected) selected.scrollIntoView(); } catch(e2) {}
   }
-  if (name === 'health') loadHealthOS();
-  if (name === 'journal') loadJournalAuto();
-  if (name === 'intelligence') loadIntelligenceFeed();
-  if (name === 'alfredo') loadJarvisContext();
-  if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); }
+
+  // Debug label
+  try {
+    var _lbl = document.getElementById('_corde_debug');
+    if (_lbl) _lbl.textContent = 'STACKED · ' + (_lbl.getAttribute('data-commit') || '') + ' · ' + (window.location.hash || '#' + name);
+  } catch(e) {}
+
+  // Module-specific data loaders
+  try { if (name === 'health') loadHealthOS(); } catch(e) {}
+  try { if (name === 'journal') loadJournalAuto(); } catch(e) {}
+  try { if (name === 'intelligence') loadIntelligenceFeed(); } catch(e) {}
+  try { if (name === 'alfredo') loadJarvisContext(); } catch(e) {}
+  try { if (name === 'autopilot') { loadAutopilotDatabase(); loadOpportunityEngine(); } } catch(e) {}
 }
+window.showMod = showMod;
+
+// Scroll-spy: keep the nav button of the module in view highlighted while scrolling.
+(function() {
+  var ticking = false;
+  function currentModInView() {
+    var probe = window.innerHeight * 0.33;
+    var mods = document.querySelectorAll('.mod');
+    var cur = null;
+    for (var i = 0; i < mods.length; i++) {
+      if (mods[i].getBoundingClientRect().top <= probe) cur = mods[i].id.replace('mod-', '');
+    }
+    return cur || (mods[0] ? mods[0].id.replace('mod-', '') : null);
+  }
+  function syncNav() {
+    ticking = false;
+    try {
+      var name = currentModInView();
+      if (!name) return;
+      document.querySelectorAll('.nav-mod').forEach(function(b) { b.classList.remove('nav-active'); });
+      document.querySelectorAll('[data-mod="' + name + '"]').forEach(function(b) { b.classList.add('nav-active'); });
+    } catch (e) {}
+  }
+  window.addEventListener('scroll', function() {
+    if (ticking) return;
+    ticking = true;
+    if (window.requestAnimationFrame) requestAnimationFrame(syncNav); else setTimeout(syncNav, 120);
+  }, { passive: true });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', syncNav); else syncNav();
+})();
+
 function healthSet(id, value) {
   var el = document.getElementById(id);
   if (el) el.textContent = value == null || value === '' ? '—' : String(value);
@@ -5255,7 +6380,7 @@ function renderSparklineSvg(values, color) { var nums = (values || []).filter(fu
 function renderHealthScoreCard(label, value) { return '<div class="health-os-metric"><div class="health-os-label">'+escapeHtml(label)+'</div><div class="health-os-value" style="color:'+scoreColor(value)+'">'+fmtNum(value, '')+'</div></div>'; }
 function renderBehaviorChips(behaviors) { var items = [['sauna','Sauna'],['cannabis','Cannabis'],['training','Training'],['stress','High Stress'],['lateCaffeine','Late Caffeine'],['alcohol','Alcohol']]; return items.map(function(x){ var on = behaviors && behaviors[x[0]]; return '<button class="health-os-chip '+(on?'active':'')+'" data-health-behavior="'+escapeHtml(x[0])+'" onclick="toggleHealthBehavior(this.dataset.healthBehavior)">'+escapeHtml(x[1])+'</button>'; }).join(''); }
 async function toggleHealthBehavior(key) { try { var response = await secureFetch('/api/health/behavior', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ behavior:key }) }); if (response.ok) await loadHealthOS(); } catch(e) {} }
-function applyHealthOS(snapshot, insights, behaviors) { var latest = (snapshot && snapshot.latest) || {}; var scores = latest.scores || (snapshot && snapshot.scores) || {}; healthSet('health-os-updated', latest.ts ? new Date(latest.ts).toLocaleString('es-MX') : new Date().toLocaleString('es-MX')); healthSet('health-os-recovery', fmtPct(latest.recovery)); healthSet('health-os-sleep', fmtPct(latest.sleep)); healthSet('health-os-strain', fmtNum(latest.strain, '')); healthSet('health-os-hrv', fmtNum(latest.hrv, ' ms')); healthSet('health-os-rhr', fmtNum(latest.restingHeartRate, ' bpm')); healthSet('health-os-readiness', fmtPct(scores.readiness)); healthSet('health-os-score', fmtNum(scores.healthScore, '')); healthSet('health-os-status', scores.status || '—'); healthSet('health-os-mode', latest.operatingMode || 'NORMAL'); var badge = document.getElementById('health-os-whoop-badge'); if (badge) badge.textContent = latest.connected ? 'WHOOP LIVE' : 'WHOOP FALLBACK'; var scoreEl = document.getElementById('health-os-score'); if (scoreEl) scoreEl.style.color = scoreColor(scores.healthScore); var d1 = document.getElementById('health-os-donut-recovery'); if (d1) d1.innerHTML = renderDonut('Recovery', latest.recovery, '%'); var d2 = document.getElementById('health-os-donut-sleep'); if (d2) d2.innerHTML = renderDonut('Sleep', latest.sleep, '%'); var d3 = document.getElementById('health-os-donut-strain'); if (d3) d3.innerHTML = renderDonut('Strain', Math.min(100, Number(latest.strain || 0) * 5), ''); var radar = document.getElementById('health-os-radar'); if (radar) radar.innerHTML = renderRadarSvg(scores.radar || {}); var scoreList = document.getElementById('health-os-score-list'); if (scoreList) scoreList.innerHTML = [['Mental Clarity', scores.mentalClarity], ['Energy', scores.energy], ['Nervous System', scores.nervousSystem], ['Overtrading Risk', 100 - (scores.overtradingRisk || 0)], ['Stress Load', 100 - (scores.stressLoad || 0)], ['Recovery Priority', 100 - (scores.recoveryPriority || 0)]].map(function(x){ return renderHealthScoreCard(x[0], x[1]); }).join(''); healthSet('health-os-energy-physical', fmtNum(scores.physicalEnergy, '')); healthSet('health-os-energy-mental', fmtNum(scores.mentalEnergy, '')); healthSet('health-os-energy-focus', fmtNum(scores.focusCapacity, '')); healthSet('health-os-energy-deepwork', fmtNum(scores.deepWorkCapacity, '')); healthSet('health-os-energy-trading', fmtNum(scores.tradingCapacity, '')); healthSet('health-os-ai', (insights && insights.alfredoHealthAI) || (snapshot && snapshot.alfredoHealthAI) || 'Sin insight todavía.'); var history = document.getElementById('health-os-history'); if (history) { var h = (snapshot && snapshot.history) || []; var row = function(label, field, color) { var vals = h.map(function(x){ return x[field]; }); var last = vals.filter(function(v){return typeof v === 'number';}).slice(-1)[0]; return '<div class="health-os-history-row"><b>'+label+'</b><div class="health-os-trend">'+renderSparklineSvg(vals.slice(-30), color)+'</div><span>'+fmtNum(last, field === 'strain' ? '' : (field === 'hrv' ? ' ms' : '%'))+'</span></div>'; }; history.innerHTML = row('Recovery 7d / 30d','recovery','#f472b6') + row('Sleep 7d / 30d','sleep','#818cf8') + row('HRV 7d / 30d','hrv','#00ff99') + row('Strain 7d / 30d','strain','#ffd35c'); } var corr = document.getElementById('health-os-correlations'); if (corr) { var c = (snapshot && snapshot.correlations) || {}; corr.innerHTML = c.ready ? (c.items || []).map(function(i){ return '<div class="health-os-risk"><b>'+escapeHtml(i.label)+'</b><br><span class="muted">Delta: '+(i.value == null ? 'insuficiente' : i.value)+'</span></div>'; }).join('') : '<div class="muted">Recolectando datos. Se activará con 3+ días de snapshots.</div>'; } var beh = document.getElementById('health-os-behaviors'); if (beh) beh.innerHTML = renderBehaviorChips((behaviors && behaviors.behaviors) || {}); var risk = document.getElementById('health-os-trading-risk'); if (risk) risk.innerHTML = 'Recovery &lt; 50 ⇒ DEFENSIVE / reducir riesgo educativo.<br>Recovery &gt; 80 ⇒ NORMAL.<br>Strain alto ⇒ bajar agresividad.<br>Overtrading Risk actual: <b style="color:'+scoreColor(100 - (scores.overtradingRisk || 0))+'">'+fmtNum(scores.overtradingRisk, '')+'</b>. No operar impulsivo.'; }
+function applyHealthOS(snapshot, insights, behaviors) { var latest = (snapshot && snapshot.latest) || {}; var scores = latest.scores || (snapshot && snapshot.scores) || {}; healthSet('health-os-updated', latest.ts ? new Date(latest.ts).toLocaleString('es-MX') : 'sin dato'); healthSet('health-os-recovery', fmtPct(latest.recovery)); healthSet('health-os-sleep', fmtPct(latest.sleep)); healthSet('health-os-strain', fmtNum(latest.strain, '')); healthSet('health-os-hrv', fmtNum(latest.hrv, ' ms')); healthSet('health-os-rhr', fmtNum(latest.restingHeartRate, ' bpm')); healthSet('health-os-readiness', fmtPct(scores.readiness)); healthSet('health-os-score', fmtNum(scores.healthScore, '')); healthSet('health-os-status', scores.status || '—'); healthSet('health-os-mode', latest.operatingMode || 'NORMAL'); var badge = document.getElementById('health-os-whoop-badge'); if (badge) { badge.textContent = latest.connected ? 'WHOOP LIVE' : 'WHOOP FALLBACK'; badge.classList.toggle('fallback', !latest.connected); } var reconnect = document.getElementById('health-os-reconnect'); if (reconnect) reconnect.style.display = latest.connected ? 'none' : 'inline-flex'; var scoreEl = document.getElementById('health-os-score'); if (scoreEl) scoreEl.style.color = scoreColor(scores.healthScore); var d1 = document.getElementById('health-os-donut-recovery'); if (d1) d1.innerHTML = renderDonut('Recovery', latest.recovery, '%'); var d2 = document.getElementById('health-os-donut-sleep'); if (d2) d2.innerHTML = renderDonut('Sleep', latest.sleep, '%'); var d3 = document.getElementById('health-os-donut-strain'); if (d3) d3.innerHTML = renderDonut('Strain', Math.min(100, Number(latest.strain || 0) * 5), ''); var radar = document.getElementById('health-os-radar'); if (radar) radar.innerHTML = renderRadarSvg(scores.radar || {}); var scoreList = document.getElementById('health-os-score-list'); if (scoreList) scoreList.innerHTML = [['Mental Clarity', scores.mentalClarity], ['Energy', scores.energy], ['Nervous System', scores.nervousSystem], ['Overtrading Risk', 100 - (scores.overtradingRisk || 0)], ['Stress Load', 100 - (scores.stressLoad || 0)], ['Recovery Priority', 100 - (scores.recoveryPriority || 0)]].map(function(x){ return renderHealthScoreCard(x[0], x[1]); }).join(''); healthSet('health-os-energy-physical', fmtNum(scores.physicalEnergy, '')); healthSet('health-os-energy-mental', fmtNum(scores.mentalEnergy, '')); healthSet('health-os-energy-focus', fmtNum(scores.focusCapacity, '')); healthSet('health-os-energy-deepwork', fmtNum(scores.deepWorkCapacity, '')); healthSet('health-os-energy-trading', fmtNum(scores.tradingCapacity, '')); healthSet('health-os-ai', (insights && insights.alfredoHealthAI) || (snapshot && snapshot.alfredoHealthAI) || 'Sin insight todavía.'); var history = document.getElementById('health-os-history'); if (history) { var h = (snapshot && snapshot.history) || []; var row = function(label, field, color) { var vals = h.map(function(x){ return x[field]; }); var last = vals.filter(function(v){return typeof v === 'number';}).slice(-1)[0]; return '<div class="health-os-history-row"><b>'+label+'</b><div class="health-os-trend">'+renderSparklineSvg(vals.slice(-30), color)+'</div><span>'+fmtNum(last, field === 'strain' ? '' : (field === 'hrv' ? ' ms' : '%'))+'</span></div>'; }; history.innerHTML = row('Recovery 7d / 30d','recovery','#f472b6') + row('Sleep 7d / 30d','sleep','#818cf8') + row('HRV 7d / 30d','hrv','#00ff99') + row('Strain 7d / 30d','strain','#ffd35c'); } var corr = document.getElementById('health-os-correlations'); if (corr) { var c = (snapshot && snapshot.correlations) || {}; corr.innerHTML = c.ready ? (c.items || []).map(function(i){ return '<div class="health-os-risk"><b>'+escapeHtml(i.label)+'</b><br><span class="muted">Delta: '+(i.value == null ? 'insuficiente' : i.value)+'</span></div>'; }).join('') : '<div class="muted">Recolectando datos. Se activará con 3+ días de snapshots.</div>'; } var beh = document.getElementById('health-os-behaviors'); if (beh) beh.innerHTML = renderBehaviorChips((behaviors && behaviors.behaviors) || {}); var risk = document.getElementById('health-os-trading-risk'); if (risk) risk.innerHTML = 'Recovery &lt; 50 ⇒ DEFENSIVE / reducir riesgo educativo.<br>Recovery &gt; 80 ⇒ NORMAL.<br>Strain alto ⇒ bajar agresividad.<br>Overtrading Risk actual: <b style="color:'+scoreColor(100 - (scores.overtradingRisk || 0))+'">'+fmtNum(scores.overtradingRisk, '')+'</b>. No operar impulsivo.'; }
 async function loadHealthOS() { if (!document.getElementById('health-os-score')) return; try { var responses = await Promise.all([fetch('/api/health/snapshot', { cache:'no-store' }), fetch('/api/health/insights', { cache:'no-store' }), fetch('/api/health/behaviors/today', { cache:'no-store' })]); var snapshot = responses[0].ok ? await responses[0].json() : null; var insights = responses[1].ok ? await responses[1].json() : null; var behaviors = responses[2].ok ? await responses[2].json() : null; if (!snapshot || !snapshot.ok) { var fallback = await fetch('/api/whoop/today', { cache:'no-store' }); var whoop = fallback.ok ? await fallback.json() : {}; snapshot = { ok:true, latest: whoop, scores: {}, history: [] }; } applyHealthOS(snapshot, insights, behaviors); } catch(e) { healthSet('health-os-ai', 'No se pudo cargar Health OS. Revisa /api/health/snapshot.'); } }
 
 function autopilotSet(id, value) {
@@ -5409,7 +6534,7 @@ async function researchTicker() {
       result.innerHTML = '<div style="background:rgba(59,157,255,.05);border:1px solid rgba(59,157,255,.15);border-radius:16px;padding:18px 20px;margin-top:6px">'
         + '<div style="font-size:10px;font-weight:900;letter-spacing:.14em;color:#3b9dff;margin-bottom:10px">ANÁLISIS · ' + d.ticker + '</div>'
         + '<div style="font-size:14px;color:#dbeafe;line-height:1.75">'
-        + String(d.reply || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split(String.fromCharCode(10)).join('<br>').replace(/\*\*(.*?)\*\*/g,'<b>$1</b>')
+        + String(d.reply || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').split(String.fromCharCode(10)).join('<br>').replace(/\\*\\*(.*?)\\*\\*/g,'<b>$1</b>')
         + '</div></div>';
     } else {
       result.innerHTML = '<div style="color:#ff4d6d;font-size:13px;padding:8px 0">Error: ' + (d.error||'desconocido') + '</div>';
@@ -5419,31 +6544,39 @@ async function researchTicker() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', function() {
-  var saved = '';
-  var hashMod = (window.location.hash || '').replace('#', '');
-  try { saved = localStorage.getItem('corde_mod') || ''; } catch(e) {}
-
-  var activeMod = validModName(hashMod) ? hashMod : (validModName(saved) ? saved : 'alfredo');
-  showMod(activeMod);
-  loadJournalAuto();
-  loadJarvisContext();
-  loadIntelligenceFeed();
-  loadOpportunityEngine();
-});
+function _cordeliusInit() {
+  // STACKED MODE: every module is already visible; load all data sources up front.
+  try { loadHealthOS(); } catch(e) {}
+  try { loadJournalAuto(); } catch(e) {}
+  try { loadJarvisContext(); } catch(e) {}
+  try { loadIntelligenceFeed(); } catch(e) {}
+  try { loadAutopilotDatabase(); } catch(e) {}
+  try { loadOpportunityEngine(); } catch(e) {}
+  try {
+    var _lbl = document.getElementById('_corde_debug');
+    if (_lbl) _lbl.textContent = 'STACKED · ' + (_lbl.getAttribute('data-commit') || '') + ' · ' + (window.location.hash || '#home');
+  } catch(e) {}
+  // Only scroll when the URL carries an explicit module hash
+  var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
+  if (validModName(hashMod)) showMod(hashMod);
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _cordeliusInit);
+} else {
+  _cordeliusInit();
+}
 window.addEventListener('hashchange', function() {
   var hashMod = (window.location.hash || '').replace('#', '').split('?')[0];
   showMod(validModName(hashMod) ? hashMod : 'alfredo');
-
 });
 function getAdminToken(){try{return sessionStorage.getItem('corde_admin_token')||'';}catch(e){return '';}}
 function saveAdminToken(){var v=(document.getElementById('corde-admin-token-input')||{}).value||'';try{sessionStorage.setItem('corde_admin_token',v);}catch(e){}var st=document.getElementById('corde-admin-token-status');if(st){st.textContent=v?'Configurado (sesión)':'No configurado';st.style.color=v?'#4ade80':'';}};
 function clearAdminToken(){try{sessionStorage.removeItem('corde_admin_token');}catch(e){}var st=document.getElementById('corde-admin-token-status');if(st){st.textContent='No configurado';st.style.color='';}}
-function authHeaders(extra){var t=getAdminToken();var h=Object.assign({},extra||{});if(t)h['X-Admin-Token']=t;return h;}
+function authHeaders(extra){var t=(typeof window!=='undefined'&&window.CORDELIUS_ACCESS_KEY)||getAdminToken();var h=Object.assign({},extra||{});if(t){h['X-Admin-Token']=t;h['X-Cordelius-Key']=t;}return h;}
 async function secureFetch(url,opts){var o=Object.assign({},opts||{});o.headers=authHeaders(o.headers||{});return fetch(url,o);}
 async function cordeliusMutate(url){await secureFetch(url,{method:'GET'});location.reload();}
 async function cordeliusFormPost(form,redirect){var p=new URLSearchParams(new FormData(form));await secureFetch(form.action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});location.href=redirect||'/';}
-document.addEventListener('DOMContentLoaded',function(){var t=getAdminToken();var st=document.getElementById('corde-admin-token-status');if(st&&t){st.textContent='Configurado (sesión)';st.style.color='#4ade80';}});
+(function(){function _ai(){var t=getAdminToken();var st=document.getElementById('corde-admin-token-status');if(st&&t){st.textContent='Configurado (sesión)';st.style.color='#4ade80';}}if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',_ai);}else{_ai();}})();
 </script>
 </html>`;
 }
@@ -5570,8 +6703,337 @@ function sendJSON(res, data, status = 200) {
   return res.end(JSON.stringify(data));
 }
 
+// ════════════════════════════════════════════════════════════════
+// SECURITY GATE — permisos centralizados por endpoint
+// El dashboard se expone vía Cloudflare Quick Tunnel; cualquier request
+// del túnel llega como loopback pero trae headers cf-* / x-forwarded-for.
+// Niveles:
+//   publicRead      → siempre permitido (shell UI, health, OAuth, diagnósticos)
+//   privateRead     → GET con datos personales; clasificado y auditado.
+//                     Hoy NO se bloquea porque "/" server-renderiza los mismos
+//                     datos; bloquearlo sería teatro de seguridad (ver audit).
+//   mutateLocal     → toggles locales de bajo riesgo
+//   mutateProtected → POST que escriben datos
+//   dangerous       → borrado/reset masivo
+// Mutaciones (mutateLocal/mutateProtected/dangerous) desde el túnel exigen
+// X-Cordelius-Key == process.env.CORDELIUS_ACCESS_KEY. Sin key configurada,
+// toda mutación pública se bloquea. El valor de la key jamás se imprime.
+// ════════════════════════════════════════════════════════════════
+const CORDELIUS_ACCESS_KEY = process.env.CORDELIUS_ACCESS_KEY || "";
+
+const ENDPOINT_PERMISSIONS = {
+  "/": "privateRead",            // dashboard HTML: público requiere sesión (login wall)
+  "/login": "publicRead",
+  "/logout": "publicRead",
+  "/health": "publicRead",
+  "/healthz": "publicRead",
+  "/api/ui-diagnostics": "publicRead",
+  "/api/security/audit": "publicRead",
+  "/whoop/auth": "publicRead",
+  "/whoop/callback": "publicRead",
+  "/api/whoop/callback": "publicRead",
+
+  "/api/status": "privateRead",
+  "/api/portfolio": "privateRead",
+  "/api/intel": "privateRead",
+  "/api/quiver": "privateRead",
+  "/api/quiver/matches": "privateRead",
+  "/api/quiver/trending": "privateRead",
+  "/api/executive": "privateRead",
+  "/api/executive/score": "privateRead",
+  "/api/project/status": "privateRead",
+  "/api/project/memory": "privateRead",
+  "/api/decisions": "privateRead",
+  "/api/decisions/patterns": "privateRead",
+  "/api/decisions/playbook": "privateRead",
+  "/api/opportunities": "privateRead",
+  "/api/research/queue": "privateRead",
+  "/api/watchlist/opportunities": "privateRead",
+  "/api/jarvis/memory": "privateRead",
+  "/api/jarvis/brain": "privateRead",
+  "/api/feed/today": "privateRead",
+  "/api/automations": "privateRead",
+  "/api/ledger": "privateRead",
+  "/api/alerts": "privateRead",
+  "/api/daily-scan": "privateRead",
+  "/api/market-radar": "privateRead",
+  "/api/intelligence": "privateRead",
+  "/api/intelligence/feed": "privateRead",
+  "/api/daily-brief": "privateRead",
+  "/api/market-intelligence": "privateRead",
+  "/api/external-radar": "privateRead",
+  "/api/paper/status": "privateRead",
+  "/api/morning-report": "privateRead",
+  "/api/whoop/status": "privateRead",
+  "/api/whoop/profile": "privateRead",
+  "/api/whoop/cycle": "privateRead",
+  "/api/whoop/today": "privateRead",
+  "/api/autopilot/database": "privateRead",
+  "/api/autopilot/progress": "privateRead",
+  "/api/journal/auto": "privateRead",
+  "/api/journal/status": "privateRead",
+  "/api/journal": "privateRead",            // GET lee; el POST se reclasifica abajo
+  "/api/health-readiness": "privateRead",
+  "/api/health/behaviors/today": "privateRead",
+  "/api/health/snapshot": "privateRead",
+  "/api/health/insights": "privateRead",
+  "/api/trading/summary": "privateRead",
+  "/api/alfredo/context": "privateRead",
+  "/api/os-status": "privateRead",
+  "/api/research/stock": "privateRead",     // GET lee cache; el POST se reclasifica abajo
+
+  "/toggle-thinking": "mutateLocal",
+  "/bot/start": "mutateLocal",
+  "/bot/pause": "mutateLocal",
+
+  "/ask": "mutateProtected",
+  "/research": "mutateProtected",
+  "/intel": "mutateProtected",
+  "/intel/delete": "mutateProtected",
+  "/api/health/behavior": "mutateProtected",
+  "/alerts/dismiss": "mutateProtected",
+  "/api/opportunities/run": "mutateProtected",
+  "/api/research/queue/add": "mutateProtected",
+  "/api/research/queue/remove": "mutateProtected",
+  "/api/research/queue/run": "mutateProtected",
+  "/api/mode/defensive": "mutateProtected",
+  "/api/alerts/dry-run": "mutateProtected",
+  "/api/autopilot/snapshot": "mutateProtected",
+
+  "/intel/clear": "dangerous",
+  "/bot/reset": "dangerous"
+};
+const MUTATION_LEVELS = ["mutateLocal", "mutateProtected", "dangerous"];
+
+const securityStats = { publicRequestSeen: false, blockedMutations: 0, blockedReads: 0, publicMutationsAllowed: 0, lastBlockedPath: null, lastBlockedAt: null };
+
+function endpointPermission(req, path) {
+  let level = ENDPOINT_PERMISSIONS[path];
+  if (path === "/login" || path === "/logout") return "publicRead"; // auth: el POST /login ES el login
+  // Rutas dual GET/POST: el POST escribe aunque el GET solo lea.
+  if (req.method !== "GET" && req.method !== "HEAD" && !MUTATION_LEVELS.includes(level)) level = "mutateProtected";
+  if (!level) level = "privateRead"; // GET desconocido: clasificar conservador
+  return level;
+}
+
+function requestIsPublic(req) {
+  const h = req.headers || {};
+  if (h["cf-connecting-ip"] || h["cf-ray"] || h["x-forwarded-for"] || h["x-real-ip"]) return true;
+  const addr = (req.socket && req.socket.remoteAddress) || "";
+  return !(addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1");
+}
+
+function accessKeyValid(req) {
+  if (!CORDELIUS_ACCESS_KEY) return false;
+  const provided = String(req.headers["x-cordelius-key"] || req.headers["x-admin-token"] || "");
+  if (!provided) return false;
+  const a = crypto.createHash("sha256").update(provided).digest();
+  const b = crypto.createHash("sha256").update(CORDELIUS_ACCESS_KEY).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+// ── SESSION GATE — login wall con cookie HttpOnly firmada (12h) ──
+const SESSION_COOKIE = "cordelius_session";
+const SESSION_TTL_MS = 12 * 3600 * 1000;
+
+function parseCookies(req) {
+  const out = {};
+  String(req.headers.cookie || "").split(";").forEach(p => {
+    const i = p.indexOf("=");
+    if (i > 0) out[p.slice(0, i).trim()] = p.slice(i + 1).trim();
+  });
+  return out;
+}
+// Secreto derivado de la access key (las sesiones sobreviven reinicios;
+// si la key cambia, todas las sesiones se invalidan). Nunca se loguea.
+function sessionSecret() {
+  return crypto.createHash("sha256").update("cordelius-session-v1:" + CORDELIUS_ACCESS_KEY).digest();
+}
+function makeSessionToken() {
+  const exp = Date.now() + SESSION_TTL_MS;
+  const sig = crypto.createHmac("sha256", sessionSecret()).update("v1." + exp).digest("hex");
+  return "v1." + exp + "." + sig;
+}
+function sessionTokenValid(tok) {
+  if (!CORDELIUS_ACCESS_KEY || !tok) return false;
+  const p = String(tok).split(".");
+  if (p.length !== 3 || p[0] !== "v1") return false;
+  const exp = Number(p[1]);
+  if (!Number.isFinite(exp) || exp < Date.now()) return false;
+  const expect = crypto.createHmac("sha256", sessionSecret()).update("v1." + exp).digest("hex");
+  const a = Buffer.from(p[2]), b = Buffer.from(expect);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function hasValidSession(req) {
+  return sessionTokenValid(parseCookies(req)[SESSION_COOKIE]);
+}
+// Autenticado para acceso público: header X-Cordelius-Key válido o cookie de sesión.
+function publicAuthed(req) {
+  return accessKeyValid(req) || hasValidSession(req);
+}
+
+// Rate limit naive para POST /login: 15 intentos fallidos / 10 min (por proceso).
+const loginFailTimes = [];
+function loginRateLimited() {
+  const now = Date.now();
+  while (loginFailTimes.length && now - loginFailTimes[0] > 10 * 60 * 1000) loginFailTimes.shift();
+  return loginFailTimes.length >= 15;
+}
+
+function renderLoginWall(opts = {}) {
+  const locked = !CORDELIUS_ACCESS_KEY;
+  const body = locked
+    ? `<div class="lw-msg">🔒 Private dashboard locked.<br><span>Configura <b>CORDELIUS_ACCESS_KEY</b> localmente en el servidor para habilitar el acceso remoto.</span></div>`
+    : `<form method="POST" action="/login" autocomplete="off">
+        <input type="password" name="key" placeholder="Access key" autofocus autocomplete="current-password">
+        <button type="submit">Entrar</button>
+        ${opts.error ? `<div class="lw-err">${esc(opts.error)}</div>` : ""}
+      </form>`;
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cordelius · Acceso</title><style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#eaf6ff;background:radial-gradient(circle at 20% 15%,rgba(0,255,153,.12),transparent 32%),radial-gradient(circle at 80% 12%,rgba(59,157,255,.14),transparent 34%),#02040a}
+.lw{width:min(380px,calc(100vw - 40px));background:rgba(7,16,30,.92);border:1px solid rgba(0,255,153,.22);border-radius:24px;padding:34px 30px;text-align:center;box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 50px rgba(0,255,153,.07)}
+.lw-logo{font-size:34px;margin-bottom:8px}
+h1{font-size:20px;margin:0 0 4px;background:linear-gradient(90deg,#ffd35c,#fff,#3b9dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.lw-sub{color:#9fb3c8;font-size:12px;margin-bottom:22px}
+input{width:100%;box-sizing:border-box;background:rgba(0,0,0,.35);border:1px solid rgba(120,160,210,.25);border-radius:12px;padding:13px 14px;color:#eaf6ff;font-size:15px;margin-bottom:12px;outline:none}
+input:focus{border-color:rgba(0,255,153,.5)}
+button{width:100%;border:1px solid rgba(0,255,153,.4);background:rgba(0,255,153,.1);color:#00ff99;border-radius:12px;padding:12px;font-size:15px;font-weight:900;cursor:pointer}
+button:hover{background:rgba(0,255,153,.18)}
+.lw-err{color:#ff4d6d;font-size:12px;margin-top:10px}
+.lw-msg{font-size:15px;line-height:1.6}.lw-msg span{font-size:12px;color:#9fb3c8}
+.lw-foot{margin-top:18px;font-size:10px;color:#5a6674}
+</style></head><body><div class="lw">
+<div class="lw-logo">◎</div><h1>Cordelius</h1><div class="lw-sub">Personal OS · acceso privado</div>
+${body}
+<div class="lw-foot">Sesión de 12h · cookie HttpOnly · educativo, no asesoría</div>
+</div></body></html>`;
+}
+
+function sendLoginWall(res, opts = {}, status = 200) {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(renderLoginWall(opts));
+}
+
+function handleLogin(req, res) {
+  let body = "";
+  req.on("data", c => body += c);
+  req.on("end", () => {
+    if (!CORDELIUS_ACCESS_KEY) return sendLoginWall(res, {}, 200);
+    if (loginRateLimited()) return sendLoginWall(res, { error: "Demasiados intentos. Espera unos minutos." }, 429);
+    const key = new URLSearchParams(body).get("key") || "";
+    const a = crypto.createHash("sha256").update(key).digest();
+    const b = crypto.createHash("sha256").update(CORDELIUS_ACCESS_KEY).digest();
+    if (!key || !crypto.timingSafeEqual(a, b)) {
+      loginFailTimes.push(Date.now());
+      securityStats.blockedMutations++;
+      return sendLoginWall(res, { error: "Access key incorrecta." }, 401);
+    }
+    res.writeHead(302, {
+      "Set-Cookie": `${SESSION_COOKIE}=${makeSessionToken()}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; SameSite=Lax; Secure`,
+      Location: "/"
+    });
+    res.end();
+  });
+}
+
+function handleLogout(req, res) {
+  res.writeHead(302, {
+    "Set-Cookie": `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure`,
+    Location: "/login"
+  });
+  res.end();
+}
+
+// Devuelve true si el request puede continuar; si no, responde (login wall o JSON) y devuelve false.
+function enforceEndpointPermission(req, res, path) {
+  const level = endpointPermission(req, path);
+  const isPublic = requestIsPublic(req);
+  if (isPublic) securityStats.publicRequestSeen = true;
+
+  if (level === "publicRead") return true;
+  if (!isPublic) return true; // localhost: todo permitido sin login
+
+  const authed = publicAuthed(req);
+
+  if (level === "privateRead") {
+    if (authed) return true;
+    securityStats.blockedReads++;
+    if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
+      sendLoginWall(res, {}, 200); // login wall en vez del dashboard
+      return false;
+    }
+    sendJSON(res, { ok: false, error: "unauthorized", reason: "Endpoint privado: requiere sesión (cookie " + SESSION_COOKIE + ") o header X-Cordelius-Key.", howTo: CORDELIUS_ACCESS_KEY ? "Inicia sesión en /login con tu access key." : "El servidor no tiene CORDELIUS_ACCESS_KEY configurada; el acceso remoto privado está deshabilitado." }, 401);
+    return false;
+  }
+
+  // Mutaciones desde público
+  if (!CORDELIUS_ACCESS_KEY) {
+    securityStats.blockedMutations++;
+    securityStats.lastBlockedPath = path; securityStats.lastBlockedAt = Date.now();
+    sendJSON(res, { ok: false, error: "mutation_blocked", reason: "CORDELIUS_ACCESS_KEY no está configurada en el servidor; las mutaciones públicas están bloqueadas por seguridad.", howTo: "Define CORDELIUS_ACCESS_KEY en el entorno del servidor (manual, nunca via Claude) y reinicia." }, 403);
+    return false;
+  }
+  if (!authed) {
+    securityStats.blockedMutations++;
+    securityStats.lastBlockedPath = path; securityStats.lastBlockedAt = Date.now();
+    sendJSON(res, { ok: false, error: "unauthorized", reason: "Mutación vía túnel público sin sesión ni X-Cordelius-Key válido.", howTo: "Inicia sesión en /login, o guarda tu access key en System → Access Key." }, 401);
+    return false;
+  }
+  securityStats.publicMutationsAllowed++;
+  return true;
+}
+
+function buildSecurityAudit() {
+  const byLevel = { publicRead: [], privateRead: [], mutateLocal: [], mutateProtected: [], dangerous: [] };
+  for (const [p, lvl] of Object.entries(ENDPOINT_PERMISSIONS)) (byLevel[lvl] || byLevel.privateRead).push(p);
+  const writes = byLevel.mutateLocal.length + byLevel.mutateProtected.length + byLevel.dangerous.length;
+  return {
+    ok: true, ts: Date.now(),
+    securityLayer: true,
+    sessionGate: true,
+    dashboardProtected: true,
+    privateReadProtected: true,
+    sessionCookieName: SESSION_COOKIE,
+    sessionTTLHours: SESSION_TTL_MS / 3600000,
+    accessKeyConfigured: !!CORDELIUS_ACCESS_KEY,
+    publicTunnelRisk: securityStats.publicRequestSeen,
+    totals: {
+      classified: Object.keys(ENDPOINT_PERMISSIONS).length,
+      publicRead: byLevel.publicRead.length,
+      privateRead: byLevel.privateRead.length,
+      writes,
+      protectedMutationEndpoints: writes, // toda mutación pública pasa por el gate
+      unprotectedMutationEndpoints: 0
+    },
+    endpoints: byLevel,
+    enforcement: {
+      dashboard: "'/' desde público sin sesión → login wall (nunca el dashboard). Localhost entra directo.",
+      privateRead: "Desde público requiere sesión (cookie HttpOnly firmada, 12h) o X-Cordelius-Key; sin auth → 401 JSON.",
+      mutations: CORDELIUS_ACCESS_KEY
+        ? "Públicas requieren sesión válida o X-Cordelius-Key; localhost libre."
+        : "BLOQUEADAS en público (no hay CORDELIUS_ACCESS_KEY); localhost libre.",
+      session: "Cookie " + SESSION_COOKIE + " = v1.<exp>.<HMAC-SHA256> derivada de la access key; HttpOnly, SameSite=Lax, Secure, 12h. Login con rate limit (15 fallos/10min).",
+      unknownPaths: "GET desconocido → privateRead; método con escritura desconocido → mutateProtected (gate aplica)."
+    },
+    riskNotes: [
+      securityStats.publicRequestSeen ? "Se han observado requests con headers de proxy/túnel: el servidor ES alcanzable públicamente." : "Aún no se observan requests públicos desde el arranque.",
+      !CORDELIUS_ACCESS_KEY ? "CORDELIUS_ACCESS_KEY no configurada: acceso remoto privado deshabilitado y mutaciones públicas bloqueadas (modo más restrictivo)." : "Access key configurada (valor nunca expuesto).",
+      "La sesión autoriza también mutaciones: CSRF mitigado con SameSite=Lax, no eliminado. No abras el dashboard desde enlaces de terceros.",
+      "La URL del Quick Tunnel sigue siendo alcanzable; el login wall protege el contenido, no oculta el servicio.",
+      "Trading real: no existe ninguna ruta que ejecute órdenes; todo es paper/educativo."
+    ],
+    stats: { blockedMutations: securityStats.blockedMutations, blockedReads: securityStats.blockedReads, publicMutationsAllowed: securityStats.publicMutationsAllowed, lastBlockedPath: securityStats.lastBlockedPath, lastBlockedAt: securityStats.lastBlockedAt ? new Date(securityStats.lastBlockedAt).toISOString() : null }
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   const path = req.url.split("?")[0];
+  if (!enforceEndpointPermission(req, res, path)) return;
+  if (path === "/api/security/audit") return sendJSON(res, buildSecurityAudit());
+  if (path === "/login" && req.method === "POST") return handleLogin(req, res);
+  if (path === "/login") return requestIsPublic(req) && !publicAuthed(req) ? sendLoginWall(res) : (res.writeHead(302, { Location: "/" }), res.end());
+  if (path === "/logout") return handleLogout(req, res);
   if (req.method === "POST" && path === "/ask") return handleAsk(req, res);
   if (req.method === "POST" && path === "/intel") return handleIntel(req, res);
   if (req.method === "POST" && path === "/intel/delete") return handleIntelDelete(req, res);
@@ -5719,6 +7181,20 @@ const server = http.createServer(async (req, res) => {
   if (path === "/api/jarvis/memory") {
     return sendJSON(res, buildMemorySummary());
   }
+  if (path === "/api/jarvis/brain") {
+    return sendJSON(res, computeJarvisBrain());
+  }
+  if (path === "/api/feed/today") {
+    return sendJSON(res, buildTodayFeed());
+  }
+  if (path === "/api/automations") {
+    return sendJSON(res, getAutomationState());
+  }
+  if (req.method === "POST" && path === "/api/mode/defensive") {
+    settings.defensiveMode = !settings.defensiveMode;
+    saveJSON(SETTINGS_FILE, settings);
+    return sendJSON(res, { ok: true, defensiveMode: settings.defensiveMode, note: "Modo defensivo es una etiqueta educativa local; no ejecuta órdenes." });
+  }
   if (path === "/api/ledger") {
     const positions = loadJSON(POSITION_LEDGER_FILE, []);
     const changes   = loadJSON(CHANGE_LEDGER_FILE, []);
@@ -5728,6 +7204,84 @@ const server = http.createServer(async (req, res) => {
     const alerts = loadAlerts();
     const active = alerts.filter(a => !a.acknowledged);
     return sendJSON(res, { ok: true, ts: Date.now(), total: alerts.length, active: active.length, alerts });
+  }
+  if (path === "/api/ui-diagnostics") {
+    const hr = (() => { try { return computeHealthReadiness(); } catch (e) { return { configured: WHOOP_CONFIGURED, connected: false }; } })();
+    const journalCount = (() => { try { return computeJournalData().count; } catch (e) { return null; } })();
+    return sendJSON(res, { ok: true, ts: Date.now(),
+      gitCommit: GIT_COMMIT,
+      mode: "stacked",
+      stackedMode: true,
+      modules: ["home","trading","health","journal","intelligence","alfredo","autopilot"],
+      cssStrategy: "stacked fallback — all modules visible",
+      uptimeSeconds: Math.round((Date.now() - SERVER_STARTED_AT) / 1000),
+      dataSources: {
+        whoop: hr.connected ? "OK" : (WHOOP_CONFIGURED ? "FALLBACK" : "PENDIENTE"),
+        whoopReason: hr.connected ? "ok" : whoopStatusReason,
+        whoopTokenExpiresAt: whoopTokenExpiryMs() ? new Date(whoopTokenExpiryMs()).toISOString() : null,
+        whoopReconnect: hr.connected ? null : "visit /whoop/auth to re-authorize",
+        market: FINNHUB_API_KEY ? "OK" : "FALLBACK",
+        quotes: quotesFreshness(),
+        quotesLastFetch: quotesLastFetch ? new Date(quotesLastFetch).toISOString() : null,
+        quotesError: quotesLastError,
+        cryptoQuotes: cryptoFreshness(),
+        cryptoQuotesLastFetch: cryptoQuotesLastFetch ? new Date(cryptoQuotesLastFetch).toISOString() : null,
+        cryptoQuotesError: cryptoQuotesError,
+        technicalIndicators: indicatorsFreshness(),
+        technicalIndicatorsLastFetch: technicalLastFetch ? new Date(technicalLastFetch).toISOString() : null,
+        technicalIndicatorsError: technicalLastError,
+        liveIndicatorsCount: indicatorCounts().live,
+        simulatedIndicatorsCount: indicatorCounts().simulated,
+        ...(() => { try { const pv = portfolioValue(); let live = 0; for (const a of pv.assets) if (a.quoteSource !== "manual") live++; return { liveAssetsCount: live, manualAssetsCount: pv.assets.length - live }; } catch (e) { return { liveAssetsCount: null, manualAssetsCount: null }; } })(),
+        quiver: QUIVER_API_KEY ? "OK" : "PENDIENTE",
+        journal: journalCount !== null ? "OK" : "ERROR",
+        journalEntries: journalCount,
+        portfolioHistoryPoints: Array.isArray(portfolioHistory) ? portfolioHistory.length : 0
+      },
+      security: (() => { try { const a = buildSecurityAudit(); return {
+        securityLayer: true,
+        sessionGate: true,
+        dashboardProtected: a.dashboardProtected,
+        privateReadProtected: a.privateReadProtected,
+        sessionCookieName: a.sessionCookieName,
+        publicTunnelRisk: a.publicTunnelRisk,
+        accessKeyConfigured: a.accessKeyConfigured,
+        protectedMutationEndpoints: a.totals.protectedMutationEndpoints,
+        unprotectedMutationEndpoints: a.totals.unprotectedMutationEndpoints,
+        blockedMutations: a.stats.blockedMutations,
+        blockedReads: a.stats.blockedReads
+      }; } catch (e) { return { securityLayer: false, error: e.message }; } })(),
+      uxRecovery: (() => { try {
+        const hist = buildDailyEquityHistory();
+        buildTodayFeed(); // refresca feedDedupeStats
+        const warnings = [];
+        if (hist.mode === "limited") warnings.push("Historial de equity limitado a un solo día; las anclas diarias crecerán con los snapshots.");
+        const eq = bot.equityHistory || [];
+        if (eq.length > 1 && eq[eq.length - 1].t - eq[0].t < 36 * 3600 * 1000) warnings.push("Equity del bot paper aún intradía (<36h).");
+        return {
+          dedupeLayer: true,
+          chartsHistoryMode: hist.mode,
+          chartDateRange: { from: hist.firstDate, to: hist.lastDate, days: hist.rangeDays },
+          actionCenter: true,
+          collapsibleSections: true,
+          paperModeTimeline: (bot.history || []).length ? "real" : "limited",
+          repeatedSnapshotsReduced: Math.max(0, feedDedupeStats.candidates - feedDedupeStats.shown),
+          feedSnapshotsShown: feedDedupeStats.shown,
+          warnings
+        };
+      } catch (e) { return { dedupeLayer: false, error: e.message }; } })(),
+      commandCenter: {
+        commandPalette: true,
+        jarvisBrain: true,
+        todayFeed: true,
+        actionCenter: true,
+        neuralHeader: true,
+        visualPolish: "v2",
+        automations: (() => { try { const a = getAutomationState(); return { rules: a.rules.length, firedToday: a.firedToday.length, defensiveMode: a.defensiveMode }; } catch (e) { return { error: e.message }; } })(),
+        endpoints: ["/api/jarvis/brain", "/api/feed/today", "/api/automations", "POST /api/mode/defensive"]
+      },
+      note: "Tabs only scroll; no modules are hidden."
+    });
   }
   if (req.method === "POST" && path === "/api/alerts/dry-run") {
     return sendJSON(res, checkAlertsDryRun());
@@ -5909,6 +7463,10 @@ const server = http.createServer(async (req, res) => {
       configured: WHOOP_CONFIGURED,
       connected: h.connected,
       tokensPresent: !!(whoopTokens && whoopTokens.access_token),
+      tokenExpiresAt: whoopTokenExpiryMs() ? new Date(whoopTokenExpiryMs()).toISOString() : null,
+      tokenExpired: whoopTokenExpiryMs() ? Date.now() > whoopTokenExpiryMs() : null,
+      statusReason: h.connected ? "ok" : whoopStatusReason,
+      reconnect: h.connected ? null : "Open /whoop/auth in a browser to re-authorize WHOOP (requires WHOOP_REDIRECT_URI in .env to match the app settings).",
       source: h.source,
       reason: h.connected
         ? "WHOOP connected and data available"
@@ -5967,6 +7525,7 @@ const server = http.createServer(async (req, res) => {
   }
 
 if (path === "/api/whoop/today") {
+    await refreshWhoopCache(); // rate-limited internally (WHOOP_CACHE_MS)
     const h = computeHealthReadiness();
     const _cyc = whoopCache.cycle;
     const _kj = _cyc && _cyc.score && _cyc.score.kilojoule != null ? _cyc.score.kilojoule : null;
@@ -6314,7 +7873,12 @@ if (path === "/api/whoop/today") {
   }
   if (path === "/api/health/insights") {
     try {
-      const history = loadJSON(HEALTH_SNAPSHOT_FILE, []); const latest = Array.isArray(history) && history.length ? history[history.length - 1] : healthSnapshotRecord({}); const ai = buildHealthInsight(latest, latest.scores || computeHealthScores(latest));
+      const history = loadJSON(HEALTH_SNAPSHOT_FILE, []);
+      const byTime = (Array.isArray(history) ? history.slice() : []).sort((a, b) =>
+        (a.ts || (a.timestamp ? Date.parse(a.timestamp) : 0)) - (b.ts || (b.timestamp ? Date.parse(b.timestamp) : 0)));
+      const latest = byTime.length ? byTime[byTime.length - 1] : healthSnapshotRecord({});
+      const recDate = latest.date || (latest.timestamp ? String(latest.timestamp).slice(0, 10) : "");
+      const ai = buildHealthInsight(latest, latest.scores || computeHealthScores(latest), recDate === todayKey());
       res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:true, ts: Date.now(), alfredoHealthAI: ai, scores: latest.scores || computeHealthScores(latest), educationalNote:"Educativo. No es asesoría médica ni financiera." }));
     } catch(e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok:false, error:"health_insights_crash", message:e.message })); }
   }
@@ -6603,6 +8167,24 @@ async function boot() {
 
     try {
       await Promise.race([
+        refreshCryptoQuotes(),
+        new Promise(resolve => setTimeout(resolve, 8000))
+      ]);
+    } catch (e) {
+      console.log("refreshCryptoQuotes background omitido:", e.message);
+    }
+
+    try {
+      await Promise.race([
+        refreshTechnicalIndicators(),
+        new Promise(resolve => setTimeout(resolve, 25000))
+      ]);
+    } catch (e) {
+      console.log("refreshTechnicalIndicators background omitido:", e.message);
+    }
+
+    try {
+      await Promise.race([
         fetchNews(),
         new Promise(resolve => setTimeout(resolve, 8000))
       ]);
@@ -6640,6 +8222,17 @@ async function boot() {
       } catch (e) {
         console.log("refreshQuotes interval omitido:", e.message);
       }
+
+      try {
+        await Promise.race([
+          refreshCryptoQuotes(),
+          new Promise(resolve => setTimeout(resolve, 8000))
+        ]);
+      } catch (e) {
+        console.log("refreshCryptoQuotes interval omitido:", e.message);
+      }
+
+      try { refreshTechnicalIndicators(); } catch (e) {} // TTL interno de 2h; no martillea APIs
 
       try { savePortfolioPoint(); } catch (e) {}
       try { botTick(); } catch (e) {}
