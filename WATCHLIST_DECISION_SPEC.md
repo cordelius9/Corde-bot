@@ -80,22 +80,35 @@
 
 Un item de watchlist pasa a `BLOCKED` si se cumple **cualquiera** de las siguientes:
 
+**A) BLOCKED solo para transiciones de ejecución (PAPER_ONLY, PAPER_BUY, APPROVAL_REQUIRED):**
 ```
-[ ] security audit falla (audit.totals.unprotectedMutationEndpoints > 0)
-[ ] precio crypto stale (priceAgeSeconds > 120) al intentar transicionar a PAPER_ONLY
 [ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING
-[ ] evento binario crítico en ≤ 7 días sin revisión manual (earnings, FDA, etc.)
-[ ] datos ambiguos críticos que impiden calcular riesgo o invalidación
-[ ] recovery < 45 (healthContext — Jarvis en modo DEFENSIVO/DESCANSO)
+[ ] recovery < 45 (healthContext)
+[ ] precio crypto stale (priceAgeSeconds > 120) al intentar PAPER_ONLY / PAPER_BUY
+[ ] evento binario en ≤ 7 días sin revisión manual cuando se solicita ejecución
+```
+
+> Items pasivos (WATCHLIST / RESEARCH_MORE) **no se bloquean** por estas condiciones.
+> Reciben nota "not actionable while Jarvis is DEFENSIVO / recovery low" y siguen
+> monitoreables. BLOCKED solo ocurre si se intenta una transición de ejecución/paper.
+
+**B) BLOCKED para todos los modos (incluyendo watchlist/research pasiva):**
+```
+[ ] Cualquier invariante de security audit falla:
+     dashboardProtected !== true | privateReadProtected !== true
+     accessKeyConfigured !== true | unprotectedMutationEndpoints > 0
+[ ] Schema del item corrupto o inválido — no puede procesarse de forma segura
+[ ] Datos críticos ambiguos que podrían causar ejecución insegura
 ```
 
 **No es condición de BLOCKED:**
 ```
-✗  Activo equity/ETF no soportado por paper trading → WAITING_FOR_CONFIRMATION (no BLOCKED)
+✗  Activo equity/ETF no soportado para paper → WAITING_FOR_CONFIRMATION
    "Unsupported for paper execution ≠ BLOCKED. It remains watchlist/review-only
     unless a critical safety condition exists."
-✗  Precio equity no disponible en Cordelius → RESEARCH_MORE (esperado para equities)
-✗  Score bajo → REJECTED o ACTIVE, no BLOCKED
+✗  Precio equity no disponible → RESEARCH_MORE
+✗  Score bajo → REJECTED, RESEARCH_MORE o ACTIVE según umbrales
+✗  BTC/ETH/XRP con precio stale en watchlist pasiva → WAITING_FOR_PRICE (no BLOCKED)
 ```
 
 El bloqueo se resuelve cuando la condición que lo causó desaparece.
@@ -153,11 +166,15 @@ Un trigger es una condición que cambia el estado del watchlist item o genera al
 | `EARNINGS_APPROACHING` | Earnings en ≤ 7 días | ⚠️ Telegram (alerta de riesgo) |
 | `JARVIS_MODE_CHANGE` | Jarvis cambia de DEFENSIVO a MODERADO u ÓPTIMO | ✓ Telegram |
 | `INVALIDATION_HIT` | Precio cierra bajo `stopLevel` | → REJECTED automático |
-| `DATA_STALE` | Precio crypto no actualizado en > 2 horas | → BLOCKED (si activo en paper whitelist); ⚠️ Telegram |
-| `CRITICAL_CONDITION` | Jarvis DEFENSIVO, security audit falla, recovery < 45 | → BLOCKED; ⚠️ Telegram (urgente) |
+| `DATA_STALE` | Precio crypto no actualizado en > 2 horas | Watchlist pasiva → WAITING_FOR_PRICE + ⚠️ Telegram ("price feed stale; monitoring paused"); Intento PAPER_ONLY/PAPER_BUY → BLOCKED |
+| `JARVIS_DEFENSIVE` | jarvisMode pasa a DEFENSIVO o recovery < 45 | Watchlist pasiva → nota "not actionable now" + ⚠️ Telegram; Intento de ejecución → BLOCKED |
+| `SECURITY_AUDIT_FAIL` | Cualquier invariante de security audit falla | → BLOCKED en todos los modos + ⚠️ Telegram urgente |
 
 > Ningún trigger ejecuta un trade automáticamente. Solo cambian el estado del item
 > y envían una notificación a Pedro para que decida.
+>
+> "WAITING_FOR_PRICE is used for idle monitoring with stale data; BLOCKED is used
+>  only when an execution/paper transition is attempted with stale crypto price."
 
 ---
 

@@ -41,7 +41,16 @@ Pedro pega análisis externo
   [Etapa 3] Cruce con precio fresco
     - cryptoQuotes[sym].priceMXN (BTC/ETH/XRP) — verificar freshness via .t
     - quotes[ticker] para activos en portafolio
-    - Si precio no está disponible o stale → estado = BLOCKED
+    - Precio faltante/stale — routing contextual:
+         Research/watchlist pasiva (sin intento de ejecución):
+           → marketDataStatus = "unavailable" o "stale"
+           → estado = RESEARCH_MORE o WATCHLIST
+           → nextAction = "obtener precio fresco antes de cualquier ejecución"
+           "Missing or stale price blocks execution transitions, not research intake."
+           "A research item may be saved and monitored without fresh price,
+            but it cannot become PAPER_BUY/PAPER_ONLY until price freshness rules pass."
+         Intento de PAPER_BUY/PAPER_ONLY para BTC/ETH/XRP:
+           → precio stale o priceAgeSeconds > 120 → BLOCKED
           │
           ▼
   [Etapa 4] Cruce con indicadores técnicos
