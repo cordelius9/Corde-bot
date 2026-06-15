@@ -211,8 +211,32 @@ Pedro pega análisis externo
 | `WATCHLIST` | Tesis válida pero sin señal de entrada inmediata; **o** activo válido pero fuera de paper-trading whitelist (ej. AAPL, AMD, SPY) | Monitorear según WATCHLIST_DECISION_SPEC |
 | `RESEARCH_MORE` | Falta información para clasificar: ticker ambiguo, horizonte indefinido, precio equity no disponible | Pedro aporta más datos |
 | `PAPER_BUY` | Todas las condiciones pasan **y** activo está en paper-trading whitelist; candidato para paper trade | Engine de paper trading (PAPER_TRADING_SPEC.md §6) |
-| `BUY_CANDIDATE` | PAPER_BUY con > 30 paper trades ganadores previos; candidato para real buy | Aprobación explícita de Pedro (Fase 4+) |
-| `BLOCKED` | Condición crítica sistémica falla (security audit, Jarvis DEFENSIVO, precio crypto stale, riesgo extremo) — ver §7 | No procesar hasta resolver bloqueo |
+| `BUY_CANDIDATE` | Solo alcanzable tras cumplir la checklist completa Fase 3→4 de TRADING_AUTOPILOT_PLAN.md — ver §6a. ">30 winning paper trades is not sufficient by itself." | Aprobación explícita de Pedro (Fase 4+) |
+| `BLOCKED` | Condición crítica sistémica falla (security audit, Jarvis DEFENSIVO durante ejecución, precio crypto stale en PAPER_ONLY, riesgo extremo) — ver §7 | No procesar hasta resolver bloqueo |
+
+### §6a — Gates completos para BUY_CANDIDATE
+
+`BUY_CANDIDATE` no puede asignarse solo por conteo de paper trades ganadores. Requiere que se cumplan **todos** los gates de la checklist Fase 3→4 definida en `TRADING_AUTOPILOT_PLAN.md §14`:
+
+```
+[ ] ≥ 30 paper trades ejecutados con historial documentado
+[ ] Win rate ≥ 55% verificado
+[ ] Expected value > 0 (positivo) en el periodo de evaluación
+[ ] ≥ 60 días de operación sin crashes ni errores de sistema
+[ ] 0 señales alucinadas detectadas en revisión manual
+[ ] Kill switch probado y verificado funcional
+[ ] Security audit completo OK (todos los invariantes: dashboardProtected,
+    privateReadProtected, accessKeyConfigured, unprotectedMutationEndpoints = 0)
+[ ] Pedro ha revisado manualmente los resultados y aprueba explícitamente avanzar a Fase 4
+[ ] Real trading sigue deshabilitado hasta que Pedro apruebe Fase 4
+```
+
+Si no se cumplen **todos** los gates anteriores, el estado máximo permitido es:
+`PAPER_BUY` / `PAPER_ONLY` / `WATCHLIST` / `WAITING_FOR_CONFIRMATION` — **nunca `BUY_CANDIDATE`**.
+
+> ⚠️ `BUY_CANDIDATE` es un estado documental futuro. No habilita trading real.
+> Real trading solo es posible en Fase 4+ con aprobación explícita de Pedro según
+> TRADING_AUTOPILOT_PLAN.md. Cualquier transición a Fase 4 requiere PR separado.
 
 ### Distinción: research whitelist ≠ paper trading whitelist
 
@@ -338,14 +362,23 @@ Técnico: neutral | Jarvis: MODERADO
 /research_more BTC → pedir más información
 ```
 
-### Comandos válidos
+### Comandos de research — futuros, no habilitados todavía
 
-| Comando | Acción |
-|---|---|
-| `/watchlist TICKER` | Mueve el item a estado WATCHLIST |
-| `/paper TICKER` | Intenta mover a PAPER_BUY (re-valida condiciones) |
-| `/reject TICKER` | Mueve a REJECT y archiva |
-| `/research_more TICKER` | Mantiene en RESEARCH_MORE, pide aclaración |
+> ⚠️ Los comandos siguientes son **conceptuales** para el módulo de research intake.
+> **No están en la whitelist activa de Telegram** (REMOTE_CONTROL_PLAN.md §3).
+> Si se implementara bot.js según docs actuales, Telegram los rechazaría como
+> "comando no permitido". Requieren PR separado, revisión de seguridad y actualización
+> explícita de la whitelist antes de poder usarse.
+> "These commands are conceptual for the research intake module and must not be
+>  accepted by Telegram until explicitly added to the central whitelist in
+>  REMOTE_CONTROL_PLAN.md."
+
+| Comando | Acción planificada | Estado |
+|---|---|---|
+| `/watchlist TICKER` | Mueve el item a estado WATCHLIST | Futuro — no habilitado |
+| `/paper TICKER` | Intenta mover a PAPER_BUY (re-valida condiciones) | Futuro — no habilitado |
+| `/reject TICKER` | Mueve a REJECT y archiva | Futuro — no habilitado |
+| `/research_more TICKER` | Mantiene en RESEARCH_MORE, pide aclaración | Futuro — no habilitado |
 
 > ⚠️ `/buy TICKER` no existe. Real buy está deshabilitado hasta Fase 4 (TRADING_AUTOPILOT_PLAN.md §5).
 > No se puede enviar una orden real por Telegram en ninguna circunstancia presente.

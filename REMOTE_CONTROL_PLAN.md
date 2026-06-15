@@ -61,6 +61,23 @@ Todos los comandos remotos pasan por validación con `CORDELIUS_ACCESS_KEY` ante
 | `/paper-pause` | `POST /api/paper/pause` (pausa engine) | mutate | bajo |
 | `/paper-resume` | `POST /api/paper/resume` (reanuda engine) | mutate | bajo |
 
+### Comandos de research intake — futuros, NO en whitelist activa
+
+Los siguientes comandos están diseñados en `RESEARCH_INTAKE_PIPELINE.md` pero **no están
+habilitados** y no deben ser aceptados por el bot hasta que se complete un PR separado
+con revisión de seguridad y actualización explícita de esta whitelist.
+
+| Comando | Acción planificada | Requiere para habilitar |
+|---|---|---|
+| `/watchlist TICKER` | Mover research item a WATCHLIST | PR separado + security review |
+| `/paper TICKER` | Intentar PAPER_BUY (re-valida condiciones) | PR separado + security review |
+| `/reject TICKER` | Mover a REJECT y archivar | PR separado + security review |
+| `/research_more TICKER` | Mantener en RESEARCH_MORE, pedir aclaración | PR separado + security review |
+
+> ⚠️ Ninguno de estos comandos debe estar en bot.js hasta que aparezca aquí en la
+> whitelist activa. Cualquier expansión de whitelist requiere PR dedicado,
+> revisión de seguridad y aprobación explícita de Pedro.
+
 ### Flujo de validación de comando
 
 ```
