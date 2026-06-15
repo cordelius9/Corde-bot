@@ -82,13 +82,20 @@ Un item de watchlist pasa a `BLOCKED` si se cumple **cualquiera** de las siguien
 
 ```
 [ ] security audit falla (audit.totals.unprotectedMutationEndpoints > 0)
-[ ] precio crypto stale (> 2 horas sin actualización) para activo en paper whitelist
+[ ] precio crypto stale (priceAgeSeconds > 120) al intentar transicionar a PAPER_ONLY
 [ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING
-[ ] activo no soportado para la transición solicitada
-     (ej. equity quiere avanzar a PAPER_ONLY — motor no soporta equities aún)
 [ ] evento binario crítico en ≤ 7 días sin revisión manual (earnings, FDA, etc.)
 [ ] datos ambiguos críticos que impiden calcular riesgo o invalidación
 [ ] recovery < 45 (healthContext — Jarvis en modo DEFENSIVO/DESCANSO)
+```
+
+**No es condición de BLOCKED:**
+```
+✗  Activo equity/ETF no soportado por paper trading → WAITING_FOR_CONFIRMATION (no BLOCKED)
+   "Unsupported for paper execution ≠ BLOCKED. It remains watchlist/review-only
+    unless a critical safety condition exists."
+✗  Precio equity no disponible en Cordelius → RESEARCH_MORE (esperado para equities)
+✗  Score bajo → REJECTED o ACTIVE, no BLOCKED
 ```
 
 El bloqueo se resuelve cuando la condición que lo causó desaparece.
@@ -179,11 +186,20 @@ riskScore        = (100 - nivel de riesgo) (0-100)
                    - riskLevel "high": 35
                    - riskLevel "extreme": 0 → BLOCKED
 
-freshnessScore   = frescura del dato de precio (0-100)
-                   - precio < 5 min: 100
-                   - precio 5-30 min: 80
-                   - precio 30-120 min: 50
-                   - precio > 2 horas: 0 → BLOCKED
+freshnessScore   = frescura del dato de precio (0-100) — scoring general de watchlist
+                   - precio ≤ 2 min (≤ 120s): 100
+                   - precio 2-5 min: 80
+                   - precio 5-30 min: 50
+                   - precio 30 min - 2 horas: 20
+                   - precio > 2 horas (crypto): 0 → BLOCKED
+
+⚠️ HARD GATE para PAPER_ONLY — crypto (BTC / ETH / XRP):
+  priceAgeSeconds <= 120 es condición necesaria e irremplazable.
+  Un freshnessScore alto NO es suficiente para entrar a PAPER_ONLY.
+  Si priceAgeSeconds > 120 al momento de la evaluación:
+    → NO transicionar a PAPER_ONLY
+    → mantener en WAITING_FOR_PRICE hasta que llegue precio fresco
+  (Alineado con PAPER_TRADING_SPEC.md §6: bloqueo duro si priceAgeSeconds > 120)
 
 jarvisContextScore = contexto de Jarvis y salud (0-100)
                    - jarvisMode ÓPTIMO: 100
@@ -204,7 +220,8 @@ finalDecisionScore = promedio ponderado:
 ### Umbrales de estado según finalDecisionScore
 
 ```
-finalDecisionScore >= 75  → PAPER_ONLY (solo si activo en paper-trading whitelist)
+finalDecisionScore >= 75  → PAPER_ONLY (solo si activo en paper-trading whitelist
+                             Y priceAgeSeconds <= 120 para crypto)
                              Si activo es equity/ETF → WAITING_FOR_CONFIRMATION
 finalDecisionScore 60-74  → WAITING_FOR_CONFIRMATION
 finalDecisionScore 40-59  → ACTIVE (monitoreo sin acción)
@@ -212,9 +229,10 @@ finalDecisionScore < 40   → REJECTED
 cualquier componente = 0  → estado BLOCKED (ver §3a para condiciones exactas)
 ```
 
-> Un score alto no garantiza PAPER_ONLY para equities/ETFs. El motor de paper trading
-> solo soporta BTC / ETH / XRP actualmente. Un equity con score >= 75 queda en
-> WAITING_FOR_CONFIRMATION hasta que el motor soporte su tipo de activo.
+> Para crypto PAPER_ONLY: finalDecisionScore >= 75 es condición necesaria pero no
+> suficiente. También se requiere priceAgeSeconds <= 120 (hard gate — PAPER_TRADING_SPEC §6).
+> Un equity con score >= 75 queda en WAITING_FOR_CONFIRMATION — no BLOCKED — hasta
+> que el motor soporte su tipo de activo.
 
 ---
 
@@ -237,8 +255,9 @@ Reglas para BLOCKED:
    Jarvis sale de DEFENSIVO, precio fresco disponible, etc.)
 ✓  BLOCKED → ARCHIVED: si Pedro decide descartar el item bloqueado
 ✓  Un item BLOCKED sigue visible en watchlist (no se archiva automáticamente)
-✓  Equity/ETF que quiere PAPER_ONLY pero motor no lo soporta → BLOCKED con razón
-   "activo no soportado para paper trade" — NO es rechazo del análisis
+✓  Equity/ETF con score >= 75 pero no soportado por paper trading → WAITING_FOR_CONFIRMATION
+   (no BLOCKED — el análisis es válido; "unsupported for paper execution ≠ BLOCKED")
+✓  Equity/ETF sigue monitoreable en watchlist indefinidamente sin requerir soporte de paper
 ```
 
 ---

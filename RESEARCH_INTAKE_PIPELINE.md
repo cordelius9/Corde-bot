@@ -146,6 +146,8 @@ Pedro pega análisis externo
 | `confidence` | 0-100 | Score de confianza en la tesis |
 | `riskLevel` | enum | `low` / `medium` / `high` / `extreme` |
 | `marketDataStatus` | enum | `fresh` / `stale` / `unavailable` |
+| `marketDataNote` | string? | Opcional — explicación en texto libre si `marketDataStatus` ≠ `fresh` |
+| `classifiedClaims` | array? | Opcional — descomposición detallada: `[{ type, text }]` donde type ∈ `FACT / OPINION / PREDICTION / OMITTED_RISK / CATALYST` |
 | `technicalStatus` | enum | `bullish` / `neutral` / `bearish` / `unknown` |
 | `jarvisMode` | string | Modo Jarvis al momento de la ingesta |
 | `healthContext` | string | Recovery/sleep de Pedro al momento |

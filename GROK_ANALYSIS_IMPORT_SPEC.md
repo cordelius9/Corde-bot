@@ -238,13 +238,23 @@ ANÁLISIS A PROCESAR:
   "exchange": "NASDAQ",
   "thesis": "AMD podría beneficiarse del ciclo de capex en IA, especialmente en data centers con su línea MI300.",
   "catalysts": [
-    { "type": "CATALYST", "text": "Adopción de MI300X en clusters de IA de hiperescaladores" },
-    { "type": "CATALYST", "text": "Crecimiento de mercado de CPUs de servidor (EPYC)" }
+    "Adopción de MI300X en clusters de IA de hiperescaladores",
+    "Crecimiento de mercado de CPUs de servidor (EPYC)"
   ],
   "risks": [
-    { "type": "FACT", "text": "Competencia intensa de NVIDIA en GPU IA (market share 80%+)" },
-    { "type": "OMITTED_RISK", "text": "⚠️ Earnings en 12 días — no mencionado en el análisis" },
-    { "type": "OMITTED_RISK", "text": "⚠️ Exposición a China: restricciones de exportación pendientes" }
+    "Competencia intensa de NVIDIA en GPU IA (market share 80%+)",
+    "⚠️ Earnings en 12 días — no mencionado en el análisis (OMITTED_RISK)",
+    "⚠️ Exposición a China: restricciones de exportación pendientes (OMITTED_RISK)"
+  ],
+  "classifiedClaims": [
+    { "type": "FACT",         "text": "Competencia intensa de NVIDIA en GPU IA (market share 80%+)" },
+    { "type": "FACT",         "text": "MI300X en uso por Microsoft y Meta para inferencia" },
+    { "type": "CATALYST",     "text": "Adopción de MI300X en clusters de IA de hiperescaladores" },
+    { "type": "CATALYST",     "text": "Crecimiento de mercado de CPUs de servidor (EPYC)" },
+    { "type": "OMITTED_RISK", "text": "Earnings en 12 días — no mencionado en el análisis" },
+    { "type": "OMITTED_RISK", "text": "Exposición a China: restricciones de exportación pendientes" },
+    { "type": "PREDICTION",   "text": "$200 antes de fin de año — sin modelo de valuación" },
+    { "type": "OPINION",      "text": "El mercado no ha descontado el potencial de IA de AMD" }
   ],
   "bias": {
     "biasScore": 45,
@@ -256,7 +266,8 @@ ANÁLISIS A PROCESAR:
   "timeHorizon": "6-12 meses",
   "confidence": 62,
   "riskLevel": "medium",
-  "marketDataStatus": "PENDIENTE — precio AMD no disponible en tiempo real en Cordelius",
+  "marketDataStatus": "unavailable",
+  "marketDataNote": "Precio AMD no disponible en tiempo real en Cordelius",
   "technicalStatus": "unknown",
   "jarvisMode": "MODERADO",
   "healthContext": "recovery: 72, sleep: 80",
