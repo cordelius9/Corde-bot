@@ -265,9 +265,24 @@ finalDecisionScore = promedio ponderado:
 ### Umbrales de estado según finalDecisionScore
 
 ```
-finalDecisionScore >= 75  → PAPER_ONLY (solo si activo en paper-trading whitelist
-                             Y priceAgeSeconds <= 120 para crypto)
-                             Si activo es equity/ETF → WAITING_FOR_CONFIRMATION
+finalDecisionScore >= 75  → PAPER_ONLY candidate — requiere verificación de todos los
+                             hard gates de PAPER_TRADING_SPEC §6 antes de asignar PAPER_ONLY.
+                             "Score is necessary but not sufficient for PAPER_ONLY."
+                             PAPER_ONLY solo se asigna si ADEMÁS pasan todos los siguientes:
+                               - activo en paper-trading whitelist (BTC / ETH / XRP)
+                               - priceAgeSeconds <= 120 (crypto hard gate)
+                               - no hay paper trade abierto hoy (cooldown / open-trade gate)
+                               - signal confidence >= umbral de PAPER_TRADING_SPEC §6
+                               - security audit invariants pass
+                               - jarvisMode / tradingPermission permite paper
+                               - riesgo y demás reglas de PAPER_TRADING_SPEC §6 pass
+                             Si el score pasa pero un hard gate falla:
+                               precio stale en intento PAPER_ONLY  → BLOCKED
+                               cooldown / paper trade abierto hoy  → WAITING_FOR_CONFIRMATION
+                               security audit falla                → BLOCKED
+                               Jarvis DEFENSIVO / NO_TRADING       → BLOCKED
+                               baja confianza / señal débil        → WAITING_FOR_CONFIRMATION
+                             Si activo es equity/ETF               → WAITING_FOR_CONFIRMATION
 finalDecisionScore 60-74  → WAITING_FOR_CONFIRMATION
 finalDecisionScore 40-59  → ACTIVE (monitoreo sin acción)
 finalDecisionScore < 40   → REJECTED
@@ -286,7 +301,10 @@ BLOCKED solo se asigna por condiciones críticas de §3a, nunca por score bajo.
 ```
 
 > Para crypto PAPER_ONLY: finalDecisionScore >= 75 es condición necesaria pero no
-> suficiente. También se requiere priceAgeSeconds <= 120 (hard gate — PAPER_TRADING_SPEC §6).
+> suficiente. Se requiere además que todos los hard gates de PAPER_TRADING_SPEC §6
+> pasen: priceAgeSeconds <= 120, no open trade hoy, cooldown OK, security audit OK,
+> Jarvis/tradingPermission permite paper, y demás reglas de riesgo.
+> "Score is necessary but not sufficient for PAPER_ONLY."
 > Un equity con score >= 75 queda en WAITING_FOR_CONFIRMATION — no BLOCKED — hasta
 > que el motor soporte su tipo de activo.
 

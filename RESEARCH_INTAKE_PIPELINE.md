@@ -48,8 +48,9 @@ Pedro pega análisis externo
            → nextAction = "obtener precio fresco antes de cualquier ejecución"
            "Missing or stale price blocks execution transitions, not research intake."
            "A research item may be saved and monitored without fresh price,
-            but it cannot become PAPER_BUY/PAPER_ONLY until price freshness rules pass."
-         Intento de PAPER_BUY/PAPER_ONLY para BTC/ETH/XRP:
+            but it cannot become PAPER_BUY (research state) or trigger PAPER_ONLY
+            (linked watchlist state) until price freshness rules pass."
+         Intento de PAPER_BUY (research item) o PAPER_ONLY (linked watchlist item) para BTC/ETH/XRP:
            → precio stale o priceAgeSeconds > 120 → BLOCKED
           │
           ▼
@@ -74,8 +75,9 @@ Pedro pega análisis externo
          audit.totals.unprotectedMutationEndpoints > 0
       Si cualquiera falla: el pipeline automatizado se detiene completamente.
         No procesar análisis externo, no clasificar, no crear research item automático,
-        no crear watchlist item, no transicionar a PAPER_BUY/PAPER_ONLY/
-        BUY_CANDIDATE ni APPROVAL_REQUIRED.
+        no crear watchlist item, no transicionar el research item a PAPER_BUY /
+        BUY_CANDIDATE; no transicionar el linked watchlist item a PAPER_ONLY /
+        APPROVAL_REQUIRED.
         "Security audit failure blocks research intake processing,
          not just execution transitions."
         Pedro puede conservar el texto como nota manual fuera del pipeline, pero
@@ -89,7 +91,7 @@ Pedro pega análisis externo
     - computeHealthReadiness() → recovery < 45 → BLOCKED para ejecución
     - ¿Activo soportado para el modo de ejecución solicitado?
          Research/watchlist intake: acepta cualquier ticker válido y verificable
-         Paper trading whitelist (BTC/ETH/XRP): aplica SOLO al intentar PAPER_BUY/PAPER_ONLY
+         Paper trading whitelist (BTC/ETH/XRP): aplica SOLO al intentar PAPER_BUY (research) o PAPER_ONLY (linked watchlist item)
          Equity/ETF no soportado para paper → WATCHLIST / RESEARCH_MORE (no BLOCKED)
           │
           ▼
@@ -227,23 +229,43 @@ Pedro pega análisis externo
 
 ### §6a — Gates completos para BUY_CANDIDATE
 
-`BUY_CANDIDATE` no puede asignarse solo por conteo de paper trades ganadores. Requiere que se cumplan **todos** los gates de la checklist Fase 3→4 definida en `TRADING_AUTOPILOT_PLAN.md §14`:
+`BUY_CANDIDATE` no puede asignarse solo por conteo de paper trades ganadores ni por éxito en paper trading. Requiere que se cumplan **todos** los gates de la checklist Fase 3→4 definida en `TRADING_AUTOPILOT_PLAN.md §14`, separados en dos bloques:
 
+**A) Paper trading maturity gates (Fase 2 → Fase 3):**
 ```
 [ ] ≥ 30 paper trades ejecutados con historial documentado
-[ ] Win rate ≥ 55% verificado
+[ ] Win rate ≥ 55% verificado en el periodo de evaluación
 [ ] Expected value > 0 (positivo) en el periodo de evaluación
 [ ] ≥ 60 días de operación sin crashes ni errores de sistema
 [ ] 0 señales alucinadas detectadas en revisión manual
 [ ] Kill switch probado y verificado funcional
 [ ] Security audit completo OK (todos los invariantes: dashboardProtected,
     privateReadProtected, accessKeyConfigured, unprotectedMutationEndpoints = 0)
-[ ] Pedro ha revisado manualmente los resultados y aprueba explícitamente avanzar a Fase 4
+```
+
+**B) Human approval / Telegram approval phase gates (Fase 3 → Fase 4):**
+```
+[ ] Pedro aprueba ≥ 80% de las señales generadas (señales de calidad demostrada)
+[ ] Win rate en trades aprobados por Pedro ≥ 60%
+[ ] Pedro nunca tuvo que usar kill switch por error del sistema durante la fase de aprobación
+[ ] Flujo de aprobación Telegram/manual probado y verificado funcional
+[ ] Pedro decide explícitamente avanzar a Fase 4 (aprobación directa, no implícita)
 [ ] Real trading sigue deshabilitado hasta que Pedro apruebe Fase 4
 ```
 
-Si no se cumplen **todos** los gates anteriores, el estado máximo permitido es:
-`PAPER_BUY` / `PAPER_ONLY` / `WATCHLIST` / `WAITING_FOR_CONFIRMATION` — **nunca `BUY_CANDIDATE`**.
+"Paper trading success alone cannot create BUY_CANDIDATE. The Telegram/manual approval phase must also prove safe."
+
+Si no se cumplen **todos** los gates de A y B, el estado máximo permitido del research item es:
+`PAPER_BUY`, `WATCHLIST` o `RESEARCH_MORE` — **nunca `BUY_CANDIDATE`**.
+"If any BUY_CANDIDATE gate is missing, the research item maximum status is PAPER_BUY,
+ WATCHLIST, or RESEARCH_MORE; never BUY_CANDIDATE."
+
+El linked watchlist item puede estar en `PAPER_ONLY` o `WAITING_FOR_CONFIRMATION`
+(según WATCHLIST_DECISION_SPEC), pero el research item debe permanecer dentro del enum
+de research: REJECT / WATCHLIST / RESEARCH_MORE / PAPER_BUY / BUY_CANDIDATE / BLOCKED.
+"The linked watchlist item may separately be PAPER_ONLY or WAITING_FOR_CONFIRMATION
+ under WATCHLIST_DECISION_SPEC, but the research item itself must remain within the
+ research enum."
 
 > ⚠️ `BUY_CANDIDATE` es un estado documental futuro. No habilita trading real.
 > Real trading solo es posible en Fase 4+ con aprobación explícita de Pedro según
@@ -290,8 +312,9 @@ Un research item se marca `BLOCKED` si se cumple **cualquiera** de las siguiente
      - audit.totals.unprotectedMutationEndpoints > 0
      → Si cualquiera falla: BLOCKED completo para el pipeline automatizado.
        No procesar análisis externo, no clasificar, no crear research item,
-       no crear watchlist item, no transicionar a PAPER_BUY / PAPER_ONLY /
-       BUY_CANDIDATE / APPROVAL_REQUIRED.
+       no crear watchlist item, no transicionar el research item a PAPER_BUY /
+       BUY_CANDIDATE; no transicionar el linked watchlist item a PAPER_ONLY /
+       APPROVAL_REQUIRED.
        "Security audit failure blocks research intake processing,
         not just execution transitions."
        Pedro puede conservar el texto como nota manual fuera del pipeline.
@@ -299,7 +322,8 @@ Un research item se marca `BLOCKED` si se cumple **cualquiera** de las siguiente
         the pipeline must not ingest/process/store external analysis while
         required security invariants fail."
 
-[ ] Precio crypto stale al intentar PAPER_BUY / PAPER_ONLY (priceAgeSeconds > 120)
+[ ] Precio crypto stale al intentar PAPER_BUY (research item) o PAPER_ONLY (linked watchlist item)
+    (priceAgeSeconds > 120)
      → Para equities/ETFs sin precio: RESEARCH_MORE (no BLOCKED)
 
 [ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING al intentar ejecución/paper
