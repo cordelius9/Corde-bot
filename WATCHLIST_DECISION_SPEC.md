@@ -99,11 +99,17 @@ Un item de watchlist pasa a `BLOCKED` si se cumple **cualquiera** de las siguien
 > Reciben nota "not actionable while Jarvis is DEFENSIVO / recovery low" y siguen
 > monitoreables. BLOCKED solo ocurre si se intenta una transición de ejecución/paper.
 
-**B) BLOCKED para todos los modos (incluyendo watchlist/research pasiva):**
+**B) BLOCKED para todos los modos (incluyendo watchlist/research pasiva e ingesta):**
 ```
 [ ] Cualquier invariante de security audit falla:
      dashboardProtected !== true | privateReadProtected !== true
      accessKeyConfigured !== true | unprotectedMutationEndpoints > 0
+     → Bloquea también la ingesta/creación automática de nuevos research items
+       y watchlist items. El pipeline automatizado se detiene completamente.
+       "Security audit failure blocks research intake processing,
+        not just execution transitions."
+       Pedro puede conservar el texto como nota manual fuera del pipeline,
+       pero el pipeline no puede ingestar/procesar/almacenar análisis externos.
 [ ] Schema del item corrupto o inválido — no puede procesarse de forma segura
 [ ] Datos críticos ambiguos que podrían causar ejecución insegura
 ```

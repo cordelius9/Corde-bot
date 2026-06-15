@@ -78,6 +78,16 @@ con revisión de seguridad y actualización explícita de esta whitelist.
 > ⚠️ Ninguno de estos comandos debe estar en bot.js hasta que aparezca aquí en la
 > whitelist activa. Cualquier expansión de whitelist requiere PR dedicado,
 > revisión de seguridad y aprobación explícita de Pedro.
+>
+> ⚠️ **Seguridad de slash commands:** la implementación actual de bot.js debe auditarse.
+> Slash commands desconocidos pueden no ser rechazados de forma segura hoy — podrían
+> reenviarse al handler genérico de LLM en vez de rechazarse explícitamente.
+> Un PR futuro debe agregar fail-closed routing antes de habilitar cualquier comando
+> de research intake: cualquier mensaje que comience con `/` y no esté en la whitelist
+> activa debe rechazarse y no reenviarse al handler genérico.
+> "Current implementation must be audited; unknown slash commands may not be safely
+>  rejected today. A future PR must add fail-closed slash command routing before any
+>  research commands are enabled."
 
 ### Flujo de validación de comando
 

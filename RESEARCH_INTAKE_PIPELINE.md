@@ -67,12 +67,23 @@ Pedro pega análisis externo
           │
           ▼
   [Etapa 6] Validación de contexto
-    - buildSecurityAudit() → si cualquier invariante falla → BLOCKED para ejecución:
+    - buildSecurityAudit() → si cualquier invariante falla → BLOCKED completo del pipeline:
          dashboardProtected !== true
          privateReadProtected !== true
          accessKeyConfigured !== true
          audit.totals.unprotectedMutationEndpoints > 0
-      (Research puede guardarse como nota; NO puede transicionar a PAPER_BUY/PAPER_ONLY/BUY_CANDIDATE)
+      Si cualquiera falla: el pipeline automatizado se detiene completamente.
+        No procesar análisis externo, no clasificar, no crear research item automático,
+        no crear watchlist item, no transicionar a PAPER_BUY/PAPER_ONLY/
+        BUY_CANDIDATE ni APPROVAL_REQUIRED.
+        "Security audit failure blocks research intake processing,
+         not just execution transitions."
+        Pedro puede conservar el texto como nota manual fuera del pipeline, pero
+        el pipeline automatizado no puede ingestar/procesar/almacenar análisis
+        externos mientras fallen invariantes de seguridad requeridas.
+        "Manual notes may exist outside the automated research pipeline, but
+         the pipeline must not ingest/process/store external analysis while
+         required security invariants fail."
     - computeJarvisBrain() → jarvisMode DEFENSIVO/NO_TRADING → BLOCKED para ejecución
       (Research/watchlist intake puede continuar marcado como "not actionable")
     - computeHealthReadiness() → recovery < 45 → BLOCKED para ejecución
@@ -277,8 +288,16 @@ Un research item se marca `BLOCKED` si se cumple **cualquiera** de las siguiente
      - privateReadProtected !== true
      - accessKeyConfigured !== true
      - audit.totals.unprotectedMutationEndpoints > 0
-     → Si cualquiera falla: research puede guardarse como nota, pero NO puede
-       transicionar a PAPER_BUY, PAPER_ONLY, BUY_CANDIDATE ni APPROVAL_REQUIRED
+     → Si cualquiera falla: BLOCKED completo para el pipeline automatizado.
+       No procesar análisis externo, no clasificar, no crear research item,
+       no crear watchlist item, no transicionar a PAPER_BUY / PAPER_ONLY /
+       BUY_CANDIDATE / APPROVAL_REQUIRED.
+       "Security audit failure blocks research intake processing,
+        not just execution transitions."
+       Pedro puede conservar el texto como nota manual fuera del pipeline.
+       "Manual notes may exist outside the automated research pipeline, but
+        the pipeline must not ingest/process/store external analysis while
+        required security invariants fail."
 
 [ ] Precio crypto stale al intentar PAPER_BUY / PAPER_ONLY (priceAgeSeconds > 120)
      → Para equities/ETFs sin precio: RESEARCH_MORE (no BLOCKED)
@@ -366,9 +385,22 @@ Técnico: neutral | Jarvis: MODERADO
 
 > ⚠️ Los comandos siguientes son **conceptuales** para el módulo de research intake.
 > **No están en la whitelist activa de Telegram** (REMOTE_CONTROL_PLAN.md §3).
-> Si se implementara bot.js según docs actuales, Telegram los rechazaría como
-> "comando no permitido". Requieren PR separado, revisión de seguridad y actualización
-> explícita de la whitelist antes de poder usarse.
+> **No están habilitados.** El comportamiento actual de bot.js no debe considerarse
+> un mecanismo de seguridad para rechazarlos: slash commands desconocidos pueden
+> reenviarse al handler genérico de LLM en vez de rechazarse.
+> "These commands are conceptual and not enabled. The current bot behavior must
+>  not be relied on as a safety boundary."
+>
+> Antes de habilitar cualquier comando de research intake en Telegram, bot.js debe
+> implementar fail-closed para slash commands desconocidos: cualquier mensaje que
+> comience con `/` y no esté en la whitelist activa debe rechazarse explícitamente
+> y **NO** reenviarse al handler genérico de LLM.
+> "Before enabling research intake via Telegram, bot.js must fail-closed for
+>  unknown slash commands: any message starting with / that is not in the active
+>  whitelist must be rejected and must not be forwarded to the generic LLM handler."
+>
+> Habilitar cualquiera de estos comandos requiere: PR separado + revisión de seguridad
+> + actualización de whitelist en REMOTE_CONTROL_PLAN.md + fail-closed slash routing.
 > "These commands are conceptual for the research intake module and must not be
 >  accepted by Telegram until explicitly added to the central whitelist in
 >  REMOTE_CONTROL_PLAN.md."
