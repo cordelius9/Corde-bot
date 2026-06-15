@@ -65,11 +65,34 @@
 |---|---|---|
 | `ACTIVE` | Item en monitoreo activo | → cualquier estado según trigger |
 | `WAITING_FOR_PRICE` | Tesis válida pero precio aún no en nivel de entrada | → ACTIVE cuando precio llegue |
-| `WAITING_FOR_CONFIRMATION` | Señal técnica detectada, espera confirmación adicional (volumen, cierre) | → PAPER_ONLY o APPROVAL_REQUIRED |
-| `PAPER_ONLY` | Candidato para paper trade; todas las condiciones pasan | → paper trade si Pedro aprueba |
-| `APPROVAL_REQUIRED` | Candidato para real buy (solo Fase 4+); requiere aprobación explícita | → real buy solo con aprobación manual |
+| `WAITING_FOR_CONFIRMATION` | Señal técnica detectada, espera confirmación adicional (volumen, cierre) | → PAPER_ONLY, APPROVAL_REQUIRED o BLOCKED |
+| `PAPER_ONLY` | Candidato para paper trade; todas las condiciones pasan | → paper trade si Pedro aprueba; → BLOCKED si condición falla |
+| `APPROVAL_REQUIRED` | Candidato para real buy (solo Fase 4+); requiere aprobación explícita | → real buy solo con aprobación manual; → BLOCKED si condición falla |
+| `BLOCKED` | Condición crítica impide avanzar — ver §3a | → ACTIVE cuando se resuelve; → ARCHIVED si se descarta |
 | `REJECTED` | Pedro rechazó o condición de invalidación se activó | → ARCHIVED |
 | `ARCHIVED` | Item histórico; no genera alertas | terminal |
+
+> `BLOCKED` **no significa "empresa mala"** ni "análisis inválido". Significa que una
+> condición externa crítica impide la acción en este momento. Cuando la condición se
+> resuelve, el item vuelve a ACTIVE para re-evaluación.
+
+### §3a — Condiciones para estado BLOCKED
+
+Un item de watchlist pasa a `BLOCKED` si se cumple **cualquiera** de las siguientes:
+
+```
+[ ] security audit falla (audit.totals.unprotectedMutationEndpoints > 0)
+[ ] precio crypto stale (> 2 horas sin actualización) para activo en paper whitelist
+[ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING
+[ ] activo no soportado para la transición solicitada
+     (ej. equity quiere avanzar a PAPER_ONLY — motor no soporta equities aún)
+[ ] evento binario crítico en ≤ 7 días sin revisión manual (earnings, FDA, etc.)
+[ ] datos ambiguos críticos que impiden calcular riesgo o invalidación
+[ ] recovery < 45 (healthContext — Jarvis en modo DEFENSIVO/DESCANSO)
+```
+
+El bloqueo se resuelve cuando la condición que lo causó desaparece.
+Pedro puede desbloquear manualmente con `/watchlist TICKER` tras revisar.
 
 ### Diagrama de transiciones
 
@@ -80,20 +103,28 @@
               │     └────────┬────────┘
               │              │ precio llega a nivel
               │              ▼
-        ┌─────┴────┐    ┌──────────┐
-Pedro   │          │    │          │
-agrega ►│  ACTIVE  │───►│ WAITING_ │
-        │          │    │   FOR_   │
-        └──────────┘    │CONFIRM.  │
-              │         └────┬─────┘
-              │ trigger      │ confirmado
-              │ directo      ▼
-              │     ┌──────────────┐
-              └────►│  PAPER_ONLY  │──► paper trade (con aprobación)
-                    └──────────────┘
-                    ┌──────────────────┐
-                    │APPROVAL_REQUIRED │──► real buy (Fase 4+, aprobación manual)
-                    └──────────────────┘
+        ┌─────┴────┐    ┌──────────────┐
+Pedro   │          │    │  WAITING_FOR │
+agrega ►│  ACTIVE  │───►│ CONFIRMATION │
+        │          │    └──────┬───────┘
+        └──────┬───┘           │ confirmado
+               │               ▼
+               │      ┌──────────────┐
+               │      │  PAPER_ONLY  │──► paper trade (con aprobación)
+               │      └──────┬───────┘
+               │             │
+               │      ┌──────▼───────────┐
+               │      │APPROVAL_REQUIRED │──► real buy (Fase 4+, aprobación manual)
+               │      └──────────────────┘
+               │
+               │   condición crítica en cualquier estado activo
+               │             │
+               │             ▼
+               │      ┌────────────┐   bloqueo resuelto
+               └─────►│  BLOCKED   │──────────────────────► ACTIVE
+                       └─────┬──────┘
+                             │ descartado
+                             ▼
                     ┌──────────┐   ┌──────────┐
                     │ REJECTED │──►│ ARCHIVED │
                     └──────────┘   └──────────┘
@@ -115,7 +146,8 @@ Un trigger es una condición que cambia el estado del watchlist item o genera al
 | `EARNINGS_APPROACHING` | Earnings en ≤ 7 días | ⚠️ Telegram (alerta de riesgo) |
 | `JARVIS_MODE_CHANGE` | Jarvis cambia de DEFENSIVO a MODERADO u ÓPTIMO | ✓ Telegram |
 | `INVALIDATION_HIT` | Precio cierra bajo `stopLevel` | → REJECTED automático |
-| `DATA_STALE` | Precio no actualizado en > 2 horas | ⚠️ Telegram (advertencia) |
+| `DATA_STALE` | Precio crypto no actualizado en > 2 horas | → BLOCKED (si activo en paper whitelist); ⚠️ Telegram |
+| `CRITICAL_CONDITION` | Jarvis DEFENSIVO, security audit falla, recovery < 45 | → BLOCKED; ⚠️ Telegram (urgente) |
 
 > Ningún trigger ejecuta un trade automáticamente. Solo cambian el estado del item
 > y envían una notificación a Pedro para que decida.
@@ -172,12 +204,17 @@ finalDecisionScore = promedio ponderado:
 ### Umbrales de estado según finalDecisionScore
 
 ```
-finalDecisionScore >= 75  → PAPER_ONLY (si activo en whitelist)
+finalDecisionScore >= 75  → PAPER_ONLY (solo si activo en paper-trading whitelist)
+                             Si activo es equity/ETF → WAITING_FOR_CONFIRMATION
 finalDecisionScore 60-74  → WAITING_FOR_CONFIRMATION
 finalDecisionScore 40-59  → ACTIVE (monitoreo sin acción)
 finalDecisionScore < 40   → REJECTED
-cualquier componente = 0  → BLOCKED (sin importar el score final)
+cualquier componente = 0  → estado BLOCKED (ver §3a para condiciones exactas)
 ```
+
+> Un score alto no garantiza PAPER_ONLY para equities/ETFs. El motor de paper trading
+> solo soporta BTC / ETH / XRP actualmente. Un equity con score >= 75 queda en
+> WAITING_FOR_CONFIRMATION hasta que el motor soporte su tipo de activo.
 
 ---
 
@@ -192,6 +229,16 @@ cualquier componente = 0  → BLOCKED (sin importar el score final)
 ✓  Items sin actualización de precio > 24h → status → WAITING_FOR_PRICE
 ✓  Pedro puede archivar manualmente cualquier item en cualquier momento
 ✓  Watchlist tiene máximo 10 items ACTIVE simultáneos (para mantener foco)
+
+Reglas para BLOCKED:
+✓  BLOCKED no es estado terminal — se resuelve cuando la condición que lo causó desaparece
+✓  Cualquier estado ACTIVE puede transicionar a BLOCKED por condición crítica
+✓  BLOCKED → ACTIVE: automático cuando se resuelve la condición (security audit pasa,
+   Jarvis sale de DEFENSIVO, precio fresco disponible, etc.)
+✓  BLOCKED → ARCHIVED: si Pedro decide descartar el item bloqueado
+✓  Un item BLOCKED sigue visible en watchlist (no se archiva automáticamente)
+✓  Equity/ETF que quiere PAPER_ONLY pero motor no lo soporta → BLOCKED con razón
+   "activo no soportado para paper trade" — NO es rechazo del análisis
 ```
 
 ---

@@ -182,27 +182,62 @@ Pedro pega análisis externo
 | Estado | Significado | Próximo paso |
 |---|---|---|
 | `REJECT` | Análisis débil, ticker inválido, riesgo extremo o sesgo evidente sin sustancia | Archivar, log de razón |
-| `WATCHLIST` | Tesis interesante, pero no hay señal de entrada hoy | Monitorear según WATCHLIST_DECISION_SPEC |
-| `RESEARCH_MORE` | Falta información para clasificar (ticker ambiguo, precio no disponible, horizonte indefinido) | Pedro aporta más datos |
-| `PAPER_BUY` | Todas las condiciones pasan; candidato para paper trade en siguiente ciclo | Engine de paper trading (PAPER_TRADING_SPEC.md §6) |
+| `WATCHLIST` | Tesis válida pero sin señal de entrada inmediata; **o** activo válido pero fuera de paper-trading whitelist (ej. AAPL, AMD, SPY) | Monitorear según WATCHLIST_DECISION_SPEC |
+| `RESEARCH_MORE` | Falta información para clasificar: ticker ambiguo, horizonte indefinido, precio equity no disponible | Pedro aporta más datos |
+| `PAPER_BUY` | Todas las condiciones pasan **y** activo está en paper-trading whitelist; candidato para paper trade | Engine de paper trading (PAPER_TRADING_SPEC.md §6) |
 | `BUY_CANDIDATE` | PAPER_BUY con > 30 paper trades ganadores previos; candidato para real buy | Aprobación explícita de Pedro (Fase 4+) |
-| `BLOCKED` | Una o más condiciones críticas fallan (ver §7) | No procesar hasta resolver bloqueo |
+| `BLOCKED` | Condición crítica sistémica falla (security audit, Jarvis DEFENSIVO, precio crypto stale, riesgo extremo) — ver §7 | No procesar hasta resolver bloqueo |
+
+### Distinción: research whitelist ≠ paper trading whitelist
+
+```
+Research whitelist:       Cualquier activo con ticker válido confirmado
+                          BTC, ETH, XRP, AAPL, AMD, SPY, MSFT...
+                          → puede entrar a WATCHLIST o RESEARCH_MORE
+
+Paper trading whitelist:  Solo BTC / ETH / XRP (limitado por el motor actual)
+                          → únicos activos que pueden avanzar a PAPER_BUY
+
+Ruta explícita para equities / ETFs:
+  Si el análisis es válido pero el activo NO está en la paper trading whitelist:
+  → clasificar como WATCHLIST o RESEARCH_MORE — NUNCA como BLOCKED por esa razón
+  → el análisis tiene valor; el motor simplemente no soporta ese activo todavía
+  → cuando el motor soporte equities, re-evaluar el item
+
+Estados permitidos por tipo de activo:
+
+  Crypto en whitelist (BTC / ETH / XRP):
+    WATCHLIST, RESEARCH_MORE, PAPER_BUY, BUY_CANDIDATE, REJECT, BLOCKED
+
+  Equity / ETF (AAPL, AMD, SPY, etc.):
+    WATCHLIST, RESEARCH_MORE, REJECT, BLOCKED (solo por condición sistémica)
+    ✗ NO PAPER_BUY hasta que el motor soporte equities
+    ✗ NO BUY_CANDIDATE automático — requiere Fase 4+ y aprobación manual de Pedro
+```
 
 ---
 
 ## 7. Reglas para BLOCKED
 
-Un research item se marca `BLOCKED` automáticamente si se cumple **cualquiera** de las siguientes:
+Un research item se marca `BLOCKED` automáticamente si se cumple **cualquiera** de las siguientes condiciones sistémicas:
 
 ```
 [ ] security audit falla (audit.totals.unprotectedMutationEndpoints > 0)
-[ ] precio no disponible o stale (marketDataStatus ≠ "fresh")
+[ ] precio crypto stale o no disponible para activo en whitelist de paper trading
+     → Para equities/ETFs sin precio en tiempo real: usar RESEARCH_MORE, no BLOCKED
 [ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING
-[ ] activo fuera de whitelist de paper trading (BTC / ETH / XRP — para paper)
-[ ] análisis demasiado ambiguo: ticker no confirmado, tesis < 1 oración
 [ ] riskLevel = "extreme" sin revisión explícita de Pedro
-[ ] earnings o evento binario en los próximos 7 días sin revisión
+[ ] earnings o evento binario en los próximos 7 días sin revisión manual
 [ ] healthContext: recovery < 45
+[ ] análisis completamente ininteligible: ticker no identificable, sin tesis mínima
+```
+
+**No son condición de BLOCKED (sino de WATCHLIST o RESEARCH_MORE):**
+```
+✗  Activo fuera de paper trading whitelist → WATCHLIST (con nota "paper no soportado")
+✗  Precio equity no disponible → RESEARCH_MORE (esperado para equities no rastreados)
+✗  Análisis ambiguo con ticker parcialmente identificado → RESEARCH_MORE
+✗  Confidence < 60 → WATCHLIST mínimo, no BLOCKED
 ```
 
 Un item `BLOCKED` **no puede convertirse en `PAPER_BUY` ni `BUY_CANDIDATE`** sin que el bloqueo se resuelva y el item se re-evalúe.
