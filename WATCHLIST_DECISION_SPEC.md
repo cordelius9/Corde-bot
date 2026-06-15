@@ -196,10 +196,19 @@ freshnessScore   = frescura del dato de precio (0-100) — scoring general de wa
 ⚠️ HARD GATE para PAPER_ONLY — crypto (BTC / ETH / XRP):
   priceAgeSeconds <= 120 es condición necesaria e irremplazable.
   Un freshnessScore alto NO es suficiente para entrar a PAPER_ONLY.
-  Si priceAgeSeconds > 120 al momento de la evaluación:
+
+  Si priceAgeSeconds > 120 al intentar transición a PAPER_ONLY:
+    → estado: BLOCKED (razón: "crypto paper price stale")
     → NO transicionar a PAPER_ONLY
-    → mantener en WAITING_FOR_PRICE hasta que llegue precio fresco
+    → se resuelve automáticamente cuando priceAgeSeconds <= 120
   (Alineado con PAPER_TRADING_SPEC.md §6: bloqueo duro si priceAgeSeconds > 120)
+
+  Distinción:
+    WAITING_FOR_PRICE — item en watchlist/research, aún no intenta ejecución;
+                        precio en nivel de entrada no alcanzado todavía.
+    BLOCKED           — intento activo de transición a PAPER_ONLY con precio stale.
+                        "WAITING_FOR_PRICE is pre-execution; BLOCKED is used when a
+                         PAPER_ONLY transition is attempted with stale crypto price."
 
 jarvisContextScore = contexto de Jarvis y salud (0-100)
                    - jarvisMode ÓPTIMO: 100

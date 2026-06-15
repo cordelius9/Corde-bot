@@ -164,7 +164,13 @@ Pedro pega análisis externo
      → Si el ticker es ambiguo: preguntar a Pedro, marcar como RESEARCH_MORE
 ✗  No inferir precio actual de texto externo
      → Precio siempre de cryptoQuotes[sym].priceMXN o quotes[ticker]
-     → Si no hay precio fresco: marketDataStatus = "unavailable" → BLOCKED
+     → marketDataStatus siempre enum exacto: "fresh" | "stale" | "unavailable"
+     → Sin precio fresco en crypto intentando PAPER_BUY / PAPER_ONLY: BLOCKED
+        "Missing fresh price blocks execution, not research intake."
+     → Sin precio en equity/ETF: marketDataStatus = "unavailable"
+        → estado: RESEARCH_MORE o WATCHLIST (no BLOCKED)
+        "No fresh price for equity/ETF means not actionable for execution,
+         but still eligible for research/watchlist."
 ✗  No convertir tesis en buy sin validación
      → Una tesis buena sola no alcanza para PAPER_BUY ni BUY_CANDIDATE
 ✗  No asumir que el análisis externo es correcto
@@ -255,7 +261,7 @@ El sistema genera links de TradingView para revisión visual manual. TradingView
 ```
 https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT
 https://www.tradingview.com/chart/?symbol=NASDAQ:AAPL
-https://www.tradingview.com/chart/?symbol=NYSE:AMD
+https://www.tradingview.com/chart/?symbol=NASDAQ:AMD
 ```
 
 ### Niveles a revisar manualmente
