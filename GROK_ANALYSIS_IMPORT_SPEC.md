@@ -7,7 +7,10 @@
 
 ## 1. Cómo pegar un análisis de Grok
 
-Pedro pega el texto del análisis de Grok directamente en Telegram o en el dashboard de Cordelius (campo de texto habilitado para intake). El sistema trata el input como texto no confiable y lo procesa en modo de extracción, no de ejecución.
+Pedro pega el texto del análisis de Grok directamente en Telegram o en el dashboard de Cordelius. El sistema trata el input como texto no confiable y lo procesa en modo de extracción, no de ejecución.
+
+**Estado actual:** ninguna de las formas de ingesta descritas está implementada todavía.
+El pipeline de research intake es un diseño futuro — ver §1 para detalles por opción.
 
 ### Formas de ingesta aceptadas
 
@@ -20,20 +23,31 @@ A. Telegram — mensaje de texto largo:
 
 B. Dashboard web — campo "Pegar análisis":
    Pedro pega texto en el campo de intake y presiona "Procesar".
-   Cordelius muestra el research item en pantalla para revisión.
+   Cordelius muestra el research item estructurado en pantalla para revisión.
+   ⚠️ FUTURO — este campo NO existe en el dashboard actual.
+   El dashboard actual tiene un textarea de Intel (POST /intel) que guarda
+   inteligencia manual via analyzeIntelText(raw); no ejecuta el pipeline de
+   research intake ni genera research items estructurados.
+   "Current dashboard behavior: existing Intel textarea / POST /intel stores
+    manual intelligence via analyzeIntelText(raw); it does not run the research
+    intake pipeline yet."
+   Una UI dedicada de Grok/research intake requiere PR de implementación separado.
+   "A dedicated Grok/research intake UI requires a separate implementation PR."
 
 C. Nota manual con estructura mínima:
    Pedro escribe: "Ticker: AMD, Tesis: IA adoption..."
    Cordelius completa el resto con los campos que pueda derivar.
+   ⚠️ FUTURO — depende de que la UI de intake (opción B) o el comando Telegram
+   (opción A) estén implementados primero.
 ```
 
 > ⚠️ En ningún caso el análisis pegado ejecuta código ni genera órdenes.
 > El texto se trata siempre como entrada de lectura, no de instrucción.
 >
-> ⚠️ El comando `/import` de Telegram es **conceptual** — no está implementado ni en la
-> whitelist activa de `bot.js`. Habilitarlo requiere un PR dedicado con revisión de
-> seguridad y actualización explícita de `REMOTE_CONTROL_PLAN.md`. Hasta entonces,
-> la única forma de ingesta disponible es el dashboard web (opción B).
+> ⚠️ El comando `/import` de Telegram y el campo "Pegar análisis" del dashboard son
+> **conceptuales** — ninguno está implementado actualmente. Habilitarlos requiere
+> PR dedicados con revisión de seguridad. No existe hoy ninguna forma de ingesta
+> automática de análisis externos en el pipeline de research intake.
 
 ---
 
