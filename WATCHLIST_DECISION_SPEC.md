@@ -105,13 +105,14 @@ Un item de watchlist pasa a `BLOCKED` si se cumple **cualquiera** de las siguien
 **A) BLOCKED solo para transiciones de ejecución (PAPER_ONLY, PAPER_BUY, APPROVAL_REQUIRED):**
 ```
 [ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING
-[ ] recovery < 45 (healthContext)
+[ ] recovery < 45 (healthContext) — alineado con PAPER_TRADING_SPEC §6
+[ ] sleep < 60 (healthContext) — alineado con PAPER_TRADING_SPEC §6
 [ ] precio crypto stale (priceAgeSeconds > 120) al intentar PAPER_ONLY / PAPER_BUY
 [ ] evento binario en ≤ 7 días sin revisión manual cuando se solicita ejecución
 ```
 
 > Items pasivos (WATCHLIST / RESEARCH_MORE) **no se bloquean** por estas condiciones.
-> Reciben nota "not actionable while Jarvis is DEFENSIVO / recovery low" y siguen
+> Reciben nota "not actionable while Jarvis is DEFENSIVO / recovery low / sleep low" y siguen
 > monitoreables. BLOCKED solo ocurre si se intenta una transición de ejecución/paper.
 
 **B) BLOCKED para todos los modos (incluyendo watchlist/research pasiva e ingesta):**
@@ -194,8 +195,8 @@ Un trigger es una condición que cambia el estado del watchlist item o genera al
 | `EARNINGS_APPROACHING` | Earnings en ≤ 7 días | ⚠️ Telegram (alerta de riesgo) |
 | `JARVIS_MODE_CHANGE` | Jarvis cambia de DEFENSIVO a MODERADO u ÓPTIMO | ✓ Telegram |
 | `INVALIDATION_HIT` | Precio cierra bajo `stopLevel` | → REJECTED automático |
-| `DATA_STALE` | Precio crypto no actualizado en > 2 horas | Watchlist pasiva → WAITING_FOR_PRICE + ⚠️ Telegram ("price feed stale; monitoring paused"); Intento PAPER_ONLY/PAPER_BUY → BLOCKED |
-| `JARVIS_DEFENSIVE` | jarvisMode pasa a DEFENSIVO o recovery < 45 | Watchlist pasiva → nota "not actionable now" + ⚠️ Telegram; Intento de ejecución → BLOCKED |
+| `DATA_STALE` | Precio crypto no actualizado | **Watchlist pasiva** (priceAgeSeconds > 2h): WAITING_FOR_PRICE + ⚠️ Telegram ("price feed stale; monitoring paused") — no BLOCKED. **Intento PAPER_ONLY/PAPER_BUY** (priceAgeSeconds > 120s): BLOCKED inmediato. "For execution/paper transitions, the stale-price hard gate is 120 seconds, not 2 hours. For idle monitoring, >2h routes to WAITING_FOR_PRICE." |
+| `JARVIS_DEFENSIVE` | jarvisMode pasa a DEFENSIVO, recovery < 45, o sleep < 60 | Watchlist pasiva → nota "not actionable now" + ⚠️ Telegram; Intento de ejecución → BLOCKED |
 | `SECURITY_AUDIT_FAIL` | Cualquier invariante de security audit falla | → BLOCKED en todos los modos + ⚠️ Telegram urgente |
 
 > Ningún trigger ejecuta un trade automáticamente. Solo cambian el estado del item
@@ -265,7 +266,10 @@ jarvisContextScore = contexto de Jarvis y salud (0-100)
                      → paper/execution attempt: BLOCKED
                      → research/watchlist: WATCHLIST o RESEARCH_MORE ("not actionable")
                    - recovery >= 75: +10 (bonus)
-                   - recovery < 45: 0
+                   - recovery < 45: 0 (bloqueo de ejecución — PAPER_TRADING_SPEC §6)
+                     → paper/execution attempt: BLOCKED
+                     → research/watchlist: nota "not actionable now", no BLOCKED
+                   - sleep < 60: 0 (bloqueo de ejecución — PAPER_TRADING_SPEC §6)
                      → paper/execution attempt: BLOCKED
                      → research/watchlist: nota "not actionable now", no BLOCKED
 
@@ -290,12 +294,14 @@ finalDecisionScore >= 75  → PAPER_ONLY candidate — requiere verificación de
                                - signal confidence >= umbral de PAPER_TRADING_SPEC §6
                                - security audit invariants pass
                                - jarvisMode / tradingPermission permite paper
+                               - recovery >= 45 y sleep >= 60 (health hard gates — PAPER_TRADING_SPEC §6)
                                - riesgo y demás reglas de PAPER_TRADING_SPEC §6 pass
                              Si el score pasa pero un hard gate falla:
                                precio stale en intento PAPER_ONLY  → BLOCKED
                                cooldown / paper trade abierto hoy  → WAITING_FOR_CONFIRMATION
                                security audit falla                → BLOCKED
                                Jarvis DEFENSIVO / NO_TRADING       → BLOCKED
+                               recovery < 45 o sleep < 60          → BLOCKED
                                baja confianza / señal débil        → WAITING_FOR_CONFIRMATION
                              Si activo es equity/ETF               → WAITING_FOR_CONFIRMATION
 finalDecisionScore 60-74  → WAITING_FOR_CONFIRMATION
@@ -318,7 +324,7 @@ BLOCKED solo se asigna por condiciones críticas de §3a, nunca por score bajo.
 > Para crypto PAPER_ONLY: finalDecisionScore >= 75 es condición necesaria pero no
 > suficiente. Se requiere además que todos los hard gates de PAPER_TRADING_SPEC §6
 > pasen: priceAgeSeconds <= 120, no open trade hoy, cooldown OK, security audit OK,
-> Jarvis/tradingPermission permite paper, y demás reglas de riesgo.
+> Jarvis/tradingPermission permite paper, recovery >= 45, sleep >= 60, y demás reglas de riesgo.
 > "Score is necessary but not sufficient for PAPER_ONLY."
 > Un equity con score >= 75 queda en WAITING_FOR_CONFIRMATION — no BLOCKED — hasta
 > que el motor soporte su tipo de activo.
