@@ -68,24 +68,30 @@ Pedro pega análisis externo
           │
           ▼
   [Etapa 6] Validación de contexto
-    - buildSecurityAudit() → si cualquier invariante falla → BLOCKED completo del pipeline:
+    - buildSecurityAudit() → si cualquier invariante falla → pipeline detenido:
          dashboardProtected !== true
          privateReadProtected !== true
          accessKeyConfigured !== true
          audit.totals.unprotectedMutationEndpoints > 0
-      Si cualquiera falla: el pipeline automatizado se detiene completamente.
-        No procesar análisis externo, no clasificar, no crear research item automático,
-        no crear watchlist item, no transicionar el research item a PAPER_BUY /
-        BUY_CANDIDATE; no transicionar el linked watchlist item a PAPER_ONLY /
-        APPROVAL_REQUIRED.
+      Si cualquiera falla ANTES de crear un research item (nuevo intake):
+        → no procesar análisis externo, no clasificar, no crear research item,
+          no crear watchlist item.
+        → el pipeline registra un BLOCKED_INTAKE_EVENT (no un research item).
+        "Security audit failure before item creation results in a blocked audit/
+         event log, not a research item with status BLOCKED."
+      Si cualquiera falla con un research item ya existente que intenta transición:
+        → no transicionar el research item a PAPER_BUY / BUY_CANDIDATE;
+          no transicionar el linked watchlist item a PAPER_ONLY / APPROVAL_REQUIRED.
+        → el item existente permanece en estado actual, no ejecutable.
+        → no crear nuevos items automáticos mientras falla audit.
         "Security audit failure blocks research intake processing,
          not just execution transitions."
-        Pedro puede conservar el texto como nota manual fuera del pipeline, pero
-        el pipeline automatizado no puede ingestar/procesar/almacenar análisis
-        externos mientras fallen invariantes de seguridad requeridas.
-        "Manual notes may exist outside the automated research pipeline, but
-         the pipeline must not ingest/process/store external analysis while
-         required security invariants fail."
+      En ambos casos: Pedro puede conservar el texto como nota manual fuera del
+      pipeline, pero el pipeline automatizado no puede ingestar/procesar/almacenar
+      análisis externos mientras fallen invariantes de seguridad requeridas.
+      "Manual notes may exist outside the automated research pipeline, but
+       the pipeline must not ingest/process/store external analysis while
+       required security invariants fail."
     - computeJarvisBrain() → jarvisMode DEFENSIVO/NO_TRADING → BLOCKED para ejecución
       (Research/watchlist intake puede continuar marcado como "not actionable")
     - computeHealthReadiness() → recovery < 45 → BLOCKED para ejecución
@@ -310,13 +316,31 @@ Un research item se marca `BLOCKED` si se cumple **cualquiera** de las siguiente
      - privateReadProtected !== true
      - accessKeyConfigured !== true
      - audit.totals.unprotectedMutationEndpoints > 0
-     → Si cualquiera falla: BLOCKED completo para el pipeline automatizado.
-       No procesar análisis externo, no clasificar, no crear research item,
-       no crear watchlist item, no transicionar el research item a PAPER_BUY /
-       BUY_CANDIDATE; no transicionar el linked watchlist item a PAPER_ONLY /
-       APPROVAL_REQUIRED.
-       "Security audit failure blocks research intake processing,
-        not just execution transitions."
+
+     Caso A — falla ANTES de crear el research item (nuevo intake):
+       → NO crear research item; NO clasificar; NO crear watchlist item.
+       → El pipeline registra un BLOCKED_INTAKE_EVENT (conceptual — no un research item):
+          {
+            id:               "bie_YYYYMMDD_NNN",
+            timestamp:        ISO8601,
+            attemptedSource:  fuente del análisis (ej. "grok"),
+            attemptedTicker:  ticker extraído o null,
+            reason:           "SECURITY_AUDIT_FAILED",
+            failedInvariants: [...],
+            rawInputStored:   false,
+            nextAction:       "fix security audit before retry"
+          }
+       "Security audit failure before item creation results in a blocked audit/
+        event log, not a research item with status BLOCKED."
+
+     Caso B — falla con research item existente que intenta transición de ejecución:
+       → no transicionar el research item a PAPER_BUY / BUY_CANDIDATE;
+         no transicionar el linked watchlist item a PAPER_ONLY / APPROVAL_REQUIRED.
+       → item existente permanece en estado actual, marcado como no ejecutable.
+       → no crear nuevos items automáticos mientras falla audit.
+       "Security audit failure blocks execution transitions for existing items."
+
+     En ambos casos:
        Pedro puede conservar el texto como nota manual fuera del pipeline.
        "Manual notes may exist outside the automated research pipeline, but
         the pipeline must not ingest/process/store external analysis while
@@ -346,8 +370,9 @@ Un research item se marca `BLOCKED` si se cumple **cualquiera** de las siguiente
 ✗  Precio equity no disponible en tiempo real → RESEARCH_MORE
 ✗  Análisis ambiguo sin intento de ejecución → RESEARCH_MORE
 ✗  Confidence < 60 → WATCHLIST mínimo
-✗  Score bajo (thesis, technical, risk) → REJECTED, RESEARCH_MORE o ACTIVE
-   "Low score ≠ BLOCKED. Low score → REJECTED, RESEARCH_MORE, or ACTIVE."
+✗  Score bajo (thesis, technical, risk) → REJECT, RESEARCH_MORE o WATCHLIST
+   "Low score ≠ BLOCKED. Low score routes to REJECT, RESEARCH_MORE, or WATCHLIST
+    depending on confidence and missing information."
 ```
 
 Un item `BLOCKED` **no puede convertirse en `PAPER_BUY` ni `BUY_CANDIDATE`** sin que el bloqueo se resuelva y el item se re-evalúe.
