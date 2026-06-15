@@ -134,7 +134,7 @@ Si cualquiera falla, el trade se cancela y se registra la razón.
 | Condición | Verificación | Fuente |
 |---|---|---|
 | Security audit falla | `unprotectedMutationEndpoints === 0` y `dashboardProtected === true` | `buildSecurityAudit()` |
-| Precio no fresco | `priceAgeSeconds > 120` (más de 2 minutos) | `quotes[asset].timestamp` |
+| Precio no fresco | `priceAgeSeconds > 120` (más de 2 minutos) | `cryptoQuotes[asset].t` (para BTC/ETH/XRP) |
 | Jarvis en modo DEFENSIVO | `jarvisMode === "DEFENSIVO"` | `computeJarvisBrain()` |
 | Trading bloqueado | `tradingPermission === "NO_TRADING"` | `data/jarvis_action_plan.json` |
 | Recovery bajo | `healthState.recovery < 45` | `computeHealthReadiness()` |
@@ -213,9 +213,14 @@ PnL % = ((exitPrice - entryPrice) / entryPrice) * 100
 PnL MXN = (exitPrice - entryPrice) * size * FX_USD_MXN  (si es cripto en USD)
          = (exitPrice - entryPrice) * size               (si es MXN directo)
 
-Win rate = trades ganadores / trades cerrados * 100
+win_rate_pct = trades_ganadores / trades_cerrados * 100
+win_rate     = win_rate_pct / 100   ← fracción 0-1 para la fórmula
 
-Expected value = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+Expected value = (win_rate * promedio_ganancias) - ((1 - win_rate) * promedio_perdidas)
+
+Nota: promedio_perdidas es el valor absoluto de la pérdida media (positivo).
+Ejemplo: si el trade promedio perdedor pierde 3%, promedio_perdidas = 3, no -3.
+Usar -3 duplicaría el signo negativo y produciría un EV incorrecto.
 ```
 
 ---
@@ -228,8 +233,14 @@ El sistema debe verificar el precio del activo a las 24h y 7d del trade para rel
 // Pseudocódigo
 async function evaluatePaperTrade(trade) {
   const ageHours = (Date.now() - new Date(trade.timestamp)) / 3600000;
-  const currentPrice = quotes[trade.asset]?.value;
-  if (!currentPrice) return;
+
+  // Para BTC/ETH/XRP usar cryptoQuotes (precio unitario en MXN, timestamp en .t)
+  // quotes{} aplica a acciones/USD y NO debe usarse como precio unitario de cripto
+  const cryptoEntry = cryptoQuotes?.[trade.asset];
+  const currentPrice = cryptoEntry?.priceMXN;
+  const priceAge = cryptoEntry ? (Date.now() - cryptoEntry.t) / 1000 : Infinity;
+
+  if (!currentPrice || priceAge > 120) return; // precio ausente o no fresco
 
   if (ageHours >= 24 && trade.outcome24h === null) {
     trade.outcome24h = ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
@@ -250,7 +261,7 @@ El sistema de señales debe ser **determinístico y auditable**. Reglas:
 2. **Toda señal tiene un score numérico.** Si no se puede calcular, no se opera.
 3. **El precio debe venir de FinnHub o CoinGecko**, con timestamp verificable.
 4. **Cada entrada del ledger incluye `signalInputs`** — todos los valores usados.
-5. **No hay señal sin precio fresco.** Si `quotes[asset]` tiene más de 2 minutos, bloqueado.
+5. **No hay señal sin precio fresco.** Para BTC/ETH/XRP usar `cryptoQuotes[asset].priceMXN` y validar frescura con `cryptoQuotes[asset].t`. Si el precio tiene más de 2 minutos, bloqueado. `quotes{}` aplica a acciones/USD, no a precio unitario de cripto.
 6. **Si `computeHealthReadiness()` falla**, bloquear toda señal hasta que se recupere.
 7. **Si `buildSecurityAudit()` reporta fallos**, bloquear toda señal.
 

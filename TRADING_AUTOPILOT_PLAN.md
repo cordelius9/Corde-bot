@@ -188,7 +188,7 @@ Nivel 4 — Desconexión de red:
 El sistema debe activar DEFENSIVO automáticamente si:
 
 ```
-security audit falla (unprotectedMutationEndpoints > 0)
+security audit falla (audit.totals.unprotectedMutationEndpoints > 0)
 recovery < 35% durante más de 2 horas
 3 paper trades perdedores consecutivos en la misma semana
 error del sistema que no puede resolverse en 5 minutos
@@ -261,7 +261,7 @@ El sistema **nunca opera en auto si Pedro está en DESCANSO.**
 
 ```
 Si buildSecurityAudit() retorna:
-  unprotectedMutationEndpoints > 0  → BLOQUEAR TODO
+  audit.totals.unprotectedMutationEndpoints > 0  → BLOQUEAR TODO
   dashboardProtected = false        → BLOQUEAR TODO
   accessKeyConfigured = false       → BLOQUEAR TODO
   privateReadProtected = false      → BLOQUEAR TODO

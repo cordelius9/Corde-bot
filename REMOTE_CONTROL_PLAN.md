@@ -55,7 +55,7 @@ Todos los comandos remotos pasan por validación con `CORDELIUS_ACCESS_KEY` ante
 | `/check` | Llama `GET /api/security/audit` + health | read | ninguno |
 | `/paper-status` | Llama `GET /api/paper/status` | read | ninguno |
 | `/logs` | Últimas 30 líneas de `corde.log` (no más) | read | bajo |
-| `/restart` | `pkill start-with-env.js && nohup node start-with-env.js` | lifecycle | medio |
+| `/restart` | Ejecuta `scripts/cordelius-restart.sh` (tmux preferido; fallback: `pkill -f "node start-with-env.js"`) + verifica `/healthz` | lifecycle | medio |
 | `/pull` | `git pull origin jarvis-ui-overhaul --ff-only` | lifecycle | medio |
 | `/cloudflare` | Muestra estado del tunnel (no lo enciende sin confirmar) | read | bajo |
 | `/paper-pause` | `POST /api/paper/pause` (pausa engine) | mutate | bajo |
@@ -97,12 +97,43 @@ Solo los siguientes scripts pueden ser invocados por comandos remotos.
 Todos deben existir físicamente en el repo y ser revisados antes de habilitar.
 
 ```
-scripts/restart.sh       — pkill + nohup start-with-env.js
+scripts/cordelius-restart.sh  — restart seguro (ver §5a para lógica completa)
 scripts/pull.sh          — git pull --ff-only (nunca merge, nunca force)
 scripts/status.sh        — curl /api/status + /api/security/audit
 scripts/logs.sh          — tail -n 30 corde.log (solo lectura, máximo 30 líneas)
 scripts/cloudflare.sh    — cloudflared tunnel info (solo lectura)
 ```
+
+### §5a — Lógica de `cordelius-restart.sh`
+
+```bash
+#!/bin/bash
+# scripts/cordelius-restart.sh — restart seguro de Cordelius
+# No acepta argumentos. No expone shell. Timeout: 30s.
+
+# Opción preferida: reiniciar dentro de la sesión tmux existente
+if tmux has-session -t cordelius 2>/dev/null; then
+  tmux send-keys -t cordelius "pkill -f 'node start-with-env.js'; sleep 2; nohup node start-with-env.js > corde.log 2>&1 &" Enter
+else
+  # Fallback: pkill directo si no hay sesión tmux
+  pkill -f "node start-with-env.js" 2>/dev/null || true
+  sleep 2
+  nohup node ~/corde-bot/start-with-env.js > ~/corde-bot/corde.log 2>&1 &
+fi
+
+# Verificar que el servidor arrancó (nunca iniciar segundo proceso si el puerto ya está ocupado)
+sleep 4
+if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
+  echo "OK: Cordelius arrancó correctamente"
+else
+  echo "ERROR: /healthz no responde tras restart"
+  exit 1
+fi
+```
+
+> ⚠️ El script **nunca** inicia un segundo proceso si el puerto 3000 ya está ocupado.
+> Siempre verifica `/healthz` después del restart. Si falla, el comando `/restart`
+> responde en Telegram con error — no confirma éxito silenciosamente.
 
 Reglas de los scripts:
 - Ninguno acepta argumentos del usuario.
