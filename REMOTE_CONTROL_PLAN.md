@@ -73,6 +73,7 @@ con revisión de seguridad y actualización explícita de esta whitelist.
 | `/paper TICKER` | Intentar PAPER_BUY (re-valida condiciones) | PR separado + security review |
 | `/reject TICKER` | Mover a REJECT y archivar | PR separado + security review |
 | `/research_more TICKER` | Mantener en RESEARCH_MORE, pedir aclaración | PR separado + security review |
+| `/import` | Iniciar ingesta de análisis externo (siguiente mensaje = texto a procesar) | PR separado + security review |
 
 > ⚠️ Ninguno de estos comandos debe estar en bot.js hasta que aparezca aquí en la
 > whitelist activa. Cualquier expansión de whitelist requiere PR dedicado,

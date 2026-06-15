@@ -50,12 +50,19 @@
 | `status` | enum | Ver §3 |
 | `entryReason` | string | Razón concreta para estar en watchlist |
 | `invalidationReason` | string | Condición que lo saca de watchlist (obligatorio) |
-| `priceAtAdd` | number | Precio al momento de agregar (MXN para crypto) |
-| `priceTarget` | number | Nivel de precio objetivo (referencial, no orden) |
-| `stopLevel` | number | Nivel de invalidación de precio |
-| `scores` | object | Ver §4 |
+| `priceAtAdd` | number \| null | Precio al momento de agregar (MXN para crypto). `null` si `marketDataStatus` es `"stale"` o `"unavailable"`. **Nunca inventar.** |
+| `priceTarget` | number \| null | Nivel de precio objetivo (referencial, no orden); `null` si no hay precio de referencia |
+| `stopLevel` | number \| null | Nivel de invalidación de precio; `null` si no hay precio de referencia |
+| `marketDataStatus` | enum | `"fresh"` / `"stale"` / `"unavailable"` — alineado con RESEARCH_INTAKE_PIPELINE schema |
+| `marketDataNote` | string? | Opcional — explicación en texto libre si `marketDataStatus` ≠ `"fresh"` |
+| `priceAgeSeconds` | number \| null | Segundos desde la última actualización de precio; `null` si unavailable |
+| `scores` | object | Ver §5 |
 | `triggers` | string[] | Triggers activados (histórico) |
 | `notes` | string | Notas de Pedro o Jarvis |
+
+> ⚠️ `priceAtAdd = null` **no impide** WATCHLIST pasivo — equity/ETF sin precio fresco es válido.
+> `priceAtAdd = null` **sí impide** PAPER_ONLY / PAPER_BUY hasta tener precio fresco.
+> Para crypto PAPER_ONLY: `priceAgeSeconds` debe ser ≤ 120 (hard gate — PAPER_TRADING_SPEC §6).
 
 ---
 
@@ -326,6 +333,9 @@ Reglas para BLOCKED:
   "priceAtAdd": 67420,
   "priceTarget": 75000,
   "stopLevel": 55000,
+  "marketDataStatus": "fresh",
+  "marketDataNote": null,
+  "priceAgeSeconds": 45,
   "scores": {
     "thesisScore": 72,
     "technicalScore": 65,

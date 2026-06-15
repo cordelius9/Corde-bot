@@ -15,6 +15,8 @@ Pedro pega el texto del análisis de Grok directamente en Telegram o en el dashb
 A. Telegram — mensaje de texto largo:
    Pedro escribe /import y pega el texto en el siguiente mensaje.
    Cordelius responde con el research item generado para confirmación.
+   ⚠️ FUTURO — /import NO está en la whitelist activa de bot.js.
+   Requiere PR separado con revisión de seguridad antes de habilitarse.
 
 B. Dashboard web — campo "Pegar análisis":
    Pedro pega texto en el campo de intake y presiona "Procesar".
@@ -27,6 +29,11 @@ C. Nota manual con estructura mínima:
 
 > ⚠️ En ningún caso el análisis pegado ejecuta código ni genera órdenes.
 > El texto se trata siempre como entrada de lectura, no de instrucción.
+>
+> ⚠️ El comando `/import` de Telegram es **conceptual** — no está implementado ni en la
+> whitelist activa de `bot.js`. Habilitarlo requiere un PR dedicado con revisión de
+> seguridad y actualización explícita de `REMOTE_CONTROL_PLAN.md`. Hasta entonces,
+> la única forma de ingesta disponible es el dashboard web (opción B).
 
 ---
 
