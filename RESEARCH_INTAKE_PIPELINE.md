@@ -58,10 +58,19 @@ Pedro pega análisis externo
           │
           ▼
   [Etapa 6] Validación de contexto
-    - buildSecurityAudit() → si falla → BLOCKED
-    - computeJarvisBrain() → jarvisMode DEFENSIVO/NO_TRADING → BLOCKED
-    - computeHealthReadiness() → recovery < 45 → BLOCKED
-    - ¿Activo en whitelist? → si no → BLOCKED
+    - buildSecurityAudit() → si cualquier invariante falla → BLOCKED para ejecución:
+         dashboardProtected !== true
+         privateReadProtected !== true
+         accessKeyConfigured !== true
+         audit.totals.unprotectedMutationEndpoints > 0
+      (Research puede guardarse como nota; NO puede transicionar a PAPER_BUY/PAPER_ONLY/BUY_CANDIDATE)
+    - computeJarvisBrain() → jarvisMode DEFENSIVO/NO_TRADING → BLOCKED para ejecución
+      (Research/watchlist intake puede continuar marcado como "not actionable")
+    - computeHealthReadiness() → recovery < 45 → BLOCKED para ejecución
+    - ¿Activo soportado para el modo de ejecución solicitado?
+         Research/watchlist intake: acepta cualquier ticker válido y verificable
+         Paper trading whitelist (BTC/ETH/XRP): aplica SOLO al intentar PAPER_BUY/PAPER_ONLY
+         Equity/ETF no soportado para paper → WATCHLIST / RESEARCH_MORE (no BLOCKED)
           │
           ▼
   [Etapa 7] Clasificación de estado
@@ -227,25 +236,42 @@ Estados permitidos por tipo de activo:
 
 ## 7. Reglas para BLOCKED
 
-Un research item se marca `BLOCKED` automáticamente si se cumple **cualquiera** de las siguientes condiciones sistémicas:
+Un research item se marca `BLOCKED` si se cumple **cualquiera** de las siguientes condiciones críticas sistémicas:
 
 ```
-[ ] security audit falla (audit.totals.unprotectedMutationEndpoints > 0)
-[ ] precio crypto stale o no disponible para activo en whitelist de paper trading
-     → Para equities/ETFs sin precio en tiempo real: usar RESEARCH_MORE, no BLOCKED
-[ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING
+[ ] Cualquier invariante de security audit falla:
+     - dashboardProtected !== true
+     - privateReadProtected !== true
+     - accessKeyConfigured !== true
+     - audit.totals.unprotectedMutationEndpoints > 0
+     → Si cualquiera falla: research puede guardarse como nota, pero NO puede
+       transicionar a PAPER_BUY, PAPER_ONLY, BUY_CANDIDATE ni APPROVAL_REQUIRED
+
+[ ] Precio crypto stale al intentar PAPER_BUY / PAPER_ONLY (priceAgeSeconds > 120)
+     → Para equities/ETFs sin precio: RESEARCH_MORE (no BLOCKED)
+
+[ ] jarvisMode = DEFENSIVO o tradingPermission = NO_TRADING al intentar ejecución/paper
+     → Para research/watchlist-only: estado "not actionable" en WATCHLIST, no BLOCKED
+
 [ ] riskLevel = "extreme" sin revisión explícita de Pedro
-[ ] earnings o evento binario en los próximos 7 días sin revisión manual
-[ ] healthContext: recovery < 45
-[ ] análisis completamente ininteligible: ticker no identificable, sin tesis mínima
+
+[ ] Earnings o evento binario en los próximos 7 días sin revisión manual,
+    si se intenta PAPER_BUY / PAPER_ONLY
+
+[ ] healthContext: recovery < 45 al intentar ejecución/paper
+
+[ ] Análisis completamente ininteligible con intento de ejecución:
+    ticker no identificable, sin tesis mínima, y Pedro solicitó paper
 ```
 
-**No son condición de BLOCKED (sino de WATCHLIST o RESEARCH_MORE):**
+**No son condición de BLOCKED:**
 ```
-✗  Activo fuera de paper trading whitelist → WATCHLIST (con nota "paper no soportado")
-✗  Precio equity no disponible → RESEARCH_MORE (esperado para equities no rastreados)
-✗  Análisis ambiguo con ticker parcialmente identificado → RESEARCH_MORE
-✗  Confidence < 60 → WATCHLIST mínimo, no BLOCKED
+✗  Activo equity/ETF fuera de paper whitelist → WATCHLIST o RESEARCH_MORE
+✗  Precio equity no disponible en tiempo real → RESEARCH_MORE
+✗  Análisis ambiguo sin intento de ejecución → RESEARCH_MORE
+✗  Confidence < 60 → WATCHLIST mínimo
+✗  Score bajo (thesis, technical, risk) → REJECTED, RESEARCH_MORE o ACTIVE
+   "Low score ≠ BLOCKED. Low score → REJECTED, RESEARCH_MORE, or ACTIVE."
 ```
 
 Un item `BLOCKED` **no puede convertirse en `PAPER_BUY` ni `BUY_CANDIDATE`** sin que el bloqueo se resuelva y el item se re-evalúe.

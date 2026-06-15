@@ -191,7 +191,9 @@ freshnessScore   = frescura del dato de precio (0-100) — scoring general de wa
                    - precio 2-5 min: 80
                    - precio 5-30 min: 50
                    - precio 30 min - 2 horas: 20
-                   - precio > 2 horas (crypto): 0 → BLOCKED
+                   - precio > 2 horas: 0
+                     → crypto PAPER_ONLY attempt: BLOCKED
+                     → equity research/watchlist: RESEARCH_MORE o WATCHLIST (no BLOCKED)
 
 ⚠️ HARD GATE para PAPER_ONLY — crypto (BTC / ETH / XRP):
   priceAgeSeconds <= 120 es condición necesaria e irremplazable.
@@ -214,9 +216,13 @@ jarvisContextScore = contexto de Jarvis y salud (0-100)
                    - jarvisMode ÓPTIMO: 100
                    - jarvisMode MODERADO: 70
                    - jarvisMode REGULACIÓN: 40
-                   - jarvisMode DEFENSIVO/NO_TRADING: 0 → BLOCKED
+                   - jarvisMode DEFENSIVO/NO_TRADING: 0
+                     → paper/execution attempt: BLOCKED
+                     → research/watchlist: WATCHLIST o RESEARCH_MORE ("not actionable")
                    - recovery >= 75: +10 (bonus)
-                   - recovery < 45: 0 → BLOCKED
+                   - recovery < 45: 0
+                     → paper/execution attempt: BLOCKED
+                     → research/watchlist: nota "not actionable now", no BLOCKED
 
 finalDecisionScore = promedio ponderado:
   (thesisScore * 0.30)
@@ -235,7 +241,18 @@ finalDecisionScore >= 75  → PAPER_ONLY (solo si activo en paper-trading whitel
 finalDecisionScore 60-74  → WAITING_FOR_CONFIRMATION
 finalDecisionScore 40-59  → ACTIVE (monitoreo sin acción)
 finalDecisionScore < 40   → REJECTED
-cualquier componente = 0  → estado BLOCKED (ver §3a para condiciones exactas)
+```
+
+**Score bajo ≠ BLOCKED. Routing por score bajo:**
+```
+thesisScore = 0       → REJECTED o RESEARCH_MORE (análisis sin sustancia)
+technicalScore = 0    → afecta finalDecisionScore; resultado según umbrales arriba
+riskScore = 0         → riskLevel "extreme" → BLOCKED (condición de seguridad explícita)
+freshnessScore = 0    → depende de contexto (ver freshnessScore arriba)
+jarvisContextScore = 0→ depende de contexto (ver jarvisContextScore arriba)
+
+BLOCKED solo se asigna por condiciones críticas de §3a, nunca por score bajo.
+"Low score ≠ BLOCKED. Low score → REJECTED, RESEARCH_MORE, or ACTIVE."
 ```
 
 > Para crypto PAPER_ONLY: finalDecisionScore >= 75 es condición necesaria pero no
