@@ -10,8 +10,8 @@
 
 ```
 Termux / Galaxy Tab S6
-  └─ node start-with-env.js
-        └─ dashboard.js  ← app principal, puerto 3000
+  └─ tmux session "cordelius"
+        └─ node dashboard.js  ← app principal, puerto 3000
               ├─ http.createServer()   (sin framework, sin npm)
               ├─ PORTFOLIO[]           (18 activos en memoria)
               ├─ whoopCache            (in-memory, NO en disco directo)
@@ -264,8 +264,10 @@ cp dashboard.js dashboard_backup_$(date +%Y%m%d_%H%M%S).js
 node --check dashboard.js
 
 # 5. Reiniciar
-pkill -f "node start-with-env.js" 2>/dev/null || true
-nohup node start-with-env.js > corde.log 2>&1 &
+tmux kill-session -t cordelius 2>/dev/null || true
+sleep 2
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 sleep 4
 
 # 6. Health check
