@@ -18,11 +18,14 @@
   "addedAt": "2026-06-15T01:30:00Z",
   "updatedAt": "2026-06-15T06:00:00Z",
   "status": "ACTIVE",
-  "entryReason": "Tesis ETF inflow + RSI sobrevendido en soporte $60k",
-  "invalidationReason": "Cierre semanal bajo $55k o noticia regulatoria adversa",
-  "priceAtAdd": 67420,
-  "priceTarget": 75000,
-  "stopLevel": 55000,
+  "entryReason": "Tesis ETF inflow + RSI sobrevendido en soporte $1,100,000 MXN",
+  "invalidationReason": "Cierre semanal bajo $1,100,000 MXN o noticia regulatoria adversa",
+  "priceAtAdd": 1250000,
+  "priceTarget": 1400000,
+  "stopLevel": 1100000,
+  "priceCurrency": "MXN",
+  "levelCurrency": "MXN",
+  "chartSymbol": "BINANCE:BTCUSDT",
   "scores": {
     "thesisScore": 72,
     "technicalScore": 60,
@@ -32,7 +35,7 @@
     "finalDecisionScore": 68
   },
   "triggers": [],
-  "notes": "Revisar en TradingView si RSI 1D baja de 35"
+  "notes": "Revisar en TradingView si RSI 1D baja de 35. Chart en USD (BTCUSDT); niveles guardados en MXN."
 }
 ```
 
@@ -56,6 +59,9 @@
 | `marketDataStatus` | enum | `"fresh"` / `"stale"` / `"unavailable"` — alineado con RESEARCH_INTAKE_PIPELINE schema |
 | `marketDataNote` | string? | Opcional — explicación en texto libre si `marketDataStatus` ≠ `"fresh"` |
 | `priceAgeSeconds` | number \| null | Segundos desde la última actualización de precio; `null` si unavailable |
+| `priceCurrency` | string | Moneda de `priceAtAdd` — `"MXN"` para crypto (cryptoQuotes.priceMXN). **No mezclar con USD sin conversión.** |
+| `levelCurrency` | string | Moneda de `priceTarget`, `stopLevel` y todos los niveles de trigger. Debe coincidir con `priceCurrency`. |
+| `chartSymbol` | string | Símbolo TradingView para revisión visual (ej. `"BINANCE:BTCUSDT"`, `"NASDAQ:AMD"`). Puede mostrar precio en USD aunque `levelCurrency` sea MXN. |
 | `scores` | object | Ver §5 |
 | `triggers` | string[] | Triggers activados (histórico) |
 | `notes` | string | Notas de Pedro o Jarvis |
@@ -63,6 +69,15 @@
 > ⚠️ `priceAtAdd = null` **no impide** WATCHLIST pasivo — equity/ETF sin precio fresco es válido.
 > `priceAtAdd = null` **sí impide** PAPER_ONLY / PAPER_BUY hasta tener precio fresco.
 > Para crypto PAPER_ONLY: `priceAgeSeconds` debe ser ≤ 120 (hard gate — PAPER_TRADING_SPEC §6).
+>
+> ⚠️ **Moneda de niveles:** `priceCurrency` y `levelCurrency` deben ser iguales entre sí y
+> con la fuente de cotización usada para triggers como `PRICE_LEVEL` o `INVALIDATION_HIT`.
+> Para crypto en Cordelius: `priceCurrency = "MXN"` porque la fuente es `cryptoQuotes.priceMXN`.
+> "Stored trigger levels must be compared only against quotes in the same currency."
+> "TradingView symbol currency may differ from stored levelCurrency — if chartSymbol is
+>  BTCUSDT but stored levels are MXN, do not compare chart USD levels directly against
+>  MXN quotes."
+> "Never mix USD-style BTC levels with MXN cryptoQuotes.priceMXN without conversion."
 
 ---
 
@@ -352,13 +367,16 @@ Reglas para BLOCKED:
   "addedAt": "2026-06-15T01:30:00Z",
   "updatedAt": "2026-06-15T08:00:00Z",
   "status": "WAITING_FOR_CONFIRMATION",
-  "entryReason": "ETF inflows acelerando + RSI 1D en 38 (cerca de sobrevendido) + soporte histórico $60k",
-  "invalidationReason": "Cierre semanal bajo $55,000 MXN o noticia regulatoria adversa de SEC",
-  "priceAtAdd": 67420,
-  "priceTarget": 75000,
-  "stopLevel": 55000,
+  "entryReason": "ETF inflows acelerando + RSI 1D en 38 (cerca de sobrevendido) + soporte histórico $1,100,000 MXN",
+  "invalidationReason": "Cierre semanal bajo $1,100,000 MXN o noticia regulatoria adversa de SEC",
+  "priceAtAdd": 1250000,
+  "priceTarget": 1400000,
+  "stopLevel": 1100000,
+  "priceCurrency": "MXN",
+  "levelCurrency": "MXN",
+  "chartSymbol": "BINANCE:BTCUSDT",
   "marketDataStatus": "fresh",
-  "marketDataNote": null,
+  "marketDataNote": "TradingView chart may display USD; stored Cordelius trigger levels are MXN.",
   "priceAgeSeconds": 45,
   "scores": {
     "thesisScore": 72,
@@ -369,7 +387,7 @@ Reglas para BLOCKED:
     "finalDecisionScore": 71
   },
   "triggers": [],
-  "notes": "Esperar confirmación de cierre diario sobre $68k antes de considerar paper trade"
+  "notes": "Esperar confirmación de cierre diario sobre $1,300,000 MXN antes de considerar paper trade"
 }
 ```
 
@@ -381,7 +399,7 @@ Condición: RSI 1D bajó a 33.2 y rebotó a 36 con volumen +15%
 Alerta Telegram:
   ⚡ Trigger: RSI_OVERSOLD_BOUNCE — BTC
   RSI 1D: 36 (rebote desde 33.2)
-  Precio: $66,800 MXN (fresco)
+  Precio: $1,230,000 MXN (fresco — cryptoQuotes.priceMXN)
   Estado actual: WAITING_FOR_CONFIRMATION → evaluar PAPER_ONLY
   
   Revisa: https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT
