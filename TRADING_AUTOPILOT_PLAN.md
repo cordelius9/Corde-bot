@@ -175,7 +175,10 @@ Nivel 2 — Modo DEFENSIVO:
 
 Nivel 3 — Apagado total:
   Telegram: /restart (reinicia sin trading habilitado si DEFENSIVO está activo)
-  Tablet: pkill -f "node start-with-env.js"
+  Tablet: tmux kill-session -t cordelius 2>/dev/null || true
+          → si /healthz sigue respondiendo, hay proceso huérfano:
+            ps aux | grep "node dashboard.js" | grep -v grep
+            intervención manual: pkill -f "node dashboard.js"
   Efecto: apaga todo el sistema
 
 Nivel 4 — Desconexión de red:

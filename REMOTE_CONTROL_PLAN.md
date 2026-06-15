@@ -55,7 +55,7 @@ Todos los comandos remotos pasan por validación con `CORDELIUS_ACCESS_KEY` ante
 | `/check` | Llama `GET /api/security/audit` + health | read | ninguno |
 | `/paper-status` | Llama `GET /api/paper/status` | read | ninguno |
 | `/logs` | Últimas 30 líneas de `corde.log` (no más) | read | bajo |
-| `/restart` | Ejecuta `scripts/cordelius-restart.sh` (tmux preferido; fallback: `pkill -f "node start-with-env.js"`) + verifica `/healthz` | lifecycle | medio |
+| `/restart` | Ejecuta `scripts/cordelius-restart.sh` (tmux kill-session + tmux new) + verifica `/healthz` | lifecycle | medio |
 | `/pull` | `git pull origin jarvis-ui-overhaul --ff-only` | lifecycle | medio |
 | `/cloudflare` | Muestra estado del tunnel (no lo enciende sin confirmar) | read | bajo |
 | `/paper-pause` | `POST /api/paper/pause` (pausa engine) | mutate | bajo |
@@ -111,17 +111,25 @@ scripts/cloudflare.sh    — cloudflared tunnel info (solo lectura)
 # scripts/cordelius-restart.sh — restart seguro de Cordelius
 # No acepta argumentos. No expone shell. Timeout: 30s.
 
-# Opción preferida: reiniciar dentro de la sesión tmux existente
-if tmux has-session -t cordelius 2>/dev/null; then
-  tmux send-keys -t cordelius "pkill -f 'node start-with-env.js'; sleep 2; nohup node start-with-env.js > corde.log 2>&1 &" Enter
-else
-  # Fallback: pkill directo si no hay sesión tmux
-  pkill -f "node start-with-env.js" 2>/dev/null || true
-  sleep 2
-  nohup node ~/corde-bot/start-with-env.js > ~/corde-bot/corde.log 2>&1 &
+# Detener sesión tmux existente (si hay)
+tmux kill-session -t cordelius 2>/dev/null || true
+sleep 2
+
+# Guardia: verificar que el proceso viejo realmente terminó.
+# Si /healthz sigue respondiendo, el proceso quedó huérfano fuera de tmux —
+# arrancar un segundo proceso sería incorrecto y peligroso.
+if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
+  echo "ERROR: old server still running outside tmux; manual cleanup required"
+  echo "Diagnóstico: ps aux | grep 'node dashboard.js' | grep -v grep"
+  echo "Intervención manual (no default): pkill -f 'node dashboard.js'"
+  exit 1
 fi
 
-# Verificar que el servidor arrancó (nunca iniciar segundo proceso si el puerto ya está ocupado)
+# Puerto libre — arrancar en nueva sesión tmux con env cargado
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
+
+# Verificar arranque — nunca confirmar éxito sin verificar
 sleep 4
 if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
   echo "OK: Cordelius arrancó correctamente"
@@ -131,7 +139,9 @@ else
 fi
 ```
 
-> ⚠️ El script **nunca** inicia un segundo proceso si el puerto 3000 ya está ocupado.
+> ⚠️ El script **nunca** arranca un segundo proceso si el puerto 3000 sigue ocupado.
+> Si `tmux kill-session` no bastó (proceso huérfano fuera de tmux), el script aborta
+> con error y sugiere diagnóstico manual — no fuerza un arranque ciego.
 > Siempre verifica `/healthz` después del restart. Si falla, el comando `/restart`
 > responde en Telegram con error — no confirma éxito silenciosamente.
 
@@ -246,7 +256,7 @@ Opción B — Dashboard web:
   POST /api/mode/defensive → activa modo DEFENSIVO (no trading)
 
 Opción C — Tablet directo:
-  pkill -f "node start-with-env.js"   ← apaga todo
+  tmux kill-session -t cordelius 2>/dev/null || true   ← apaga todo
 
 Opción D — Tailscale:
   Desconectar tablet de Tailnet → dashboard inaccesible remotamente
