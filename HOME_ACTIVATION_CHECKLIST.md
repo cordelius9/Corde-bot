@@ -72,7 +72,8 @@ git pull origin jarvis-ui-overhaul --ff-only
 curl -sf http://127.0.0.1:3000/healthz && echo "OK" || echo "NO CORRE"
 
 # Si no corre, arrancar:
-nohup node start-with-env.js > corde.log 2>&1 &
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 sleep 4
 curl -s http://127.0.0.1:3000/healthz | python3 -m json.tool
 

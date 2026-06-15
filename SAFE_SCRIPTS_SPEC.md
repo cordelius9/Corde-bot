@@ -34,7 +34,8 @@ fi
 cd ~/corde-bot
 node --check dashboard.js || { echo "ERROR: dashboard.js no pasa node --check"; exit 1; }
 
-nohup node start-with-env.js > corde.log 2>&1 &
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 sleep 4
 
 if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
@@ -87,7 +88,7 @@ if ! curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
   exit 0
 fi
 
-pkill -f "node start-with-env.js"
+tmux kill-session -t cordelius 2>/dev/null || true
 sleep 2
 
 if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
@@ -100,8 +101,8 @@ fi
 ```
 
 **Riesgos:**
-- `pkill -f` puede matar otros procesos que coincidan con el patrón. El patrón `"node start-with-env.js"` es suficientemente específico para este proyecto.
-- Si hay múltiples procesos node, los mata a todos. Es el comportamiento deseado para evitar servidores huérfanos.
+- `tmux kill-session` solo afecta la sesión tmux `cordelius`. Si el proceso node quedó huérfano fuera de tmux, puede sobrevivir — verificar con `/healthz` después.
+- Si hay múltiples sesiones tmux, solo mata `cordelius`. Es el comportamiento deseado para no afectar otras sesiones.
 
 **Validaciones:**
 1. Verificar que el servidor estaba corriendo antes de intentar parar.
@@ -127,17 +128,16 @@ OK: servidor detenido
 #!/bin/bash
 # Preferido: usar tmux si la sesión "cordelius" existe
 if tmux has-session -t cordelius 2>/dev/null; then
-  tmux send-keys -t cordelius "pkill -f 'node start-with-env.js'; sleep 2; nohup node start-with-env.js > corde.log 2>&1 &" Enter
-  sleep 6
-else
-  # Fallback: directo sin tmux
-  pkill -f "node start-with-env.js" 2>/dev/null || true
+  tmux kill-session -t cordelius
   sleep 2
-  cd ~/corde-bot
-  node --check dashboard.js || { echo "ERROR: node --check falló — restart abortado"; exit 1; }
-  nohup node start-with-env.js > corde.log 2>&1 &
-  sleep 4
 fi
+
+cd ~/corde-bot
+node --check dashboard.js || { echo "ERROR: node --check falló — restart abortado"; exit 1; }
+
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
+sleep 4
 
 # Verificar resultado — nunca confirmar éxito sin verificar
 if curl -sf http://127.0.0.1:3000/healthz > /dev/null 2>&1; then
@@ -184,10 +184,10 @@ ERROR: servidor no responde en /healthz después del restart
 ERRORS=0
 
 # 1. ¿Proceso corriendo?
-if ps aux | grep -q "[n]ode start-with-env.js"; then
-  echo "✓ Proceso: corriendo"
+if tmux has-session -t cordelius 2>/dev/null; then
+  echo "✓ Proceso: sesión tmux 'cordelius' activa"
 else
-  echo "✗ Proceso: no encontrado"
+  echo "✗ Proceso: sesión tmux 'cordelius' no encontrada"
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -248,7 +248,7 @@ fi
 
 **Output esperado:**
 ```
-✓ Proceso: corriendo
+✓ Proceso: sesión tmux 'cordelius' activa
 ✓ /healthz: OK
 ✓ unprotectedMutationEndpoints: 0
 ✓ dashboardProtected: true
@@ -311,7 +311,7 @@ Already up to date.
 3/4: restart...
 OK: servidor reiniciado y respondiendo en /healthz
 4/4: check completo...
-✓ Proceso: corriendo
+✓ Proceso: sesión tmux 'cordelius' activa
 ✓ /healthz: OK
 ✓ unprotectedMutationEndpoints: 0
 ✓ dashboardProtected: true

@@ -11,7 +11,7 @@
 Galaxy Tab S6 (servidor)
   └─ Android 12 / Termux
         └─ tmux  (sesión persistente: "cordelius")
-              ├─ node start-with-env.js   → puerto 3000
+              ├─ node dashboard.js         → puerto 3000
               └─ cloudflared              → tunnel opcional
 
 Red:
@@ -183,8 +183,13 @@ tmux ls                           # listar sesiones existentes
 tmux new-session -s cordelius     # nueva sesión (si no existe)
 tmux attach -t cordelius          # volver a sesión existente
 
-# Arrancar servidor (dentro de tmux)
-nohup node start-with-env.js > corde.log 2>&1 &
+# Arrancar servidor (preferido: nueva sesión tmux con env cargado)
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
+# Fallback si existe start.sh verificado:
+#   ./start.sh
+# Fallback directo (sin tmux):
+#   set -a && . ./.env && set +a && APP_DIR="$(pwd)" node dashboard.js
 
 # Verificar health
 curl -s http://127.0.0.1:3000/healthz | python3 -m json.tool
@@ -231,17 +236,19 @@ curl -sf http://127.0.0.1:3000/healthz && echo "YA CORRE" || echo "NO CORRE"
 # Si no corre:
 cd ~/corde-bot
 node --check dashboard.js          # verificar sintaxis primero
-nohup node start-with-env.js > corde.log 2>&1 &
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 sleep 4
 curl -s http://127.0.0.1:3000/healthz | python3 -m json.tool
 
 # Si ya corre y necesitas reiniciar:
-pkill -f "node start-with-env.js"
+tmux kill-session -t cordelius 2>/dev/null || true
 sleep 2
 # → verificar que el puerto quedó libre:
 curl -sf http://127.0.0.1:3000/healthz && echo "PUERTO OCUPADO" || echo "LIBRE"
 # → luego arrancar de nuevo
-nohup node start-with-env.js > corde.log 2>&1 &
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 sleep 4
 curl -s http://127.0.0.1:3000/healthz | python3 -m json.tool
 ```
@@ -260,9 +267,10 @@ curl -s http://127.0.0.1:3000/healthz | python3 -m json.tool
 ps aux | grep node
 
 # 2. Si existe pero no responde:
-pkill -f "node start-with-env.js"
+tmux kill-session -t cordelius 2>/dev/null || true
 sleep 3
-nohup node start-with-env.js > corde.log 2>&1 &
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 sleep 4
 curl -s http://127.0.0.1:3000/healthz
 
@@ -281,9 +289,8 @@ curl -sf http://127.0.0.1:3000/healthz && echo "SERVER OK"
 tmux new-session -s cordelius
 
 # Si node murió también:
-tmux new-session -s cordelius
-cd ~/corde-bot
-nohup node start-with-env.js > corde.log 2>&1 &
+TERMUX_HOME=/data/data/com.termux/files/home
+tmux new -d -s cordelius "cd ${TERMUX_HOME}/corde-bot && set -a && . ./.env && set +a && APP_DIR=\"\$(pwd)\" node dashboard.js"
 ```
 
 ### Tailscale desconectado
@@ -317,7 +324,7 @@ Verificar antes de dejarlo corriendo sin supervisión:
 ```
 [ ] Cargador conectado
 [ ] Tailscale activo: tailscale status → tablet en la lista
-[ ] Proceso corriendo: ps aux | grep node → muestra start-with-env.js
+[ ] Proceso corriendo: tmux has-session -t cordelius 2>/dev/null → sesión existe
 [ ] Health OK: curl -s http://127.0.0.1:3000/healthz → {"ok":true}
 [ ] Security OK: /api/security/audit → unprotectedMutationEndpoints: 0
 [ ] Sin Cloudflare activo (a menos que sea intencional y temporal)
